@@ -2,7 +2,9 @@
 
 Automatisering van de ruimtelijke analyse voor ontheffingaanvragen **Tijdelijk en Uitzonderlijk Gebruik (TUG)** van het luchtruim buiten luchthavens, op grond van artikel 8a.51 van de Wet luchtvaart. Ontwikkeld voor de Provincie Overijssel.
 
-De pipeline verwerkt een aanvraag-JSON, classificeert de betrokken luchtvaartuigen via het ILT Luchtvaartregister en de NLR-categorietabel, voert een ruimtelijke analyse uit op alle wettelijk relevante objecten en functies rondom de aanvraaglocatie, en genereert een PDF-rapport met proceslog en adressenlijst en een interactieve HTML-kaart.
+Elke provincie hanteert zijn eigen TUG-beleid en beoordelingscriteria. Dit project is daarom een maatwerkautomatisering voor de Provincie Overijssel en niet zonder aanpassingen toepasbaar op andere provincies.
+
+De pipeline verwerkt een aanvraag-JSON, classificeert de betrokken luchtvaartuigen via het ILT Luchtvaartregister en de NLR-categorietabel, voert een ruimtelijke analyse uit op alle wettelijk relevante objecten en functies rondom de aanvraaglocatie, en genereert een PDF-rapport met proceslog en adressenlijst en een interactieve HTML-kaart. De HTML-kaart is bedoeld voor de vergunningverlener om in te zoomen op de aanvraaglocatie en de geïnventariseerde objecten in hun ruimtelijke context te beoordelen.
 
 ---
 
@@ -18,14 +20,12 @@ De pipeline verwerkt een aanvraag-JSON, classificeert de betrokken luchtvaartuig
 - [Gegevensbronnen & caching](#gegevensbronnen--caching)
 - [Uitvoer](#uitvoer)
 - [tug_state.json](#tug_statejson)
-- [Openstaande punten (PM-lijst)](#pm-lijst)
 
 ---
 
 ## Vereisten
 
-- Python 3.11 of hoger
-- Internettoegang (voor PDOK WFS, BAG WFS, DUO, LRK, ILT-paginascrape)
+- Python 3.11 of hoger (geen adminrechten vereist voor installatie via `pip`)
 
 ### Python-packages
 
@@ -96,7 +96,7 @@ Geldige stapnummers: `01`, `02`, `03`, `05` (overeenkomstig de scriptnamen).
 python tug_run.py test_aanvraag_tug.json
 ```
 
-Het testbestand bevat een negatief testgeval: `datum_ondertekening` ligt 19 dagen vóór de vroegste vluchtdatum, waardoor de 4-weken-regel een waarschuwing genereert (niet fataal).
+Het testbestand bevat een negatief testgeval: `datum_ondertekening` ligt 19 dagen vóór de vroegste vluchtdatum. De pipeline signaleert dat de aanvraag korter dan 28 dagen vóór de eerste vluchtdatum is ingediend en genereert een waarschuwing (niet fataal).
 
 ### Dataveiligheid
 
@@ -130,11 +130,11 @@ Na een succesvolle run wordt `tug_state.json` automatisch overschreven met `{}`.
 | Veld | Type | Toelichting |
 |------|------|-------------|
 | `soort_ontheffing` | string | `"locatiegebonden"` of `"generiek"` |
-| `datum_vlucht` | string of array | ISO 8601 (`YYYY-MM-DD`); één datum of een array van meerdere data |
-| `vlucht_udp` | boolean | Indien `true`: hele dag; `vlucht_start`/`vlucht_einde` worden genegeerd |
+| `datum_vlucht` | string of array | YYYY-MM-DD; één datum of een array van meerdere data |
+| `vlucht_udp` | boolean | Indien `true`: universal daylight period; `vlucht_start`/`vlucht_einde` worden genegeerd |
 | `luchtvaartuigen` | array | Objecten met minimaal `registratie` (PH-code); `type` facultatief |
 | `coord_lat` / `coord_lon` | float | WGS84, minimaal 6 decimalen |
-| `datum_ondertekening` | string | ISO 8601; zie 4-weken-regel |
+| `datum_ondertekening` | string | YYYY-MM-DD; zie 4-weken-regel |
 | `tijdstip_ondertekening` | string | `HH:MM` formaat |
 
 ---
@@ -190,17 +190,17 @@ tug_state.json (communicatie tussen stappen; gewist na succesvolle run)
 
 ### Classificatie van luchtvaartuigen
 
-De NLR-tabel (CR-96650L, Suppl. 1, oktober 2022) bevat per ICAO-type een appendix en een afstandsnorm. Bij meerdere luchtvaartuigen geldt de hoogste norm (`norm_toepassing`).
+De NLR-tabel (CR-96650L, Suppl. 1, oktober 2022) bevat per ICAO-type een appendix en een afstandsnorm. De afstandsnormen volgen uit art. 6 lid 3 van de [Beleidsregel TUG Overijssel](https://lokaleregelgeving.overheid.nl/CVDR329333/). Bij meerdere luchtvaartuigen geldt de hoogste norm (`norm_toepassing`).
 
 | Appendix | Norm | Voorbeeldtypen |
 |----------|------|----------------|
 | 010 | 250 m | EC120, R66, B407, AS50 |
 | 011 | 150 m | R22, R44, H269 |
 | 012 | 350 m | A139, S76, B412 |
-| 013/015/016/017 | **PM** | Normen nog niet vastgesteld |
+| 013/015/016/017 | handmatig | handmatig vaststellen |
 | 014 | 500 m | H60, Chinook, Puma, AS332 |
 
-**PM-categorieën (013/015/016/017):** de pipeline signaleert deze categorie in het proceslog en past een standaard van 500 m toe. De vergunningverlener bepaalt handmatig de juiste norm.
+Bij appendix 013/015/016/017 zijn de normen niet vastgesteld in de NLR-tabel. De pipeline signaleert deze categorie in het proceslog en past een standaard van 500 m toe. De vergunningverlener bepaalt handmatig de juiste norm.
 
 ---
 
@@ -210,15 +210,15 @@ De NLR-tabel (CR-96650L, Suppl. 1, oktober 2022) bevat per ICAO-type een appendi
 
 | Zone | Berekening | Gebruik |
 |------|-----------|---------|
-| Toetsingsafstand | Norm luidste luchtvaartuig (NLR-tabel) | Geluidgevoelige gebouwen, begraafplaatsen, KDV, scholen |
+| Toetsingsafstand | Norm luidste luchtvaartuig (NLR-tabel) | Geluidgevoelige gebouwen, begraafplaatsen, kinderopvangverblijf, scholen |
 | Margeband | Toetsingsafstand + 75 m | Optionele signalering overige gebouwen |
-| Aandachtsgebied maneges | Toetsingsafstand + 375 m | Manegesignalering (margeband telt niet mee) |
+| Aandachtsgebied maneges | Toetsingsafstand + 375 m | Manegesignalering |
 
 ### Categorieën adressenlijst
 
 | Sectie | Inhoud | Actie |
 |--------|--------|-------|
-| **Wettelijk relevant** | Geluidgevoelige gebouwen binnen toetsingsafstand + begraafplaatsen (polygoon snijdt toetsingsafstand) + KDV + scholen | Instemmingsverklaring vereist |
+| **Wettelijk relevant** | Geluidgevoelige gebouwen binnen toetsingsafstand + begraafplaatsen (polygoon snijdt toetsingsafstand) + kinderopvangverblijf + scholen | Instemmingsverklaring vereist |
 | **Margeband** | Overige verblijfsobjecten in de margeband | Instemmingsverklaring optioneel |
 | **Aandachtslocaties** | Maneges (aandachtsgebied) + luchthavens | Signalering; geen instemmingsvereiste |
 | **Overig** | Overige objecten buiten margeband | Weergave op kaart; geen actie |
@@ -227,6 +227,10 @@ De NLR-tabel (CR-96650L, Suppl. 1, oktober 2022) bevat per ICAO-type een appendi
 
 Woonbestemming, onderwijsfunctie, gezondheidszorgfunctie, logiesfunctie (proxy voor gezondheidszorgfunctie met bed).
 
+### Margeband
+
+De margeband (toetsingsafstand + 75 m) heeft een tweeledig doel. Ten eerste kunnen grote gebouwen een BAG-adres hebben dat buiten de toetsingsafstand valt, terwijl de gevel van dat gebouw er nog wel binnen snijdt; de gevelcheck via pandgeometrie vangt dit op. Ten tweede kan het voorkomen dat een piloot niet exact opstijgt of landt op de aangevraagde locatie. Gebouwen die binnen de margeband maar buiten de toetsingsafstand vallen worden daarom apart gesignaleerd, zodat de vergunningverlener kan beoordelen of ook hiervoor instemming wenselijk is.
+
 ### Begraafplaatsen
 
 Wettelijk relevant als het BAG-polygoon van de begraafplaats de **toetsingsafstand** snijdt (niet de margeband). Centroid-afstand kan groter zijn dan de toetsingsafstand.
@@ -234,6 +238,10 @@ Wettelijk relevant als het BAG-polygoon van de begraafplaats de **toetsingsafsta
 ### Natura 2000 en NNN
 
 N2000 wordt on-the-fly via PDOK WFS opgevraagd (nationaal). NNN via een lokale GeoPackage (Overijssel). Omdat N2000 een subset is van NNN, wordt bij een N2000-treffer automatisch ook een NNN-treffer aangenomen — ook als de locatie net buiten de Overijsselse provinciegrenzen valt en niet in de GeoPackage staat.
+
+### Maneges
+
+Er zijn geen landelijk dekkende polygoongeometrieën van manegegebieden beschikbaar. De grootste manege van Nederland (Exloo) heeft oefenterreinen op circa 340 meter van het BAG-adres. In theorie kan een manege daardoor binnen de toetsingsafstand vallen terwijl het BAG-adres tot 340 meter buiten die afstand ligt. Om dit op te vangen wordt een aandachtsgebied van toetsingsafstand + 375 m gehanteerd: maneges waarvan het BAG-adres binnen dit aandachtsgebied valt worden gesignaleerd. De vergunningverlener beoordeelt vervolgens of de feitelijke terreinsituatie aanleiding geeft tot verdere actie.
 
 ### Luchthavens
 
@@ -311,7 +319,7 @@ GeoJSON per onderwijstype. De pipeline filtert op provincie Overijssel en koppel
 
 ### Maneges (PDOK Location API / BRT)
 
-Zoekradius: toetsingsafstand + 375 m. Getoetst op polygoongeometrie (BRT gebouwen) via PDOK Location API.
+De pipeline zoekt maneges via de PDOK Location API met een reeks zoektermen (manege, rijschool, hippisch, paardencentrum, rijvereniging e.a.) binnen een zoekradius van toetsingsafstand + 375 m. De API retourneert gecombineerde resultaten uit de BRT en het BAG. Voor elk resultaat wordt via de BRT gebouwenlaag de polygoongeometrie opgevraagd om de werkelijke ligging te bepalen. Resultaten zonder polygoon (puntlocaties) worden op centroid-afstand beoordeeld.
 
 ### Luchthavens (GeoPortaal Overijssel WFS)
 
@@ -355,19 +363,6 @@ De state wordt aangemaakt door `tug_run.py` en uitgebreid door elke stap. Na suc
 | `classificatie` | `tug_02_classificatie.py` | Per luchtvaartuig: ICAO, appendix, norm; `norm_toepassing` |
 | `ruimtelijk` | `tug_03_ruimtelijk.py` | Adresrijen (wettelijk/marge/aandacht/overig), PNG-kaartpaden |
 | `logboek` | Alle scripts | Tijdgestempelde log-entries per stap |
-
----
-
-## PM-lijst
-
-Openstaande beslissingen en onzekerheden:
-
-| # | Item | Eigenaar |
-|---|------|----------|
-| PM-1 | Rx.Mission exportformaat — veldnamen en formaat vaststellen voor geautomatiseerde intake | PDDIGI |
-| PM-5 | Onderscheid actieve vs. gesloten begraafplaatsen (dodenakkers.nl als mogelijke bron?) | SME |
-| PM-11 | Status en scope drone-ontheffingen — tijdelijk buiten scope | PDH |
-| PM-12 | Gebruiksteller terreinen met ≥ 12 generieke ontheffingen (art. 5 Beleidsregel) | PDH |
 
 ---
 
