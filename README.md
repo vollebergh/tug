@@ -56,6 +56,20 @@ pip install pandas requests pyproj shapely odfpy Pillow reportlab geopandas fion
 1. Clone of download de repository.
 2. Geen verdere configuratie nodig — mappen `geo/` en `output/` worden automatisch aangemaakt bij de eerste run.
 
+### Bestanden die bij eerste run worden gedownload
+
+De pipeline downloadt bij de eerste run externe bestanden automatisch naar `geo/` en cachet deze voor hergebruik. 
+
+| Bestand | Bron | Grootte | TTL |
+|---------|------|---------|-----|
+| `luchtvaartuigregister_ilt.ods` | ILT (gescrapet van bronpagina) | ± 1,3 MB | 30 dagen |
+| `lrk_kinderopvang.csv` | Landelijk Register Kinderopvang | ± 12 MB | 7 dagen |
+| `nnn_gebieden.gpkg` | PDOK ATOM-feed (GML → GeoPackage) | ± 111 MB | 180 dagen |
+| `duo_scholen_po.geojson` | DUO Open Onderwijsdata PO (gefilterd op Overijssel) | ± 143 KB | 90 dagen |
+| `duo_scholen_overig.geojson` | DUO Open Onderwijsdata SO/VO/MBO/HO (gefilterd op Overijssel) | ± 63 KB | 90 dagen |
+
+> De NNN GeoPackage (111 MB) wordt alleen aangemaakt als `geopandas` en `fiona` beschikbaar zijn. De overige bestanden worden altijd gedownload.
+
 ```
 TUG-ontheffingen/
 ├── geo/                        # Automatisch aangemaakt; caches voor ILT, DUO, LRK, NNN
