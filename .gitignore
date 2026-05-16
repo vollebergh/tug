@@ -1,0 +1,33 @@
+# ── Gegenereerde uitvoer ──────────────────────
+output/
+
+# ── Geocaches en grote databronnen ───────────
+geo/
+
+# ── Vertrouwelijke procesdata ─────────────────
+tug_state.json
+
+# ── Registerbestanden (ILT, LRK) ─────────────
+*.ods
+*.csv
+
+# ── Documentatie (interne stukken) ───────────
+Documentatie/
+Interviews/
+obsidian/
+
+# ── Oud / archief ─────────────────────────────
+OUD_*.py
+
+# ── Python ────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.env
+
+# ── IDE ───────────────────────────────────────
+.vscode/
+.idea/
+*.swp

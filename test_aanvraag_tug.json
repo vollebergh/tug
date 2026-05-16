@@ -1,0 +1,13 @@
+{
+  "soort_ontheffing": "locatiegebonden",
+  "datum_vlucht": ["2026-06-20", "2026-07-01"],
+  "vlucht_udp": true,
+  "vlucht_start": null,
+  "vlucht_einde": null,
+  "aantal_vluchten": 12,
+  "luchtvaartuigen": [{"registratie": "PH-ANK", "type": "heli"}, {"registratie": "PH-ECE", "type": "heli"}],
+  "coord_lat": 52.40535421793369,
+  "coord_lon": 6.129962135410407,
+  "datum_ondertekening": "2026-06-01",
+  "tijdstip_ondertekening": "16:29"
+}
