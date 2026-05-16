@@ -11,12 +11,16 @@ tug_state.json
 *.ods
 *.csv
 
+# ── Sessielogboek ─────────────────────────────
+sessies/
+
 # ── Documentatie (interne stukken) ───────────
 Documentatie/
 Interviews/
 obsidian/
 
 # ── Oud / archief ─────────────────────────────
+archief/
 OUD_*.py
 
 # ── Python ────────────────────────────────────
