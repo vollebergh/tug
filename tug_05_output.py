@@ -11,10 +11,12 @@ Gebruik: python tug_05_output.py tug_state.json
 
 import io as _io
 import json
+import logging
 import sys
 from datetime import datetime
 from pathlib import Path
 
+from tug_logging import LogAccumulator, setup_logging
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
@@ -52,33 +54,19 @@ class _NumberedCanvas(rl_canvas.Canvas):
 
 
 # ──────────────────────────────────────────────
-# Configuratie (spiegelt relevante constanten uit tug_03)
+# Configuratie — geïmporteerd uit tug_config (single source of truth)
 # ──────────────────────────────────────────────
 
-VERSION     = "4.5.0"
-MODEL_LABEL = ""
-
-OUTPUT_DIR = Path(__file__).parent / "output"
-
-MARGE_M              = 75
-MANEGE_SIGNAAL_MARGE = 375
-N2000_SIGNAAL_MARGE  = 500
-NNN_SIGNAAL_MARGE    = 500
-NNN_TTL_DAGEN        = 180
-LUCHTHAVEN_GRENS_M   = 1000
-LUCHTHAVEN_SIGNAAL_M = 2000
-KDV_BBOX_EXTRA       = 150
-LRK_CACHE_DAYS       = 7
-
-_PDF_MARGIN_MM           = 15
-_PDF_DPI                 = 150
-_PDF_PAGE_W_MM, _PDF_PAGE_H_MM = 210, 297
-
-_MAANDEN_NL = {
-    1: "januari", 2: "februari", 3: "maart", 4: "april",
-    5: "mei", 6: "juni", 7: "juli", 8: "augustus",
-    9: "september", 10: "oktober", 11: "november", 12: "december",
-}
+from tug_config import (
+    VERSION, MODEL_LABEL, OUTPUT_DIR,
+    MARGE_M, MANEGE_SIGNAAL_MARGE,
+    N2000_SIGNAAL_MARGE, NNN_SIGNAAL_MARGE, NNN_TTL_DAGEN,
+    LUCHTHAVEN_GRENS_M, LUCHTHAVEN_SIGNAAL_M,
+    KDV_BBOX_EXTRA, LRK_CACHE_DAYS,
+    MANEGE_ZOEKTERMEN,
+    _PDF_MARGIN_MM, _PDF_DPI, _PDF_PAGE_W_MM, _PDF_PAGE_H_MM,
+    _MAANDEN_NL,
+)
 
 
 def _datum_leesbaar(dt):
@@ -118,65 +106,83 @@ def _pdf_pagina_kop(c, y, lat, lon, straal, datum_leesbaar, pagina_titel, page_w
 # PDF — gestructureerd proceslogboek
 # ──────────────────────────────────────────────
 
-_MANEGE_ZOEKTERMEN = [
-    "manege", "rijschool", "hippisch", "paardencentrum", "rijvereniging",
-    "ponyclub", "ruiterclub", "ruitersportcentrum", "paardensportcentrum",
-    "paardensportvereniging", "paardenhouderij", "hippique",
-]
+_MANEGE_ZOEKTERMEN = MANEGE_ZOEKTERMEN  # alias voor leesbaarheid in deze module
 
 
-def _pdf_proceslog(c, state):
-    """Genereert het gestructureerde proceslogboek als PDF-pagina('s)."""
-    PAGE_W, PAGE_H = A4
-    MARGIN  = _PDF_MARGIN_MM * mm
-    MAX_W   = PAGE_W - 2 * MARGIN
-    x       = MARGIN
-    LH_B    = 11        # body regelafstand
-    LH_K    = 14        # koptitel regelafstand
-    FS_B    = 8         # body fontgrootte
-    FS_K    = 9.5       # paragraafkop fontgrootte
-    FS_SK   = 8.5       # subkop fontgrootte
-    FONT    = "Helvetica"
-    FONT_B  = "Helvetica-Bold"
+# ──────────────────────────────────────────────
+# PDF-proceslogbouwer
+# Eén klasse met één methode per paragraaf, zodat een wijziging aan paragraaf H7
+# niet de andere paragrafen raakt. Tekenprimitieven (kop/regel/schrijf/logregels)
+# zijn instance-methoden i.p.v. nested closures.
+# ──────────────────────────────────────────────
 
-    ruimtelijk   = state.get("ruimtelijk", {})
-    aanvraag     = state.get("aanvraag", {})
-    validatie    = state.get("validatie", {})
-    classif      = state.get("classificatie", {})
-    stat         = ruimtelijk.get("statistieken", {})
-    lat          = ruimtelijk.get("lat", 0)
-    lon          = ruimtelijk.get("lon", 0)
-    straal       = ruimtelijk.get("straal", 0)
-    datum_l      = ruimtelijk.get("datum_leesbaar", "")
-    rlog         = ruimtelijk.get("log_regels", [])
+class _ProcesLogBuilder:
+    """Bouwt het gestructureerde proceslogboek-PDF in 12 paragrafen."""
 
-    signaal_straal = straal + MANEGE_SIGNAAL_MARGE
+    # Layout-constanten
+    LH_B   = 11    # body regelafstand
+    LH_K   = 14    # paragraafkop regelafstand
+    FS_B   = 8     # body fontgrootte
+    FS_K   = 9.5   # paragraafkop fontgrootte
+    FS_SK  = 8.5   # subkop fontgrootte
+    FONT   = "Helvetica"
+    FONT_B = "Helvetica-Bold"
 
-    y_ref = [0.0]
+    KLEUR_KOP   = (0.10, 0.32, 0.46)
+    KLEUR_ROOD  = (0.80, 0.05, 0.05)
+    KLEUR_BODY  = (0.10, 0.10, 0.10)
+    KLEUR_SUB   = (0.25, 0.25, 0.25)
+    KLEUR_MUT   = (0.30, 0.30, 0.30)
 
-    def _kop_teken():
-        cy = PAGE_H - MARGIN
-        c.setFont(FONT_B, 11)
-        c.setFillColorRGB(0.10, 0.32, 0.46)
-        c.drawString(x, cy, "Inventarisatie kwetsbare gebouwen en functies TUG")
+    def __init__(self, c, state):
+        self.c          = c
+        self.state      = state
+        self.PAGE_W, self.PAGE_H = A4
+        self.MARGIN     = _PDF_MARGIN_MM * mm
+        self.MAX_W      = self.PAGE_W - 2 * self.MARGIN
+        self.x          = self.MARGIN
+
+        self.ruimtelijk = state.get("ruimtelijk", {})
+        self.aanvraag   = state.get("aanvraag", {})
+        self.validatie  = state.get("validatie", {})
+        self.classif    = state.get("classificatie", {})
+        self.stat       = self.ruimtelijk.get("statistieken", {})
+        self.lat        = self.ruimtelijk.get("lat", 0)
+        self.lon        = self.ruimtelijk.get("lon", 0)
+        self.straal     = self.ruimtelijk.get("straal", 0)
+        self.datum_l    = self.ruimtelijk.get("datum_leesbaar", "")
+        self.rlog       = self.ruimtelijk.get("log_regels", [])
+
+        self.signaal_straal = self.straal + MANEGE_SIGNAAL_MARGE
+        self._y             = 0.0
+
+    # ── Tekenprimitieven ──────────────────────
+
+    def _kop_teken(self):
+        cy = self.PAGE_H - self.MARGIN
+        self.c.setFont(self.FONT_B, 11)
+        self.c.setFillColorRGB(*self.KLEUR_KOP)
+        self.c.drawString(self.x, cy, "Inventarisatie kwetsbare gebouwen en functies TUG")
         cy -= 8
-        c.setStrokeColorRGB(0.72, 0.72, 0.72)
-        c.setLineWidth(0.5)
-        c.line(x, cy, PAGE_W - MARGIN, cy)
-        y_ref[0] = cy - 10
+        self.c.setStrokeColorRGB(0.72, 0.72, 0.72)
+        self.c.setLineWidth(0.5)
+        self.c.line(self.x, cy, self.PAGE_W - self.MARGIN, cy)
+        self._y = cy - 10
 
-    def check(reserve=LH_B * 4):
-        if y_ref[0] < MARGIN + reserve:
-            c.showPage()
-            _kop_teken()
+    def check(self, reserve=None):
+        if reserve is None:
+            reserve = self.LH_B * 4
+        if self._y < self.MARGIN + reserve:
+            self.c.showPage()
+            self._kop_teken()
 
-    def _wrap(tekst, font, fs, ind=0):
-        mw = MAX_W - ind
+    def _wrap(self, tekst, font, fs, ind=0):
+        mw = self.MAX_W - ind
         woorden = tekst.split()
         regels, huidig = [], ""
         for w in woorden:
             k = (huidig + " " + w).strip()
-            if c.stringWidth(k, font, fs) <= mw:
+            if self.c.stringWidth(k, font, fs) <= mw:
                 huidig = k
             else:
                 if huidig:
@@ -186,37 +192,41 @@ def _pdf_proceslog(c, state):
             regels.append(huidig)
         return regels or [""]
 
-    def schrijf(tekst, font=FONT, fs=FS_B, lh=LH_B, kleur=(0.10, 0.10, 0.10), ind=0):
-        c.setFont(font, fs)
-        c.setFillColorRGB(*kleur)
-        for r in _wrap(tekst, font, fs, ind):
-            check(lh * 3)
-            c.drawString(x + ind, y_ref[0], r)
-            y_ref[0] -= lh
+    def schrijf(self, tekst, font=None, fs=None, lh=None, kleur=None, ind=0):
+        font  = font  or self.FONT
+        fs    = fs    or self.FS_B
+        lh    = lh    or self.LH_B
+        kleur = kleur or self.KLEUR_BODY
+        self.c.setFont(font, fs)
+        self.c.setFillColorRGB(*kleur)
+        for r in self._wrap(tekst, font, fs, ind):
+            self.check(lh * 3)
+            self.c.drawString(self.x + ind, self._y, r)
+            self._y -= lh
 
-    def kop(tekst, rood=False):
-        y_ref[0] -= 5
-        check(LH_K * 5)
-        kleur = (0.80, 0.05, 0.05) if rood else (0.10, 0.32, 0.46)
-        schrijf(tekst, FONT_B, FS_K, LH_K, kleur)
-        y_ref[0] -= 2
+    def kop(self, tekst, rood=False):
+        self._y -= 5
+        self.check(self.LH_K * 5)
+        kleur = self.KLEUR_ROOD if rood else self.KLEUR_KOP
+        self.schrijf(tekst, self.FONT_B, self.FS_K, self.LH_K, kleur)
+        self._y -= 2
 
-    def subkop(tekst):
-        y_ref[0] -= 3
-        check(LH_B * 4)
-        schrijf(tekst, FONT_B, FS_SK, LH_B + 1, (0.25, 0.25, 0.25))
+    def subkop(self, tekst):
+        self._y -= 3
+        self.check(self.LH_B * 4)
+        self.schrijf(tekst, self.FONT_B, self.FS_SK, self.LH_B + 1, self.KLEUR_SUB)
 
-    def regel(tekst, rood=False, ind=0):
-        kleur = (0.80, 0.05, 0.05) if rood else (0.10, 0.10, 0.10)
-        schrijf(tekst, FONT, FS_B, LH_B, kleur, ind)
+    def regel(self, tekst, rood=False, ind=0):
+        kleur = self.KLEUR_ROOD if rood else self.KLEUR_BODY
+        self.schrijf(tekst, self.FONT, self.FS_B, self.LH_B, kleur, ind)
 
-    def lege():
-        y_ref[0] -= LH_B * 0.4
+    def lege(self):
+        self._y -= self.LH_B * 0.4
 
-    def logregels(markers, stop_markers=None, *, skip_stap_header=True):
+    def logregels(self, markers, stop_markers=None, *, skip_stap_header=True):
         """Extraheer en toon log-regels die vallen binnen een stap-marker."""
         actief = False
-        for r in rlog:
+        for r in self.rlog:
             rs = r.strip()
             if not rs:
                 continue
@@ -230,310 +240,362 @@ def _pdf_proceslog(c, state):
                 if rs.startswith("Stap") and any(m in rs for m in markers):
                     continue  # sla stap-header zelf over
                 rood = "TREFFER" in rs or "CONFLICT" in rs or "✗" in rs
-                regel(rs, rood=rood, ind=8)
+                self.regel(rs, rood=rood, ind=8)
 
-    # ── Paginakop + openingszin ───────────────────
-    _kop_teken()
-    schrijf(
-        "Proceslogboek geautomatiseerde inventarisatie van kwetsbare gebouwen en functies "
-        "ten behoeve van de beoordeling van ontheffingaanvragen TUG "
-        "(Tijdelijk en Uitzonderlijk Gebruik luchtruim, artikel 8a Wet luchtvaart). "
-        f"Gegenereerd: {datum_l}. Versie inventarisatiesoftware: v{VERSION}.",
-        kleur=(0.30, 0.30, 0.30),
-    )
+    # ── Paragrafen ───────────────────────────
 
-    # ── 1. Inputparameters ────────────────────────
-    kop("1. Inputparameters aanvraag")
-    vluchtdata = aanvraag.get("datum_vlucht", [])
-    if isinstance(vluchtdata, str):
-        vluchtdata = [vluchtdata]
-    lv_lijst = aanvraag.get("luchtvaartuigen", [])
-    lv_str = ", ".join(
-        f"{lv.get('registratie','?')} (type: {lv.get('type','?')})" for lv in lv_lijst
-    )
-    regel(f"Soort ontheffing: {aanvraag.get('soort_ontheffing', '—')}")
-    regel(f"Vluchtdatum/data: {', '.join(vluchtdata)}")
-    regel(f"Aantal vluchten: {aanvraag.get('aantal_vluchten', '—')}  |  "
-          f"UDP: {'ja' if aanvraag.get('vlucht_udp') else 'nee'}")
-    regel(f"Luchtvaartuigen: {lv_str}")
-    regel(f"Puntlocatie (WGS84): lat={lat:.6f}, lon={lon:.6f}")
-    regel(f"Ondertekend: {aanvraag.get('datum_ondertekening','—')} "
-          f"om {aanvraag.get('tijdstip_ondertekening','—')}")
-    lege()
-    val_ok = validatie.get("geslaagd", True)
-    regel(f"Volledigheidscheck: {'geslaagd' if val_ok else 'MISLUKT'}", rood=not val_ok)
-    for f in validatie.get("fouten", []):
-        regel(f"Fout: {f}", rood=True, ind=12)
-    vierw_melding = validatie.get("4_weken_melding")
-    vierw_ok      = validatie.get("4_weken_ok")
-    if vierw_melding:
-        regel(f"4-weken-regel: {vierw_melding}", rood=(vierw_ok is False))
+    def _h0_opening(self):
+        self.schrijf(
+            "Proceslogboek geautomatiseerde inventarisatie van kwetsbare gebouwen en functies "
+            "ten behoeve van de beoordeling van ontheffingaanvragen TUG "
+            "(Tijdelijk en Uitzonderlijk Gebruik luchtruim, artikel 8a Wet luchtvaart). "
+            f"Gegenereerd: {self.datum_l}. Versie inventarisatiesoftware: v{VERSION}.",
+            kleur=self.KLEUR_MUT,
+        )
 
-    # ── 2. Classificatie en toetsingsstraal ───────
-    kop("2. Classificatie luchtvaartuigen en toetsingsafstand")
-    schrijf(
-        "De toetsingsafstand volgt uit de NLR-indelingslijst CR-96650L (Suppl. 1, okt. 2022). "
-        "Per luchtvaartuig wordt via het ILT Luchtvaartregister de ICAO-code opgezocht, "
-        "waarna de bijbehorende Appendix-categorie en afstandsnorm worden bepaald. "
-        "Bij meerdere luchtvaartuigen geldt het maximum van de individuele normen. "
-        "Het register is te downloaden via: "
-        "https://www.ilent.nl/documenten/lijsten/luchtvaart/databestanden/luchtvaartregister-data"
-    )
-    lege()
-    lv_resultaten = classif.get("luchtvaartuigen", [])
-    for lv in lv_resultaten:
-        icao  = lv.get("icao_code") or "niet gevonden in register"
-        cat   = lv.get("appendix_categorie") or "—"
-        norm  = lv.get("norm_m")
-        bron  = lv.get("norm_bron", "")
-        norm_s = f"{norm} m" if norm else "PM (handmatig)"
-        bron_s = {
+    def _h1_input(self):
+        self.kop("1. Inputparameters aanvraag")
+        vluchtdata = self.aanvraag.get("datum_vlucht", [])
+        if isinstance(vluchtdata, str):
+            vluchtdata = [vluchtdata]
+        lv_lijst = self.aanvraag.get("luchtvaartuigen", [])
+        lv_str = ", ".join(
+            f"{lv.get('registratie','?')} (type: {lv.get('type','?')})" for lv in lv_lijst
+        )
+        self.regel(f"Soort ontheffing: {self.aanvraag.get('soort_ontheffing', '—')}")
+        self.regel(f"Vluchtdatum/data: {', '.join(vluchtdata)}")
+        self.regel(
+            f"Aantal vluchten: {self.aanvraag.get('aantal_vluchten', '—')}  |  "
+            f"UDP: {'ja' if self.aanvraag.get('vlucht_udp') else 'nee'}"
+        )
+        self.regel(f"Luchtvaartuigen: {lv_str}")
+        self.regel(f"Puntlocatie (WGS84): lat={self.lat:.6f}, lon={self.lon:.6f}")
+        self.regel(
+            f"Ondertekend: {self.aanvraag.get('datum_ondertekening','—')} "
+            f"om {self.aanvraag.get('tijdstip_ondertekening','—')}"
+        )
+        self.lege()
+        val_ok = self.validatie.get("geslaagd", True)
+        self.regel(
+            f"Volledigheidscheck: {'geslaagd' if val_ok else 'MISLUKT'}", rood=not val_ok
+        )
+        for f in self.validatie.get("fouten", []):
+            self.regel(f"Fout: {f}", rood=True, ind=12)
+        vierw_melding = self.validatie.get("4_weken_melding")
+        vierw_ok      = self.validatie.get("4_weken_ok")
+        if vierw_melding:
+            self.regel(f"4-weken-regel: {vierw_melding}", rood=(vierw_ok is False))
+
+    def _h2_classificatie(self):
+        self.kop("2. Classificatie luchtvaartuigen en toetsingsafstand")
+        self.schrijf(
+            "De toetsingsafstand volgt uit de NLR-indelingslijst CR-96650L (Suppl. 1, okt. 2022). "
+            "Per luchtvaartuig wordt via het ILT Luchtvaartregister de ICAO-code opgezocht, "
+            "waarna de bijbehorende Appendix-categorie en afstandsnorm worden bepaald. "
+            "Bij meerdere luchtvaartuigen geldt het maximum van de individuele normen. "
+            "Het register is te downloaden via: "
+            "https://www.ilent.nl/documenten/lijsten/luchtvaart/databestanden/luchtvaartregister-data"
+        )
+        self.lege()
+        lv_resultaten = self.classif.get("luchtvaartuigen", [])
+        bron_labels   = {
             "nlr_tabel":              "NLR-tabel",
             "pm_handmatig":           "PM-categorie, handmatig bepaald door vergunningverlener",
             "fallback_150m":          "niet in NLR-tabel, beleidsregel 150 m toegepast",
             "handmatig_niet_gevonden":"niet in ILT-register, handmatig bepaald",
-        }.get(bron, bron)
-        regel(f"{lv.get('registratie','?')}: ICAO {icao} "
-              f"→ Appendix {cat} → norm {norm_s} ({bron_s})")
-        for sig in lv.get("signalen", []):
-            regel(f"Signalering: {sig}", rood=True, ind=12)
-    lege()
-    norm_toep  = classif.get("norm_toepassing")
-    maatgevend = [lv["registratie"] for lv in lv_resultaten if lv.get("norm_m") == norm_toep]
-    regel(f"Maatgevende toetsingsstraal: {norm_toep} m "
-          f"(maatgevend: {', '.join(maatgevend)}).")
-    reg_datum = classif.get("register_datum", "")
-    if reg_datum:
-        try:
-            from datetime import datetime as _dt
-            reg_d = _dt.fromisoformat(reg_datum)
-            regel(f"ILT-register: {classif.get('register_bestand','—')}, "
-                  f"gedownload op {reg_d.strftime('%d-%m-%Y')}.")
-        except Exception:
-            pass
+        }
+        for lv in lv_resultaten:
+            icao = lv.get("icao_code") or "niet gevonden in register"
+            cat  = lv.get("appendix_categorie") or "—"
+            norm = lv.get("norm_m")
+            bron = lv.get("norm_bron", "")
+            norm_s = f"{norm} m" if norm else "PM (handmatig)"
+            bron_s = bron_labels.get(bron, bron)
+            self.regel(
+                f"{lv.get('registratie','?')}: ICAO {icao} "
+                f"→ Appendix {cat} → norm {norm_s} ({bron_s})"
+            )
+            for sig in lv.get("signalen", []):
+                self.regel(f"Signalering: {sig}", rood=True, ind=12)
+        self.lege()
+        norm_toep  = self.classif.get("norm_toepassing")
+        maatgevend = [lv["registratie"] for lv in lv_resultaten if lv.get("norm_m") == norm_toep]
+        self.regel(
+            f"Maatgevende toetsingsstraal: {norm_toep} m "
+            f"(maatgevend: {', '.join(maatgevend)})."
+        )
+        reg_datum = self.classif.get("register_datum", "")
+        if reg_datum:
+            try:
+                reg_d = datetime.fromisoformat(reg_datum)
+                self.regel(
+                    f"ILT-register: {self.classif.get('register_bestand','—')}, "
+                    f"gedownload op {reg_d.strftime('%d-%m-%Y')}."
+                )
+            except (ValueError, TypeError):
+                pass
 
-    # ── 3. GPS/RD-omzetting ───────────────────────
-    kop("3. GPS/RD-omzetting en toetsingsafstanden")
-    schrijf(
-        "De opgegeven GPS-coördinaten (WGS84, EPSG:4326) worden omgezet naar "
-        "Rijksdriehoekscoördinaten (RD New, EPSG:28992), zodat afstandsberekeningen in meters "
-        "nauwkeurig uitvoerbaar zijn. Alle cirkelbuffers worden in RD aangemaakt."
-    )
-    lege()
-    rd_r = next((r.strip() for r in rlog if "RD: x=" in r), "—")
-    regel(f"GPS-invoer (WGS84):  lat={lat:.6f}, lon={lon:.6f}")
-    regel(f"RD-uitvoer (EPSG:28992):  {rd_r}")
-    regel(f"Toetsingsafstand:  {straal:.0f} m")
-    regel(f"Margeband:  {straal + MARGE_M:.0f} m  (toetsingsafstand + {MARGE_M} m)")
-    regel(f"Aandachtsgebied maneges:  {signaal_straal:.0f} m  "
-          f"(toetsingsafstand + {MANEGE_SIGNAAL_MARGE} m)")
+    def _h3_gps_rd(self):
+        self.kop("3. GPS/RD-omzetting en toetsingsafstanden")
+        self.schrijf(
+            "De opgegeven GPS-coördinaten (WGS84, EPSG:4326) worden omgezet naar "
+            "Rijksdriehoekscoördinaten (RD New, EPSG:28992), zodat afstandsberekeningen in meters "
+            "nauwkeurig uitvoerbaar zijn. Alle cirkelbuffers worden in RD aangemaakt."
+        )
+        self.lege()
+        rd_r = next((r.strip() for r in self.rlog if "RD: x=" in r), "—")
+        self.regel(f"GPS-invoer (WGS84):  lat={self.lat:.6f}, lon={self.lon:.6f}")
+        self.regel(f"RD-uitvoer (EPSG:28992):  {rd_r}")
+        self.regel(f"Toetsingsafstand:  {self.straal:.0f} m")
+        self.regel(
+            f"Margeband:  {self.straal + MARGE_M:.0f} m  "
+            f"(toetsingsafstand + {MARGE_M} m)"
+        )
+        self.regel(
+            f"Aandachtsgebied maneges:  {self.signaal_straal:.0f} m  "
+            f"(toetsingsafstand + {MANEGE_SIGNAAL_MARGE} m)"
+        )
 
-    # ── 4. Natura 2000 ────────────────────────────
-    n2000_in   = ruimtelijk.get("n2000_in_straal", [])
-    n2000_nabij = ruimtelijk.get("n2000_in_signaal", [])
-    kop("4. Natura 2000", rood=bool(n2000_in))
-    schrijf(
-        f"De puntlocatie wordt getoetst aan Natura 2000-gebiedsgrenzen via de PDOK WFS-dienst "
-        f"(service.pdok.nl, laag inspire:PS.ProtectedSite). De geometrieën worden on-the-fly "
-        f"opgehaald binnen een bounding box van ±{N2000_SIGNAAL_MARGE} m rondom de puntlocatie. "
-        f"Er wordt onderscheid gemaakt tussen gebieden waarbinnen de puntlocatie valt (treffer) "
-        f"en gebieden die op minder dan {N2000_SIGNAAL_MARGE} m van de puntlocatie liggen (nabij)."
-    )
-    lege()
-    if n2000_in:
-        regel(f"TREFFER — puntlocatie ligt binnen {len(n2000_in)} Natura 2000-gebied(en):", rood=True)
-        for item in n2000_in:
-            regel(f"• {item['naam']}", rood=True, ind=12)
-    else:
-        regel("Puntlocatie ligt niet binnen een Natura 2000-gebied.")
-        if n2000_nabij:
-            lege()
-            regel(f"{len(n2000_nabij)} Natura 2000-gebied(en) nabij de puntlocatie "
-                  f"(< {N2000_SIGNAAL_MARGE} m):")
-            for item in n2000_nabij:
-                regel(f"• {item['naam']}  (ca. {item['afstand_m']:.0f} m)", ind=12)
+    def _h4_n2000(self):
+        n2000_in    = self.ruimtelijk.get("n2000_in_straal", [])
+        n2000_nabij = self.ruimtelijk.get("n2000_in_signaal", [])
+        self.kop("4. Natura 2000", rood=bool(n2000_in))
+        self.schrijf(
+            f"De puntlocatie wordt getoetst aan Natura 2000-gebiedsgrenzen via de PDOK WFS-dienst "
+            f"(service.pdok.nl, laag inspire:PS.ProtectedSite). De geometrieën worden on-the-fly "
+            f"opgehaald binnen een bounding box van ±{N2000_SIGNAAL_MARGE} m rondom de puntlocatie. "
+            f"Er wordt onderscheid gemaakt tussen gebieden waarbinnen de puntlocatie valt (treffer) "
+            f"en gebieden die op minder dan {N2000_SIGNAAL_MARGE} m van de puntlocatie liggen (nabij)."
+        )
+        self.lege()
+        if n2000_in:
+            self.regel(
+                f"TREFFER — puntlocatie ligt binnen {len(n2000_in)} Natura 2000-gebied(en):",
+                rood=True,
+            )
+            for item in n2000_in:
+                self.regel(f"• {item['naam']}", rood=True, ind=12)
         else:
-            regel(f"Geen Natura 2000-gebieden binnen {N2000_SIGNAAL_MARGE} m.")
+            self.regel("Puntlocatie ligt niet binnen een Natura 2000-gebied.")
+            if n2000_nabij:
+                self.lege()
+                self.regel(
+                    f"{len(n2000_nabij)} Natura 2000-gebied(en) nabij de puntlocatie "
+                    f"(< {N2000_SIGNAAL_MARGE} m):"
+                )
+                for item in n2000_nabij:
+                    self.regel(f"• {item['naam']}  (ca. {item['afstand_m']:.0f} m)", ind=12)
+            else:
+                self.regel(f"Geen Natura 2000-gebieden binnen {N2000_SIGNAAL_MARGE} m.")
 
-    # ── 5. NNN ────────────────────────────────────
-    nnn_in    = ruimtelijk.get("nnn_in_straal", [])
-    nnn_nabij = ruimtelijk.get("nnn_in_signaal", [])
-    kop("5. Natuurnetwerk Nederland (NNN)", rood=bool(nnn_in))
-    schrijf(
-        "NNN-gebiedsgrenzen worden niet on-the-fly opgehaald maar geladen uit een lokaal "
-        "GeoPackage-cachebestand, aangemaakt vanuit de ATOM-feed van de provincie "
-        "(https://service.pdok.nl/provincies/natuurnetwerk-nederland/atom/downloads/"
-        "inspire-pv-ps.nlps-nnn.gml). "
-        f"De cache heeft een geldigheidsduur van {NNN_TTL_DAGEN} dagen. "
-        "Bij elke run wordt de aanmaakdatum gecontroleerd; bij een verlopen cache wordt "
-        "het bestand opnieuw samengesteld uit de ATOM-brondata. "
-        "Alle N2000-gebieden zijn tevens NNN; als de puntlocatie binnen N2000 valt maar "
-        "de NNN-cache dit niet signaleert, wordt de NNN-treffer automatisch aangenomen."
-    )
-    lege()
-    nnn_cache = next((r.strip() for r in rlog if "GeoPackage" in r and "NNN" in r and "actueel" in r), None)
-    if nnn_cache:
-        regel(f"Cachestatus: {nnn_cache}")
-    if nnn_in:
-        regel(f"TREFFER — puntlocatie ligt binnen {len(nnn_in)} NNN-gebied(en):", rood=True)
-        for item in nnn_in:
-            regel(f"• {item['naam']}", rood=True, ind=12)
-    else:
-        regel("Puntlocatie ligt niet binnen een NNN-gebied.")
-        if nnn_nabij:
-            lege()
-            regel(f"{len(nnn_nabij)} NNN-gebied(en) overlappen de toetsingsafstand "
-                  f"(< {NNN_SIGNAAL_MARGE} m van de puntlocatie).")
+    def _h5_nnn(self):
+        nnn_in    = self.ruimtelijk.get("nnn_in_straal", [])
+        nnn_nabij = self.ruimtelijk.get("nnn_in_signaal", [])
+        self.kop("5. Natuurnetwerk Nederland (NNN)", rood=bool(nnn_in))
+        self.schrijf(
+            "NNN-gebiedsgrenzen worden niet on-the-fly opgehaald maar geladen uit een lokaal "
+            "GeoPackage-cachebestand, aangemaakt vanuit de ATOM-feed van de provincie "
+            "(https://service.pdok.nl/provincies/natuurnetwerk-nederland/atom/downloads/"
+            "inspire-pv-ps.nlps-nnn.gml). "
+            f"De cache heeft een geldigheidsduur van {NNN_TTL_DAGEN} dagen. "
+            "Bij elke run wordt de aanmaakdatum gecontroleerd; bij een verlopen cache wordt "
+            "het bestand opnieuw samengesteld uit de ATOM-brondata. "
+            "Alle N2000-gebieden zijn tevens NNN; als de puntlocatie binnen N2000 valt maar "
+            "de NNN-cache dit niet signaleert, wordt de NNN-treffer automatisch aangenomen."
+        )
+        self.lege()
+        nnn_cache = next(
+            (r.strip() for r in self.rlog if "GeoPackage" in r and "NNN" in r and "actueel" in r),
+            None,
+        )
+        if nnn_cache:
+            self.regel(f"Cachestatus: {nnn_cache}")
+        if nnn_in:
+            self.regel(
+                f"TREFFER — puntlocatie ligt binnen {len(nnn_in)} NNN-gebied(en):", rood=True
+            )
+            for item in nnn_in:
+                self.regel(f"• {item['naam']}", rood=True, ind=12)
         else:
-            regel("Geen NNN-gebieden die de toetsingsafstand overlappen.")
+            self.regel("Puntlocatie ligt niet binnen een NNN-gebied.")
+            if nnn_nabij:
+                self.lege()
+                self.regel(
+                    f"{len(nnn_nabij)} NNN-gebied(en) overlappen de toetsingsafstand "
+                    f"(< {NNN_SIGNAAL_MARGE} m van de puntlocatie)."
+                )
+            else:
+                self.regel("Geen NNN-gebieden die de toetsingsafstand overlappen.")
 
-    # ── 6. Inventarisatie verblijfsobjecten (BAG) ─
-    kop("6. Inventarisatie verblijfsobjecten (BAG WFS v2.0)")
+    def _h6_bag(self):
+        self.kop("6. Inventarisatie verblijfsobjecten (BAG WFS v2.0)")
 
-    subkop("Stap 1 — Bounding box en BAG-query")
-    schrijf(
-        f"Verblijfsobjecten worden opgehaald via de BAG WFS v2.0 (service.pdok.nl). "
-        f"De bounding box is gebaseerd op de buitenrand van de margeband "
-        f"({straal + MARGE_M:.0f} m). Er worden uitsluitend de 9 benodigde eigenschappen "
-        f"opgevraagd: identificatie (deduplicatie), gebruiksdoel (geluidsgevoeligheidsfilter), "
-        f"openbare_ruimte / huisnummer / huisletter / toevoeging / postcode / woonplaats "
-        f"(adressamenstelling) en pandidentificatie (gevel-check)."
-    )
-    logregels(["bbox", "verblijfsobjecten opgehaald"], stop_markers=["Stap 4:"])
+        self.subkop("Stap 1 — Bounding box en BAG-query")
+        self.schrijf(
+            f"Verblijfsobjecten worden opgehaald via de BAG WFS v2.0 (service.pdok.nl). "
+            f"De bounding box is gebaseerd op de buitenrand van de margeband "
+            f"({self.straal + MARGE_M:.0f} m). Er worden uitsluitend de 9 benodigde eigenschappen "
+            f"opgevraagd: identificatie (deduplicatie), gebruiksdoel (geluidsgevoeligheidsfilter), "
+            f"openbare_ruimte / huisnummer / huisletter / toevoeging / postcode / woonplaats "
+            f"(adressamenstelling) en pandidentificatie (gevel-check)."
+        )
+        self.logregels(["bbox", "verblijfsobjecten opgehaald"], stop_markers=["Stap 4:"])
 
-    subkop("Stap 2 — Filtering op punten binnen de toetsingsafstand")
-    schrijf(
-        f"De opgehaalde verblijfsobjecten worden gepuntcontroleerd: alleen objecten waarvan "
-        f"de puntgeometrie binnen of op de rand van de toetsingsafstand ({straal:.0f} m) "
-        f"valt, worden meegenomen in de verdere analyse."
-    )
-    logregels(["vallen binnen de straalcirkel", "Totaal features binnen straal"],
-              stop_markers=["Stap 4b"])
+        self.subkop("Stap 2 — Filtering op punten binnen de toetsingsafstand")
+        self.schrijf(
+            f"De opgehaalde verblijfsobjecten worden gepuntcontroleerd: alleen objecten waarvan "
+            f"de puntgeometrie binnen of op de rand van de toetsingsafstand ({self.straal:.0f} m) "
+            f"valt, worden meegenomen in de verdere analyse."
+        )
+        self.logregels(
+            ["vallen binnen de straalcirkel", "Totaal features binnen straal"],
+            stop_markers=["Stap 4b"],
+        )
 
-    subkop("Stap 3 — Deduplicatie en reverse geocode")
-    schrijf(
-        "Verblijfsobjecten met dezelfde BAG-identificatie worden samengevoegd. "
-        "Voor objecten zonder woonplaats of straatnaam wordt via de PDOK Locatieserver "
-        "een reverse geocode uitgevoerd om het adres aan te vullen."
-    )
-    logregels(["Stap 4b"], stop_markers=["Stap 4d"])
+        self.subkop("Stap 3 — Deduplicatie en reverse geocode")
+        self.schrijf(
+            "Verblijfsobjecten met dezelfde BAG-identificatie worden samengevoegd. "
+            "Voor objecten zonder woonplaats of straatnaam wordt via de PDOK Locatieserver "
+            "een reverse geocode uitgevoerd om het adres aan te vullen."
+        )
+        self.logregels(["Stap 4b"], stop_markers=["Stap 4d"])
 
-    subkop("Stap 4 — Marge-adressen (margeband)")
-    schrijf(
-        f"Verblijfsobjecten in de margeband ({straal:.0f}–{straal + MARGE_M:.0f} m) worden "
-        f"apart geïnventariseerd. Geluidsgevoelige objecten in deze band worden in de "
-        f"adressenlijst opgenomen als 'instemmingsverklaring optioneel'."
-    )
-    logregels(["Stap 4d"], stop_markers=["Stap 5"])
+        self.subkop("Stap 4 — Marge-adressen (margeband)")
+        self.schrijf(
+            f"Verblijfsobjecten in de margeband ({self.straal:.0f}–{self.straal + MARGE_M:.0f} m) worden "
+            f"apart geïnventariseerd. Geluidsgevoelige objecten in deze band worden in de "
+            f"adressenlijst opgenomen als 'instemmingsverklaring optioneel'."
+        )
+        self.logregels(["Stap 4d"], stop_markers=["Stap 5"])
 
-    subkop("Stap 5 — Filtering op geluidsgevoelige gebruiksdoelen")
-    schrijf(
-        "Alleen objecten met een geluidsgevoelig gebruiksdoel worden als wettelijk relevant "
-        "beschouwd: woonfunctie, gezondheidszorgfunctie, onderwijsfunctie, logiesfunctie."
-    )
-    logregels(["Stap 5"], stop_markers=["Stap 6"])
+        self.subkop("Stap 5 — Filtering op geluidsgevoelige gebruiksdoelen")
+        self.schrijf(
+            "Alleen objecten met een geluidsgevoelig gebruiksdoel worden als wettelijk relevant "
+            "beschouwd: woonfunctie, gezondheidszorgfunctie, onderwijsfunctie, logiesfunctie."
+        )
+        self.logregels(["Stap 5"], stop_markers=["Stap 6"])
 
-    subkop("Stap 6 — Gevel-check (pandgeometrie BAG)")
-    schrijf(
-        "Voor elk geluidsgevoelig verblijfsobject wordt de pandgeometrie opgehaald via de "
-        "BAG WFS. Een object is wettelijk relevant als de pandgeometrie de toetsingsafstand "
-        "snijdt of er volledig binnen valt — ook als de puntlocatie van het verblijfsobject "
-        "zelf buiten de toetsingsafstand valt, telt het mee als een gevel de cirkel raakt."
-    )
-    logregels(["Stap 6"], stop_markers=["Stap 7"])
+        self.subkop("Stap 6 — Gevel-check (pandgeometrie BAG)")
+        self.schrijf(
+            "Voor elk geluidsgevoelig verblijfsobject in de margeband wordt de pandgeometrie "
+            "opgehaald via de BAG WFS. Als de gevel de toetsingsafstand snijdt of er volledig "
+            "binnen valt, wordt het VBO gepromoveerd van margeband naar wettelijk relevant — "
+            "ook al ligt het BAG-adres buiten de toetsingsafstand."
+        )
+        self.logregels(["Stap 6"], stop_markers=["Stap 7"])
 
-    # ── 7. Begraafplaatsen ────────────────────────
-    kop("7. Begraafplaatsen")
-    schrijf(
-        f"Begraafplaatsen worden opgespoord via de PDOK Locatieserver (BRT-dataset) op "
-        f"zoektermen 'begraafplaats' en 'erebegraafplaats', binnen een zoekafstand van "
-        f"straal + 1.500 m. De polygoongeometrie van gevonden kandidaten wordt getoetst: "
-        f"snijdt of overlapt de polygoon de toetsingsafstand ({straal:.0f} m), "
-        f"dan is de begraafplaats wettelijk relevant."
-    )
-    logregels(["Stap 7"], stop_markers=["Stap 8"])
+    def _h7_begraafplaatsen(self):
+        self.kop("7. Begraafplaatsen")
+        self.schrijf(
+            f"Begraafplaatsen worden opgespoord via de PDOK Locatieserver (BRT-dataset) op "
+            f"zoektermen 'begraafplaats' en 'erebegraafplaats', binnen een zoekafstand van "
+            f"straal + 1.500 m. De polygoongeometrie van gevonden kandidaten wordt getoetst: "
+            f"snijdt of overlapt de polygoon de toetsingsafstand ({self.straal:.0f} m), "
+            f"dan is de begraafplaats wettelijk relevant."
+        )
+        self.logregels(["Stap 7"], stop_markers=["Stap 8"])
 
-    # ── 8. KDV ────────────────────────────────────
-    kop("8. Kinderopvanglocaties (KDV — LRK/BAG-matching)")
-    schrijf(
-        "Kinderdagverblijven (KDV) worden geïdentificeerd via koppeling van het Landelijk "
-        "Register Kinderopvang (LRK, CSV van LRK/RvIG) aan BAG-verblijfsobjecten op basis "
-        f"van BAG-identificatiecode. Het LRK-bestand wordt lokaal gecachet (TTL: {LRK_CACHE_DAYS} dagen); "
-        "bij een verlopen cache wordt het opnieuw gedownload. "
-        "De koppeling maakt gebruik van de BAG-eigenschappen identificatie en pandidentificatie."
-    )
-    logregels(["Stap 8", "LRK CSV", "KDV"], stop_markers=["Stap 9"])
+    def _h8_kdv(self):
+        self.kop("8. Kinderopvanglocaties (KDV — LRK/BAG-matching)")
+        self.schrijf(
+            "Kinderdagverblijven (KDV) worden geïdentificeerd via koppeling van het Landelijk "
+            "Register Kinderopvang (LRK, CSV van LRK/RvIG) aan BAG-verblijfsobjecten op basis "
+            f"van BAG-identificatiecode. Het LRK-bestand wordt lokaal gecachet "
+            f"(TTL: {LRK_CACHE_DAYS} dagen); bij een verlopen cache wordt het opnieuw gedownload. "
+            "De koppeling maakt gebruik van de BAG-eigenschappen identificatie en pandidentificatie."
+        )
+        self.logregels(["Stap 8", "LRK CSV", "KDV"], stop_markers=["Stap 9"])
 
-    # ── 9. Scholen ────────────────────────────────
-    kop("9. Scholen (DUO Open Onderwijsdata)")
-    schrijf(
-        "Schoollocaties worden opgehaald via DUO Open Onderwijsdata (GeoJSON). Er worden "
-        "twee groepen geraadpleegd. PO (primair onderwijs): "
-        "https://onderwijsdata.duo.nl/datastore/dump/dcc9c9a5-6d01-410b-967f-810557588ba4?format=json. "
-        "Overig (SO/VO/MBO/HO): "
-        "https://onderwijsdata.duo.nl/datastore/dump/8f0f1639-712d-4adb-bb59-cabd43730dc8?format=json (SO), "
-        "https://onderwijsdata.duo.nl/datastore/dump/5187f8d5-ff9c-4284-8e06-4311f0354956?format=json (VO), "
-        "https://onderwijsdata.duo.nl/datastore/dump/1a946297-a7ca-48d5-9ae8-19ad73bf8176?format=json (MBO), "
-        "https://onderwijsdata.duo.nl/datastore/dump/bf1da9c6-c688-4873-91b1-b12c9ac2c132?format=json (HO). "
-        "De GeoJSON-bestanden worden lokaal gecachet en gehasht (SHA-256 van de inhoud); "
-        "bij een gewijzigde hash wordt het bestand opnieuw gedownload en verwerkt."
-    )
-    scholen_in   = ruimtelijk.get("scholen_in_straal", [])
-    scholen_marge = ruimtelijk.get("scholen_in_marge", [])
-    if scholen_in or scholen_marge:
-        lege()
-        regel(f"Scholen binnen toetsingsafstand:  {len(scholen_in)}")
-        regel(f"Scholen in margeband:             {len(scholen_marge)}")
-    logregels(["Stap 9", "DUO", "scholen"], stop_markers=["Stap 10"])
+    def _h9_scholen(self):
+        self.kop("9. Scholen (DUO Open Onderwijsdata)")
+        self.schrijf(
+            "Schoollocaties worden opgehaald via DUO Open Onderwijsdata (GeoJSON). Er worden "
+            "twee groepen geraadpleegd. PO (primair onderwijs): "
+            "https://onderwijsdata.duo.nl/datastore/dump/dcc9c9a5-6d01-410b-967f-810557588ba4?format=json. "
+            "Overig (SO/VO/MBO/HO): "
+            "https://onderwijsdata.duo.nl/datastore/dump/8f0f1639-712d-4adb-bb59-cabd43730dc8?format=json (SO), "
+            "https://onderwijsdata.duo.nl/datastore/dump/5187f8d5-ff9c-4284-8e06-4311f0354956?format=json (VO), "
+            "https://onderwijsdata.duo.nl/datastore/dump/1a946297-a7ca-48d5-9ae8-19ad73bf8176?format=json (MBO), "
+            "https://onderwijsdata.duo.nl/datastore/dump/bf1da9c6-c688-4873-91b1-b12c9ac2c132?format=json (HO). "
+            "De GeoJSON-bestanden worden lokaal gecachet en gehasht (SHA-256 van de inhoud); "
+            "bij een gewijzigde hash wordt het bestand opnieuw gedownload en verwerkt."
+        )
+        scholen_in    = self.ruimtelijk.get("scholen_in_straal", [])
+        scholen_marge = self.ruimtelijk.get("scholen_in_marge", [])
+        if scholen_in or scholen_marge:
+            self.lege()
+            self.regel(f"Scholen binnen toetsingsafstand:  {len(scholen_in)}")
+            self.regel(f"Scholen in margeband:             {len(scholen_marge)}")
+        self.logregels(["Stap 9", "DUO", "scholen"], stop_markers=["Stap 10"])
 
-    # ── 10. Maneges ───────────────────────────────
-    kop("10. Maneges")
-    schrijf(
-        f"Maneges worden opgespoord via de PDOK Locatieserver (BRT) binnen een zoekafstand "
-        f"van toetsingsafstand + {MANEGE_SIGNAAL_MARGE} m = {signaal_straal:.0f} m "
-        f"(aandachtsgebied). Gevonden locaties worden getoetst op de toetsingsafstand "
-        f"({straal:.0f} m) en het aandachtsgebied ({signaal_straal:.0f} m)."
-    )
-    logregels(["Stap 10:"], stop_markers=["Stap 10b"])
+    def _h10_maneges(self):
+        self.kop("10. Maneges")
+        self.schrijf(
+            f"Maneges worden opgespoord via de PDOK Locatieserver (BRT) binnen een zoekafstand "
+            f"van toetsingsafstand + {MANEGE_SIGNAAL_MARGE} m = {self.signaal_straal:.0f} m "
+            f"(aandachtsgebied). Gevonden locaties worden getoetst op de toetsingsafstand "
+            f"({self.straal:.0f} m) en het aandachtsgebied ({self.signaal_straal:.0f} m)."
+        )
+        self.logregels(["Stap 10:"], stop_markers=["Stap 10b"])
 
-    # ── 11. Luchthavens ───────────────────────────
-    kop("11. Luchthavens")
-    schrijf(
-        f"Luchthavens worden on-the-fly opgehaald via de WFS-dienst van GeoPortaal "
-        f"Overijssel (https://services.geodataoverijssel.nl/geoserver/B64_nutsvoorzieningen/wfs, "
-        f"laag: B64_nutsvoorzieningen:B6_Luchthaven_puntlocaties). "
-        f"Luchthavens binnen {LUCHTHAVEN_GRENS_M} m van de aanvraaglocatie zijn "
-        f"NIET TOEGESTAAN. Luchthavens op {LUCHTHAVEN_GRENS_M}–{LUCHTHAVEN_SIGNAAL_M} m "
-        f"worden als signalering opgenomen."
-    )
-    logregels(["Stap 10b", "Luchthaven"], stop_markers=["Stap 11"])
+    def _h11_luchthavens(self):
+        self.kop("11. Luchthavens")
+        self.schrijf(
+            f"Luchthavens worden on-the-fly opgehaald via de WFS-dienst van GeoPortaal "
+            f"Overijssel (https://services.geodataoverijssel.nl/geoserver/B64_nutsvoorzieningen/wfs, "
+            f"laag: B64_nutsvoorzieningen:B6_Luchthaven_puntlocaties). "
+            f"Luchthavens binnen {LUCHTHAVEN_GRENS_M} m van de aanvraaglocatie zijn "
+            f"NIET TOEGESTAAN. Luchthavens op {LUCHTHAVEN_GRENS_M}–{LUCHTHAVEN_SIGNAAL_M} m "
+            f"worden als signalering opgenomen."
+        )
+        self.logregels(["Stap 10b", "Luchthaven"], stop_markers=["Stap 11"])
 
-    # ── 12. Synthese en output ────────────────────
-    kop("12. Synthese en output")
-    wettelijk_n = len(ruimtelijk.get("adressen_wettelijk", []))
-    marge_n     = len(ruimtelijk.get("adressen_marge", []))
-    aandacht_n  = len(ruimtelijk.get("adressen_aandacht", []))
-    overig_n    = len(ruimtelijk.get("adressen_overig", []))
-    timestamp_h12 = ruimtelijk.get("timestamp", "")
-    pdf_naam  = f"tug_rapport_{timestamp_h12}.pdf"  if timestamp_h12 else "tug_rapport_<timestamp>.pdf"
-    html_naam = f"tug_kaart_{timestamp_h12}.html"   if timestamp_h12 else "tug_kaart_<timestamp>.html"
-    schrijf(
-        "Op basis van de bovenstaande inventarisatie zijn de adressen gecategoriseerd "
-        "en opgenomen in de adressenlijst. De resultaten zijn verwerkt in een PDF-rapport "
-        "(adressenlijst + situatie- en omgevingskaart) en een interactieve HTML-kaart. "
-        "De tijdelijke procesdata (tug_state.json) wordt na voltooiing gewist "
-        "in het kader van dataveiligheid."
-    )
-    lege()
-    regel(f"PDF-rapport:   {pdf_naam}")
-    regel(f"HTML-kaart:    {html_naam}")
-    lege()
-    regel(f"Wettelijk relevant (instemmingsverklaring vereist):  {wettelijk_n}")
-    regel(f"Margeband (instemmingsverklaring optioneel):         {marge_n}")
-    regel(f"Aandachtslocaties (maneges, luchthavens):           {aandacht_n}")
-    regel(f"Overig (weergave op kaart):                         {overig_n}")
+    def _h12_synthese(self):
+        self.kop("12. Synthese en output")
+        wettelijk_n = len(self.ruimtelijk.get("adressen_wettelijk", []))
+        marge_n     = len(self.ruimtelijk.get("adressen_marge", []))
+        aandacht_n  = len(self.ruimtelijk.get("adressen_aandacht", []))
+        overig_n    = len(self.ruimtelijk.get("adressen_overig", []))
+        timestamp   = self.ruimtelijk.get("timestamp", "")
+        pdf_naam    = f"tug_rapport_{timestamp}.pdf" if timestamp else "tug_rapport_<timestamp>.pdf"
+        html_naam   = f"tug_kaart_{timestamp}.html"  if timestamp else "tug_kaart_<timestamp>.html"
+        self.schrijf(
+            "Op basis van de bovenstaande inventarisatie zijn de adressen gecategoriseerd "
+            "en opgenomen in de adressenlijst. De resultaten zijn verwerkt in een PDF-rapport "
+            "(adressenlijst + situatie- en omgevingskaart) en een interactieve HTML-kaart. "
+            "De tijdelijke procesdata (tug_state.json) wordt na voltooiing gewist "
+            "in het kader van dataveiligheid."
+        )
+        self.lege()
+        self.regel(f"PDF-rapport:   {pdf_naam}")
+        self.regel(f"HTML-kaart:    {html_naam}")
+        self.lege()
+        self.regel(f"Wettelijk relevant (instemmingsverklaring vereist):  {wettelijk_n}")
+        self.regel(f"Margeband (instemmingsverklaring optioneel):         {marge_n}")
+        self.regel(f"Aandachtslocaties (maneges, luchthavens):           {aandacht_n}")
+        self.regel(f"Overig (weergave op kaart):                         {overig_n}")
 
-    c.showPage()
+    def render(self):
+        self._kop_teken()
+        self._h0_opening()
+        self._h1_input()
+        self._h2_classificatie()
+        self._h3_gps_rd()
+        self._h4_n2000()
+        self._h5_nnn()
+        self._h6_bag()
+        self._h7_begraafplaatsen()
+        self._h8_kdv()
+        self._h9_scholen()
+        self._h10_maneges()
+        self._h11_luchthavens()
+        self._h12_synthese()
+        self.c.showPage()
+
+
+def _pdf_proceslog(c, state):
+    """Genereert het gestructureerde proceslogboek als PDF-pagina('s)."""
+    _ProcesLogBuilder(c, state).render()
 
 
 # ──────────────────────────────────────────────
@@ -975,20 +1037,22 @@ legend.addTo(map);
 # Hoofdfunctie
 # ──────────────────────────────────────────────
 
-def run(state_pad):
+def run(state_pad: str | Path) -> None:
     state_pad = Path(state_pad)
     state     = json.loads(state_pad.read_text(encoding="utf-8"))
 
+    setup_logging()
+    _root_logger = logging.getLogger("tug.05_output")
+
     if "ruimtelijk" not in state:
-        print("FOUT: state bevat geen 'ruimtelijk'-sectie. Voer eerst tug_03_ruimtelijk.py uit.")
+        _root_logger.error(
+            "FOUT: state bevat geen 'ruimtelijk'-sectie. "
+            "Voer eerst tug_03_ruimtelijk.py uit."
+        )
         sys.exit(1)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    log_regels = []
-
-    def log(tekst):
-        print(tekst)
-        log_regels.append(tekst)
+    log = LogAccumulator("tug.05_output")
 
     log("Stap 6: Output genereren ...")
     genereer_pdf(state, log)
@@ -1021,6 +1085,9 @@ def run(state_pad):
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Gebruik: python tug_05_output.py tug_state.json")
+        setup_logging()
+        logging.getLogger("tug.05_output").error(
+            "Gebruik: python tug_05_output.py tug_state.json"
+        )
         sys.exit(1)
     run(sys.argv[1])

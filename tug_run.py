@@ -10,14 +10,22 @@ Optioneel: sla een bestaand state-bestand over en herstart vanaf een stap:
 """
 
 import json
+import logging
 import os
 import sys
 import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from tug_logging import setup_logging
+
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+# Initialiseer logging één keer voor de hele pipeline (subprocessen erven niet,
+# maar elk subprocess kan eigen setup aanroepen via tug_logging.setup_logging).
+setup_logging()
+_logger = logging.getLogger("tug.run")
 
 SCRIPT_DIR = Path(__file__).parent
 STATE_PAD  = SCRIPT_DIR / "tug_state.json"
@@ -31,8 +39,8 @@ STAPPEN = [
 ]
 
 
-def _log(tekst):
-    print(f"[tug_run] {tekst}")
+def _log(tekst: str) -> None:
+    _logger.info(f"[tug_run] {tekst}")
 
 
 def _initialiseer_state(aanvraag_pad):
@@ -87,9 +95,9 @@ if __name__ == "__main__":
     invoer, vanaf = _parse_args()
 
     if not invoer:
-        print("Gebruik: python tug_run.py aanvraag.json [--vanaf STAPNUMMER]")
-        print("  aanvraag.json   Pad naar het aanvraagformulier (JSON)")
-        print("  --vanaf 05      Herstart vanaf stap 05 (state-bestand moet al bestaan)")
+        _logger.error("Gebruik: python tug_run.py aanvraag.json [--vanaf STAPNUMMER]")
+        _logger.error("  aanvraag.json   Pad naar het aanvraagformulier (JSON)")
+        _logger.error("  --vanaf 05      Herstart vanaf stap 05 (state-bestand moet al bestaan)")
         sys.exit(1)
 
     invoer_pad = Path(invoer)
@@ -97,7 +105,7 @@ if __name__ == "__main__":
     if vanaf:
         # Herstart: state bestaat al, alleen stappen ≥ vanaf uitvoeren
         if not STATE_PAD.exists():
-            print(f"FOUT: --vanaf vereist een bestaand state-bestand ({STATE_PAD}).")
+            _logger.error(f"FOUT: --vanaf vereist een bestaand state-bestand ({STATE_PAD}).")
             sys.exit(1)
         _log(f"Herstart vanaf stap '{vanaf}' — bestaande state wordt hergebruikt.")
         te_draaien = [(s, b) for s, b in STAPPEN if Path(s).stem.split("_")[1] >= vanaf]

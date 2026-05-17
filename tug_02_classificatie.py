@@ -16,14 +16,17 @@ Vereist: pip install odfpy
 import hashlib
 import io
 import json
+import logging
 import re
 import sys
 import zipfile
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
 import requests
+
+from tug_logging import LogAccumulator, setup_logging
 
 # ──────────────────────────────────────────────
 # Configuratie
@@ -163,8 +166,12 @@ def _lees_meta():
     if REGISTER_META_PAD.exists():
         try:
             return json.loads(REGISTER_META_PAD.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except (json.JSONDecodeError, OSError) as e:
+            logging.getLogger("tug.02_classificatie").warning(
+                f"  WAARSCHUWING: meta-bestand {REGISTER_META_PAD.name} onleesbaar "
+                f"({e.__class__.__name__}: {e}) — wordt genegeerd; "
+                f"register wordt opnieuw gedownload."
+            )
     return {}
 
 
@@ -207,7 +214,6 @@ def _zoek_register_url(log):
         log(f"  WAARSCHUWING: ILT-pagina niet bereikbaar ({e}), datumfallback proberen ...")
 
     # Datumfallback: zoek bestand gepubliceerd in de afgelopen 14 dagen
-    from datetime import timedelta
     for dagen_terug in range(0, 15):
         datum = (datetime.now() - timedelta(days=dagen_terug)).strftime("%Y-%m-%d")
         url   = ILT_URL_BASIS.format(datum=datum)
@@ -468,22 +474,21 @@ def _classificeer_luchtvaartuig(lv, df, log):
 # Hoofdfunctie
 # ──────────────────────────────────────────────
 
-def run(state_pad):
+def run(state_pad: str | Path) -> None:
     state_pad = Path(state_pad)
     state     = json.loads(state_pad.read_text(encoding="utf-8"))
     aanvraag  = state["aanvraag"]
 
+    setup_logging()
+    _root_logger = logging.getLogger("tug.02_classificatie")
+
     luchtvaartuigen = aanvraag.get("luchtvaartuigen", [])
     if not luchtvaartuigen:
-        print("FOUT: aanvraag bevat geen luchtvaartuigen.")
+        _root_logger.error("FOUT: aanvraag bevat geen luchtvaartuigen.")
         sys.exit(1)
 
     now = datetime.now()
-    log_regels = []
-
-    def log(tekst):
-        print(tekst)
-        log_regels.append(tekst)
+    log = LogAccumulator("tug.02_classificatie")
 
     log(f"{'=' * 60}")
     log("TUG-ontheffingen — Stap 3: Classificatie luchtvaartuigen")
@@ -523,6 +528,7 @@ def run(state_pad):
     normen = [r["norm_m"] for r in resultaten if r["norm_m"] is not None]
     if not normen:
         log("\nFOUT: Geen geldige afstandsnorm bepaald voor enig luchtvaartuig.")
+        state_pad.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         sys.exit(1)
 
     norm_toepassing = max(normen)
@@ -547,7 +553,7 @@ def run(state_pad):
         "norm_toepassing":   norm_toepassing,
         "register_bestand":  REGISTER_ODS_PAD.name,
         "register_datum":    meta.get("download_datum", ""),
-        "log_regels":        log_regels,
+        "log_regels":        log.lines,
     }
 
     state.setdefault("logboek", []).append({
@@ -562,7 +568,7 @@ def run(state_pad):
     })
 
     state_pad.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"\nState geschreven naar {state_pad}")
+    logging.getLogger("tug.02_classificatie").info(f"State geschreven naar {state_pad}")
 
 
 # ──────────────────────────────────────────────
@@ -571,6 +577,9 @@ def run(state_pad):
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Gebruik: python tug_02_classificatie.py tug_state.json")
+        setup_logging()
+        logging.getLogger("tug.02_classificatie").error(
+            "Gebruik: python tug_02_classificatie.py tug_state.json"
+        )
         sys.exit(1)
     run(sys.argv[1])

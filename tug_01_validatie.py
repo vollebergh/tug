@@ -13,9 +13,12 @@ Uitvoer: tug_state.json  (sectie validatie gevuld; aanvraag.datum_vlucht genorma
 """
 
 import json
+import logging
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
+
+from tug_logging import LogAccumulator, setup_logging
 
 VERSION = "1.0.0"
 
@@ -56,7 +59,10 @@ def _normaliseer_datum_vlucht(aanvraag):
     if isinstance(waarde, str):
         waarde = [waarde]
     elif not isinstance(waarde, list):
-        return None, f"'datum_vlucht' moet een datum-string of een lijst van datums zijn, niet {type(waarde).__name__!r}"
+        return None, (
+            f"'datum_vlucht' moet een datum-string of een lijst van datums zijn, "
+            f"niet {type(waarde).__name__!r}"
+        )
 
     if not waarde:
         return None, "'datum_vlucht' mag geen lege lijst zijn"
@@ -98,7 +104,7 @@ def _controleer_4_weken(datum_ondertekening: date, vluchtdata: list[date]):
 # Hoofdfunctie
 # ──────────────────────────────────────────────
 
-def run(state_pad):
+def run(state_pad: str | Path) -> None:
     state_pad = Path(state_pad)
     state     = json.loads(state_pad.read_text(encoding="utf-8"))
     aanvraag  = state["aanvraag"]
@@ -106,11 +112,8 @@ def run(state_pad):
     fouten    = []  # stoppen de pipeline
     waarschuw = []  # pipeline gaat door, maar worden gelogd
 
-    log_regels = []
-
-    def log(tekst):
-        print(tekst)
-        log_regels.append(tekst)
+    setup_logging()
+    log = LogAccumulator("tug.01_validatie")
 
     log(f"{'=' * 60}")
     log("TUG-ontheffingen — Stap 2: Validatie aanvraag")
@@ -212,7 +215,7 @@ def run(state_pad):
         "waarschuwingen":   waarschuw,
         "4_weken_ok":       vierw_ok,
         "4_weken_melding":  vierw_melding,
-        "log_regels":       log_regels,
+        "log_regels":       log.lines,
     }
 
     state.setdefault("logboek", []).append({
@@ -228,10 +231,12 @@ def run(state_pad):
     state_pad.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if not geslaagd:
-        print(f"\nPipeline gestopt: aanvraag voldoet niet aan de vereisten.")
+        logging.getLogger("tug.01_validatie").error(
+            "Pipeline gestopt: aanvraag voldoet niet aan de vereisten."
+        )
         sys.exit(1)
 
-    print(f"\nState geschreven naar {state_pad}")
+    logging.getLogger("tug.01_validatie").info(f"State geschreven naar {state_pad}")
 
 
 # ──────────────────────────────────────────────
@@ -240,6 +245,9 @@ def run(state_pad):
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Gebruik: python tug_01_validatie.py tug_state.json")
+        setup_logging()
+        logging.getLogger("tug.01_validatie").error(
+            "Gebruik: python tug_01_validatie.py tug_state.json"
+        )
         sys.exit(1)
     run(sys.argv[1])

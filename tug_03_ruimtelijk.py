@@ -14,10 +14,12 @@ Module-afhankelijkheden:
 """
 
 import json
+import logging
 import sys
 from datetime import datetime
 from pathlib import Path
 
+from tug_logging import LogAccumulator, setup_logging
 from tug_03_bronnen import (
     VERSION, MODEL_LABEL, OUTPUT_DIR, GEO_DIR,
     MARGE_M, MANEGE_SIGNAAL_MARGE, KDV_BBOX_EXTRA, LUCHTHAVEN_SIGNAAL_M,
@@ -37,34 +39,31 @@ from tug_03_kaart import _render_kaart, _bereken_zoom
 
 
 # ──────────────────────────────────────────────
-# Adresrijen samenvoegen (voor state + PDF)
+# Gedeelde classificatie-context
 # ──────────────────────────────────────────────
 
-def _bouw_adresrijen(
-    alle_vbo, geluidgevoelig_vbo,
-    begraafplaatsen_in_straal, begraafplaatsen_buiten_straal,
-    maneges_in_straal, maneges_buiten_straal,
-    marge_vbo=None, marge_vbo_overig=None,
-    kdv_in_straal=None, kdv_in_marge=None,
-    scholen_in_straal=None, scholen_in_marge=None,
-    luchthavens_in_straal=None, luchthavens_in_signaal=None,
-    **_kw,
-):
-    """Bouw de vier adreslijsten als rij-dicts {adres, pc_wpl, gebruiksdoel, extra}.
-    Retourneert (wettelijk, marge, aandacht, overig).
-    Functies van hetzelfde VBO (BAG + KDV/DUO) worden samengevoegd in gebruiksdoel.
-    """
-    geluidgevoelig_ids = {id(f) for f in geluidgevoelig_vbo}
-    _kdv_label = "kinderdagverblijf met bedverblijf (KDV)"
+_KDV_LABEL = "kinderdagverblijf met bedverblijf (KDV)"
 
-    # Extra-labelkaarten: ident → label voor overlappende KDV/school datasets
+
+def _bouw_classificatie_context(
+    alle_vbo: list, geluidgevoelig_vbo: list,
+    begraafplaatsen_in_straal: list,
+    marge_vbo: list | None = None, marge_vbo_overig: list | None = None,
+    kdv_in_straal: list | None = None, kdv_in_marge: list | None = None,
+    scholen_in_straal: list | None = None, scholen_in_marge: list | None = None,
+    **_kw,
+) -> dict:
+    """Bouwt de gedeelde lookup-context die zowel `_bouw_adresrijen` als
+    `_bouw_html_markers` nodig hebben. Voorkomt dat de twee functies dezelfde
+    afgeleide dicts/sets parallel opbouwen (DRY).
+    """
     kdv_extra_straal = {
-        str(f.get("properties", {}).get("identificatie", "")).strip(): _kdv_label
+        str(f.get("properties", {}).get("identificatie", "")).strip(): _KDV_LABEL
         for f in (kdv_in_straal or [])
         if str(f.get("properties", {}).get("identificatie", "")).strip()
     }
     kdv_extra_marge = {
-        str(f.get("properties", {}).get("identificatie", "")).strip(): _kdv_label
+        str(f.get("properties", {}).get("identificatie", "")).strip(): _KDV_LABEL
         for f in (kdv_in_marge or [])
         if str(f.get("properties", {}).get("identificatie", "")).strip()
     }
@@ -80,10 +79,8 @@ def _bouw_adresrijen(
         for f in (scholen_in_marge or [])
         if str(f.get("properties", {}).get("vbo_id", "")).strip()
     }
-    merged_kdv_straal    = set()
-    merged_school_straal = set()
-    merged_kdv_marge     = set()
-    merged_school_marge  = set()
+
+    geluidgevoelig_ids = {id(f) for f in geluidgevoelig_vbo}
 
     # BAG VBOs die fysiek binnen een begraafplaatspolygoon vallen overslaan
     # (de begraafplaats-rij dekt dat adres al).
@@ -100,6 +97,58 @@ def _bouw_adresrijen(
                     begr_exclude_ids.add(id(feat))
             except Exception:
                 pass
+
+    return {
+        "kdv_label":           _KDV_LABEL,
+        "kdv_extra_straal":    kdv_extra_straal,
+        "kdv_extra_marge":     kdv_extra_marge,
+        "school_extra_straal": school_extra_straal,
+        "school_extra_marge":  school_extra_marge,
+        "geluidgevoelig_ids":  geluidgevoelig_ids,
+        "begr_exclude_ids":    begr_exclude_ids,
+    }
+
+
+# ──────────────────────────────────────────────
+# Adresrijen samenvoegen (voor state + PDF)
+# ──────────────────────────────────────────────
+
+def _bouw_adresrijen(
+    alle_vbo, geluidgevoelig_vbo,
+    begraafplaatsen_in_straal, begraafplaatsen_buiten_straal,
+    maneges_in_straal, maneges_buiten_straal,
+    marge_vbo=None, marge_vbo_overig=None,
+    kdv_in_straal=None, kdv_in_marge=None,
+    scholen_in_straal=None, scholen_in_marge=None,
+    luchthavens_in_straal=None, luchthavens_in_signaal=None,
+    context=None,
+    **_kw,
+):
+    """Bouw de vier adreslijsten als rij-dicts {adres, pc_wpl, gebruiksdoel, extra}.
+    Retourneert (wettelijk, marge, aandacht, overig).
+    Functies van hetzelfde VBO (BAG + KDV/DUO) worden samengevoegd in gebruiksdoel.
+    """
+    if context is None:
+        context = _bouw_classificatie_context(
+            alle_vbo=alle_vbo, geluidgevoelig_vbo=geluidgevoelig_vbo,
+            begraafplaatsen_in_straal=begraafplaatsen_in_straal,
+            marge_vbo=marge_vbo, marge_vbo_overig=marge_vbo_overig,
+            kdv_in_straal=kdv_in_straal, kdv_in_marge=kdv_in_marge,
+            scholen_in_straal=scholen_in_straal, scholen_in_marge=scholen_in_marge,
+        )
+
+    _kdv_label          = context["kdv_label"]
+    kdv_extra_straal    = context["kdv_extra_straal"]
+    kdv_extra_marge     = context["kdv_extra_marge"]
+    school_extra_straal = context["school_extra_straal"]
+    school_extra_marge  = context["school_extra_marge"]
+    geluidgevoelig_ids  = context["geluidgevoelig_ids"]
+    begr_exclude_ids    = context["begr_exclude_ids"]
+
+    merged_kdv_straal    = set()
+    merged_school_straal = set()
+    merged_kdv_marge     = set()
+    merged_school_marge  = set()
 
     wettelijk = []
     aandacht  = []
@@ -138,13 +187,27 @@ def _bouw_adresrijen(
                           "gebruiksdoel": f"manege – {item['naam']}",
                           "extra": f"Toetsingsafstand + {MANEGE_SIGNAAL_MARGE} meter"})
     for item in (luchthavens_in_straal or []):
-        aandacht.append({"adres": item["adres"] or "—", "pc_wpl": "",
-                          "gebruiksdoel": f"luchthaven – {item['naam']} ({item['omschrijving']})" if item.get("omschrijving") else f"luchthaven – {item['naam']}",
-                          "extra": f"Aanvraaglocatie + {LUCHTHAVEN_SIGNAAL_M:,} meter".replace(",", ".")})
+        gebruiksdoel = (
+            f"luchthaven – {item['naam']} ({item['omschrijving']})"
+            if item.get("omschrijving") else f"luchthaven – {item['naam']}"
+        )
+        aandacht.append({
+            "adres":        item["adres"] or "—",
+            "pc_wpl":       "",
+            "gebruiksdoel": gebruiksdoel,
+            "extra":        f"Aanvraaglocatie + {LUCHTHAVEN_SIGNAAL_M:,} meter".replace(",", "."),
+        })
     for item in (luchthavens_in_signaal or []):
-        aandacht.append({"adres": item["adres"] or "—", "pc_wpl": "",
-                          "gebruiksdoel": f"luchthaven – {item['naam']} ({item['omschrijving']})" if item.get("omschrijving") else f"luchthaven – {item['naam']}",
-                          "extra": f"Aanvraaglocatie + {LUCHTHAVEN_SIGNAAL_M:,} meter".replace(",", ".")})
+        gebruiksdoel = (
+            f"luchthaven – {item['naam']} ({item['omschrijving']})"
+            if item.get("omschrijving") else f"luchthaven – {item['naam']}"
+        )
+        aandacht.append({
+            "adres":        item["adres"] or "—",
+            "pc_wpl":       "",
+            "gebruiksdoel": gebruiksdoel,
+            "extra":        f"Aanvraaglocatie + {LUCHTHAVEN_SIGNAAL_M:,} meter".replace(",", "."),
+        })
     for item in begraafplaatsen_buiten_straal:
         overig.append({"adres": item["adres"] or "—", "pc_wpl": item.get("pc_wpl", ""),
                         "gebruiksdoel": f"begraafplaats – {item['naam']}", "extra": f"{item['afstand_m']} m"})
@@ -249,55 +312,34 @@ def _bouw_html_markers(
     n2000_in_straal=None, n2000_in_signaal=None,
     nnn_in_straal=None, nnn_in_signaal=None,
     luchthavens_in_straal=None, luchthavens_in_signaal=None,
+    context=None,
     **_kw,
 ):
     """Bouw markers- en polygonen-lijsten voor de interactieve HTML-kaartexport."""
+    if context is None:
+        context = _bouw_classificatie_context(
+            alle_vbo=alle_vbo, geluidgevoelig_vbo=geluidgevoelig_vbo,
+            begraafplaatsen_in_straal=begraafplaatsen_in_straal,
+            marge_vbo=marge_vbo, marge_vbo_overig=marge_vbo_overig,
+            kdv_in_straal=kdv_in_straal, kdv_in_marge=kdv_in_marge,
+            scholen_in_straal=scholen_in_straal, scholen_in_marge=scholen_in_marge,
+        )
+
     markers   = []
     polygonen = []
 
-    geluidgevoelig_ids = {id(f) for f in geluidgevoelig_vbo}
-    _kdv_label = "kinderdagverblijf met bedverblijf (KDV)"
+    _kdv_label          = context["kdv_label"]
+    kdv_extra_straal    = context["kdv_extra_straal"]
+    kdv_extra_marge     = context["kdv_extra_marge"]
+    school_extra_straal = context["school_extra_straal"]
+    school_extra_marge  = context["school_extra_marge"]
+    geluidgevoelig_ids  = context["geluidgevoelig_ids"]
+    begr_exclude_ids    = context["begr_exclude_ids"]
 
-    kdv_extra_straal = {
-        str(f.get("properties", {}).get("identificatie", "")).strip(): _kdv_label
-        for f in (kdv_in_straal or [])
-        if str(f.get("properties", {}).get("identificatie", "")).strip()
-    }
-    kdv_extra_marge = {
-        str(f.get("properties", {}).get("identificatie", "")).strip(): _kdv_label
-        for f in (kdv_in_marge or [])
-        if str(f.get("properties", {}).get("identificatie", "")).strip()
-    }
-    school_extra_straal = {
-        str(f.get("properties", {}).get("vbo_id", "")).strip():
-            f"school – {f.get('properties', {}).get('onderwijstype', '')} (DUO)"
-        for f in (scholen_in_straal or [])
-        if str(f.get("properties", {}).get("vbo_id", "")).strip()
-    }
-    school_extra_marge = {
-        str(f.get("properties", {}).get("vbo_id", "")).strip():
-            f"school – {f.get('properties', {}).get('onderwijstype', '')} (DUO)"
-        for f in (scholen_in_marge or [])
-        if str(f.get("properties", {}).get("vbo_id", "")).strip()
-    }
     merged_kdv_straal    = set()
     merged_school_straal = set()
     merged_kdv_marge     = set()
     merged_school_marge  = set()
-
-    begr_geom_rd = [it["_geom_rd"] for it in begraafplaatsen_in_straal if "_geom_rd" in it]
-    begr_exclude_ids = set()
-    if begr_geom_rd:
-        for feat in list(alle_vbo) + list(marge_vbo or []) + list(marge_vbo_overig or []):
-            geom = feat.get("geometry")
-            if not geom:
-                continue
-            try:
-                pt_rd = transform_geom_to_rd(shapely_from_geojson_geom(geom))
-                if any(g.contains(pt_rd) for g in begr_geom_rd):
-                    begr_exclude_ids.add(id(feat))
-            except Exception:
-                pass
 
     def _vbo_marker(feat, categorie, gebruiksdoel_override=None, extra=""):
         props = feat.get("properties", {})
@@ -515,7 +557,7 @@ def _bouw_html_markers(
 # Hoofdfunctie — leest en schrijft tug_state.json
 # ──────────────────────────────────────────────
 
-def run(state_pad):
+def run(state_pad: str | Path) -> None:
     state_pad = Path(state_pad)
     state     = json.loads(state_pad.read_text(encoding="utf-8"))
     aanvraag  = state["aanvraag"]
@@ -523,10 +565,16 @@ def run(state_pad):
     lat = aanvraag["coord_lat"]
     lon = aanvraag["coord_lon"]
 
+    setup_logging()
+    _root_logger = logging.getLogger("tug.03_ruimtelijk")
+
     classificatie = state.get("classificatie", {})
     straal = classificatie.get("norm_toepassing") or aanvraag.get("straal_override")
     if straal is None:
-        print("FOUT: straal niet beschikbaar (classificatie.norm_toepassing ontbreekt en geen straal_override in aanvraag).")
+        _root_logger.error(
+            "FOUT: straal niet beschikbaar "
+            "(classificatie.norm_toepassing ontbreekt en geen straal_override in aanvraag)."
+        )
         sys.exit(1)
     straal = float(straal)
 
@@ -540,11 +588,7 @@ def run(state_pad):
     timestamp = now.strftime("%Y%m%d_%H%M%S")
     datum     = _datum_leesbaar(now)
 
-    log_regels = []
-
-    def log(tekst):
-        print(tekst)
-        log_regels.append(tekst)
+    log = LogAccumulator("tug.03_ruimtelijk")
 
     log(f"{'=' * 60}")
     log(f"TUG-ontheffingen — Stap 4: Ruimtelijke analyse")
@@ -591,8 +635,24 @@ def run(state_pad):
     log("\nStap 5: Filteren op geluidgevoelige gebruiksdoelen ...")
     geluidgevoelig = filter_geluidgevoelig(alle_vbo, log)
 
-    log("\nStap 6: Gevel-check ...")
-    geluidgevoelig = gevel_check(geluidgevoelig, circle_rd, log)
+    log("\nStap 6: Gevel-check op margeband (gevel snijdt toetsingsafstand → wettelijk) ...")
+    # Pas gevel_check toe op geluidgevoelige margeband-VBOs: hun BAG-punt ligt
+    # buiten de toetsingsafstand, maar hun gevel kan er nog wel in snijden.
+    # Promoveer die VBOs van marge naar wettelijk relevant.
+    if marge_vbo:
+        marge_vbo_gevel = gevel_check(marge_vbo, circle_rd, log)
+        gevel_promoties = [f for f in marge_vbo_gevel if f.get("_gevel_snijdt")]
+        marge_vbo       = [f for f in marge_vbo_gevel if not f.get("_gevel_snijdt")]
+        if gevel_promoties:
+            geluidgevoelig.extend(gevel_promoties)
+            log(
+                f"  {len(gevel_promoties)} margeband-VBO(s) gepromoveerd naar wettelijk relevant "
+                f"(gevel binnen toetsingsafstand)."
+            )
+        else:
+            log("  Geen margeband-VBO heeft een gevel die de toetsingsafstand snijdt.")
+    else:
+        log("  Geen geluidgevoelige VBOs in margeband — gevel-check overgeslagen.")
 
     log("\nStap 7: Begraafplaatsen — PDOK Location API (BRT) ...")
     bgt_result = signaleer_begraafplaatsen(circle_rd, straal, log)
@@ -652,8 +712,14 @@ def run(state_pad):
         nnn_in_straal=nnn_in_straal, nnn_in_signaal=nnn_in_signaal,
         luchthavens_in_straal=luchthavens_in_straal, luchthavens_in_signaal=luchthavens_in_signaal,
     )
-    wettelijk, marge_rijen, aandacht, overig = _bouw_adresrijen(**_args_kaart)
-    html_markers, html_polygonen = _bouw_html_markers(**_args_kaart)
+    # Bouw de classificatie-context één keer en deel deze met beide presentatiefuncties
+    classificatie_context = _bouw_classificatie_context(**_args_kaart)
+    wettelijk, marge_rijen, aandacht, overig = _bouw_adresrijen(
+        context=classificatie_context, **_args_kaart
+    )
+    html_markers, html_polygonen = _bouw_html_markers(
+        context=classificatie_context, **_args_kaart
+    )
 
     log("\nStap 14: Kaarten renderen en opslaan ...")
     signaal_straal = straal + MANEGE_SIGNAAL_MARGE
@@ -678,11 +744,17 @@ def run(state_pad):
     )
 
     zoom1 = _bereken_zoom(lat, straal, _ZOOM_FILL_FRAC, map_h_px)
-    log(f"  Kaart 1: zoom {zoom1} (straal {straal:.0f} m, locatie {_LOC_CX_FRAC*100:.0f}%/{_LOC_CY_FRAC*100:.0f}% van canvas)")
+    log(
+        f"  Kaart 1: zoom {zoom1} (straal {straal:.0f} m, "
+        f"locatie {_LOC_CX_FRAC*100:.0f}%/{_LOC_CY_FRAC*100:.0f}% van canvas)"
+    )
     img1 = _render_kaart(lon, lat, zoom1, map_w_px, map_h_px, straal, signaal_straal, **render_kwargs)
 
     zoom2 = _bereken_zoom(lat, signaal_straal, _ZOOM_FILL_FRAC, map_h_px)
-    log(f"  Kaart 2: zoom {zoom2} (aandachtsgebied {signaal_straal:.0f} m, locatie {_LOC_CX_FRAC*100:.0f}%/{_LOC_CY_FRAC*100:.0f}% van canvas)")
+    log(
+        f"  Kaart 2: zoom {zoom2} (aandachtsgebied {signaal_straal:.0f} m, "
+        f"locatie {_LOC_CX_FRAC*100:.0f}%/{_LOC_CY_FRAC*100:.0f}% van canvas)"
+    )
     img2 = _render_kaart(lon, lat, zoom2, map_w_px, map_h_px, straal, signaal_straal, **render_kwargs)
 
     kaart1_pad = OUTPUT_DIR / f"tug_kaart_situatie_{timestamp}.png"
@@ -713,7 +785,10 @@ def run(state_pad):
 
     log(f"\n{'=' * 60}")
     log("Stap 4 voltooid.")
-    log(f"  Wettelijk relevant: {len(wettelijk)} | Marge: {len(marge_rijen)} | Aandacht: {len(aandacht)} | Overig: {len(overig)}")
+    log(
+        f"  Wettelijk relevant: {len(wettelijk)} | Marge: {len(marge_rijen)} | "
+        f"Aandacht: {len(aandacht)} | Overig: {len(overig)}"
+    )
     log(f"{'=' * 60}")
 
     state["ruimtelijk"] = {
@@ -734,10 +809,16 @@ def run(state_pad):
         "n2000_in_signaal":   [{"naam": i["naam"], "afstand_m": i["afstand_m"]} for i in n2000_in_signaal],
         "nnn_in_straal":      [{"naam": i["naam"], "afstand_m": i["afstand_m"]} for i in nnn_in_straal],
         "nnn_in_signaal":     [{"naam": i["naam"], "afstand_m": i["afstand_m"]} for i in nnn_in_signaal],
-        "luchthavens_in_straal":  [{"naam": i["naam"], "afstand_m": i["afstand_m"], "omschrijving": i["omschrijving"]} for i in luchthavens_in_straal],
-        "luchthavens_in_signaal": [{"naam": i["naam"], "afstand_m": i["afstand_m"], "omschrijving": i["omschrijving"]} for i in luchthavens_in_signaal],
+        "luchthavens_in_straal":  [
+            {"naam": i["naam"], "afstand_m": i["afstand_m"], "omschrijving": i["omschrijving"]}
+            for i in luchthavens_in_straal
+        ],
+        "luchthavens_in_signaal": [
+            {"naam": i["naam"], "afstand_m": i["afstand_m"], "omschrijving": i["omschrijving"]}
+            for i in luchthavens_in_signaal
+        ],
         "statistieken":       statistieken,
-        "log_regels":         log_regels,
+        "log_regels":         log.lines,
     }
 
     state.setdefault("logboek", []).append({
@@ -748,7 +829,7 @@ def run(state_pad):
     })
 
     state_pad.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"\nState geschreven naar {state_pad}")
+    logging.getLogger("tug.03_ruimtelijk").info(f"State geschreven naar {state_pad}")
 
 
 # ──────────────────────────────────────────────
@@ -757,6 +838,9 @@ def run(state_pad):
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
-        print("Gebruik: python tug_03_ruimtelijk.py tug_state.json")
+        setup_logging()
+        logging.getLogger("tug.03_ruimtelijk").error(
+            "Gebruik: python tug_03_ruimtelijk.py tug_state.json"
+        )
         sys.exit(1)
     run(sys.argv[1])
