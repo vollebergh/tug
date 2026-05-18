@@ -178,7 +178,22 @@ def vul_woonplaats_via_reverse_geocode(features: FeatureList, log: LogFn) -> Non
 # Generieke polygoon-opvraging (BRT via href)
 # ──────────────────────────────────────────────
 
+_PDOK_TOEGESTANE_DOMEINEN = ("api.pdok.nl", "geodata.nationaalgeoregister.nl")
+
+
 def _pdok_location_haal_polygoon(href, log):
+    # Domeincheck: accepteer alleen bekende PDOK-domeinen
+    try:
+        from urllib.parse import urlparse as _urlparse
+        hostname = _urlparse(href).hostname or ""
+        if not any(hostname == d or hostname.endswith("." + d)
+                   for d in _PDOK_TOEGESTANE_DOMEINEN):
+            log(f"  WAARSCHUWING: BRT polygoon-href verwijst naar onverwacht domein "
+                f"({hostname!r}) — overgeslagen.")
+            return None
+    except Exception:
+        log(f"  WAARSCHUWING: BRT polygoon-href ongeldig ({href!r}) — overgeslagen.")
+        return None
     try:
         resp = requests.get(href, timeout=15)
         if resp.status_code != 200:

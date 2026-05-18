@@ -880,8 +880,8 @@ def genereer_html(state, log):
         f"var MARGE_M={MARGE_M};\n"
         f"var MANEGE_SIGNAAL_MARGE={MANEGE_SIGNAAL_MARGE};\n"
         f"var DATUM='{datum_leesbaar}';\n"
-        f"var MARKERS={json.dumps(markers, ensure_ascii=False)};\n"
-        f"var POLYGONEN={json.dumps(polygonen, ensure_ascii=False)};\n"
+        f"var MARKERS={json.dumps(markers, ensure_ascii=False).replace('</', r'<\/')};\n"
+        f"var POLYGONEN={json.dumps(polygonen, ensure_ascii=False).replace('</', r'<\/')};\n"
     )
 
     html = (

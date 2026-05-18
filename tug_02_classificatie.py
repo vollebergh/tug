@@ -180,9 +180,18 @@ def _schrijf_meta(meta):
     REGISTER_META_PAD.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+_ODS_MAX_BYTES = 50 * 1024 * 1024  # 50 MB uitgecomprimeerd (zip-bom beveiliging)
+
+
 def _ods_data_hash(ods_bytes):
     """SHA-256 van content.xml in het ODS ZIP-archief (negeer metadata)."""
     with zipfile.ZipFile(io.BytesIO(ods_bytes)) as z:
+        totaal = sum(i.file_size for i in z.infolist())
+        if totaal > _ODS_MAX_BYTES:
+            raise ValueError(
+                f"ODS-archief te groot na uitpakken ({totaal:,} bytes > "
+                f"{_ODS_MAX_BYTES:,}) — mogelijk zip-bom."
+            )
         content_xml = z.read("content.xml")
     return hashlib.sha256(content_xml).hexdigest()
 
@@ -207,8 +216,15 @@ def _zoek_register_url(log):
         if m:
             href = m.group(1)
             url  = href if href.startswith("http") else "https://www.ilent.nl" + href
-            log(f"  Register-URL gevonden: {url}")
-            return url
+            # Domeincheck: weiger URL's die niet van ilent.nl komen
+            from urllib.parse import urlparse as _urlparse
+            hostname = _urlparse(url).hostname or ""
+            if not (hostname == "www.ilent.nl" or hostname.endswith(".ilent.nl")):
+                log(f"  WAARSCHUWING: ILT-URL verwijst naar onverwacht domein "
+                    f"({hostname!r}) — overgeslagen.")
+            else:
+                log(f"  Register-URL gevonden: {url}")
+                return url
         log("  WAARSCHUWING: Register-URL niet gevonden in paginabron, datumfallback proberen ...")
     except Exception as e:
         log(f"  WAARSCHUWING: ILT-pagina niet bereikbaar ({e}), datumfallback proberen ...")

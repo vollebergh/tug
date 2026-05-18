@@ -11,6 +11,7 @@ Bevat:
 import copy
 import hashlib
 import json
+import logging
 import re
 from datetime import datetime
 
@@ -164,7 +165,9 @@ def _lees_scholen_meta():
         try:
             return json.loads(SCHOLEN_META.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as e:
-            print(f"  WAARSCHUWING: scholen-meta onleesbaar ({e}) — wordt opnieuw aangemaakt.")
+            logging.getLogger("tug.bronnen_onderwijs").warning(
+                "scholen-meta onleesbaar (%s) — wordt opnieuw aangemaakt.", e
+            )
     return {}
 
 
