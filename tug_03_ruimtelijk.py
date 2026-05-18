@@ -645,6 +645,10 @@ def run(state_pad: str | Path) -> None:
         marge_vbo       = [f for f in marge_vbo_gevel if not f.get("_gevel_snijdt")]
         if gevel_promoties:
             geluidgevoelig.extend(gevel_promoties)
+            # Voeg ook toe aan alle_vbo zodat adresrijen, kaart en HTML-markers
+            # de promoties meenemen — de adresrijen-loop itereert over alle_vbo,
+            # niet over geluidgevoelig, en zou ze anders niet zien.
+            alle_vbo.extend(gevel_promoties)
             log(
                 f"  {len(gevel_promoties)} margeband-VBO(s) gepromoveerd naar wettelijk relevant "
                 f"(gevel binnen toetsingsafstand)."
