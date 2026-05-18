@@ -38,6 +38,12 @@ PDOK_LOCATION_API     = "https://api.pdok.nl/kadaster/location-api/v1/search"
 LOCATIESERVER_REVERSE = "https://api.pdok.nl/bzk/locatieserver/search/v3_1/reverse"
 LOCATIESERVER_FREE    = "https://api.pdok.nl/bzk/locatieserver/search/v3_1/free"
 
+# BRT top10nl OGC API — terrein_vlak (begraafplaats-detectie via 'dodenakker')
+BRT_TERREIN_VLK_URL       = "https://api.pdok.nl/brt/top10nl/ogc/v1_0/collections/terrein_vlak/items"
+BRT_TERREIN_PAGE_SIZE      = 200   # features per pagina
+BRT_TERREIN_MAX_PAGES      = 15    # maximaal 3000 features per opvraging
+BRT_DODENAKKER_ZOEK_MARGE = 500   # m extra zoekruimte voor BRT-dodenakker-bbox
+
 # ──────────────────────────────────────────────
 # Natura 2000 (nationaal, on-the-fly)
 # ──────────────────────────────────────────────
