@@ -177,10 +177,34 @@ def haal_pand_ids(features):
 
 
 def haal_pand_geometrie_via_bbox(pand_id, vbo_feat, log):
+    """Haal pandgeometrie op voor `pand_id`.
+
+    Strategie:
+    1. Direct CQL-filter op identificatie — exact en snel.
+    2. Als dat mislukt (lege response): bbox-fallback met strikte ID-matching.
+       Bij de bbox-fallback wordt nooit `features[0]` teruggegeven als de ID
+       niet overeenkomt, om valse positieven in de gevel-check te voorkomen.
+    """
+    # ── Stap 1: directe CQL-query op pand-identificatie ──────────────
+    params_cql = {
+        "service": "WFS", "version": "2.0.0", "request": "GetFeature",
+        "TYPENAME": "bag:pand", "outputFormat": "application/json",
+        "CQL_FILTER": f"identificatie='{pand_id}'",
+        "count": 1,
+    }
+    try:
+        resp = requests.get(BAG_WFS, params=params_cql, timeout=30)
+        if resp.status_code == 200:
+            feats = resp.json().get("features", [])
+            if feats:
+                return feats[0]
+    except Exception:
+        pass
+
+    # ── Stap 2: bbox-fallback met strikte ID-matching ─────────────────
     geom = vbo_feat.get("geometry", {})
     if not geom:
         return None
-    coords = None
     if geom.get("type") == "Point":
         coords = geom["coordinates"]
     else:
@@ -194,23 +218,22 @@ def haal_pand_geometrie_via_bbox(pand_id, vbo_feat, log):
         f"{x - PAND_BBOX_ZOEK_MARGE},{y - PAND_BBOX_ZOEK_MARGE},"
         f"{x + PAND_BBOX_ZOEK_MARGE},{y + PAND_BBOX_ZOEK_MARGE}"
     )
-    params = {
+    params_bbox = {
         "service": "WFS", "version": "2.0.0", "request": "GetFeature",
         "TYPENAME": "bag:pand", "outputFormat": "application/json",
         "BBOX": bbox_str, "count": 50,
     }
-    resp = requests.get(BAG_WFS, params=params, timeout=30)
-    if resp.status_code != 200:
-        log(f"  WAARSCHUWING: pand bbox-query voor {pand_id} gaf status {resp.status_code}")
+    resp2 = requests.get(BAG_WFS, params=params_bbox, timeout=30)
+    if resp2.status_code != 200:
+        log(f"  WAARSCHUWING: pand bbox-query voor {pand_id} gaf status {resp2.status_code}")
         return None
-    features = resp.json().get("features", [])
-    if not features:
-        return None
+    features = resp2.json().get("features", [])
     for feat in features:
         raw_id = str(feat.get("properties", {}).get("identificatie", ""))
         if raw_id == pand_id or raw_id.endswith(pand_id) or pand_id.endswith(raw_id):
             return feat
-    return features[0]
+    log(f"  WAARSCHUWING: pand {pand_id} niet gevonden via CQL-filter of bbox-ID-match; overgeslagen.")
+    return None
 
 
 def gevel_check(
