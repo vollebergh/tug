@@ -20,6 +20,7 @@ De pipeline verwerkt een aanvraag-JSON, classificeert de betrokken luchtvaartuig
 - [Gegevensbronnen & caching](#gegevensbronnen--caching)
 - [Uitvoer](#uitvoer)
 - [tug_state.json](#tug_statejson)
+- [Kwaliteitsborging](#kwaliteitsborging)
 
 ---
 
@@ -77,10 +78,19 @@ TUG-ontheffingen/
 ├── tug_run.py                  # Orchestrator
 ├── tug_01_validatie.py         # Stap 2 — volledigheidscheck
 ├── tug_02_classificatie.py     # Stap 3 — vliegtuigclassificatie
-├── tug_03_bronnen.py           # Stap 4 — databronnen en geo-utilities (library)
+├── tug_03_bronnen.py           # Stap 4 — re-export shim (backward compat)
 ├── tug_03_kaart.py             # Stap 4 — kaartrendering (library)
 ├── tug_03_ruimtelijk.py        # Stap 4 — ruimtelijke analyse (orchestrator)
 ├── tug_05_output.py            # Stap 6 — PDF/HTML-output
+├── tug_config.py               # Gedeelde constanten (URLs, drempelwaarden, paden)
+├── tug_types.py                # Type-aliassen (Feature, FeatureList, LogFn, …)
+├── tug_logging.py              # LogAccumulator + setup_logging
+├── tug_geo.py                  # Coördinaattransformaties en extract-helpers
+├── tug_bronnen_bag.py          # BAG WFS, gevel-check, deduplicatie
+├── tug_bronnen_brt.py          # Begraafplaatsen, maneges, luchthavens (PDOK/WFS)
+├── tug_bronnen_geocode.py      # Reverse geocoding (PDOK Locatieserver)
+├── tug_bronnen_natuur.py       # Natura 2000, NNN (GeoPackage-cache)
+├── tug_bronnen_onderwijs.py    # LRK (KDV) + DUO-scholen (5 datasets)
 └── test_aanvraag_tug.json      # Testaanvraag (negatief testgeval)
 ```
 
@@ -181,25 +191,43 @@ aanvraag.json
     ↓
     ├── tug_02_classificatie.py (v1.0.0)  Stap 3 — PH-code → ICAO → NLR → toetsingsafstand
     ↓
-    ├── tug_03_ruimtelijk.py  (v4.4.0)   Stap 4 — ruimtelijk analyse (orchestrator)
-    │       └── tug_03_bronnen.py         library: databronnen, geo-utilities, constanten
-    │       └── tug_03_kaart.py           library: PIL-kaartrendering (tiles + lagen)
+    ├── tug_03_ruimtelijk.py  (v4.5.0)   Stap 4 — ruimtelijke analyse (orchestrator)
+    │       ├── tug_03_bronnen.py         re-export shim (backward compat)
+    │       ├── tug_bronnen_bag.py        BAG WFS, gevel-check, deduplicatie
+    │       ├── tug_bronnen_brt.py        begraafplaatsen, maneges, luchthavens
+    │       ├── tug_bronnen_natuur.py     N2000, NNN GeoPackage
+    │       ├── tug_bronnen_onderwijs.py  LRK (KDV) + DUO-scholen
+    │       ├── tug_bronnen_geocode.py    reverse geocoding
+    │       ├── tug_geo.py               coördinaatfuncties, extract-helpers
+    │       └── tug_03_kaart.py          PIL-kaartrendering (tiles + lagen)
     ↓
     └── tug_05_output.py      (v4.5.0)   Stap 6 — PDF-rapport + HTML-kaart
 
-tug_state.json (communicatie tussen stappen; gewist na succesvolle run)
+tug_config.py   gedeelde constanten (URLs, drempelwaarden, bestandspaden)
+tug_types.py    type-aliassen (Feature, FeatureList, LogFn, …)
+tug_logging.py  LogAccumulator + setup_logging
+tug_state.json  communicatie tussen stappen; gewist na succesvolle run
 ```
 
-### Scriptrollen
+### Modulerollen
 
-| Script | Rol | Afhankelijkheden |
+| Module | Rol | Afhankelijkheden |
 |--------|-----|-----------------|
 | `tug_run.py` | Orchestrator; start stappen via `subprocess` | — |
 | `tug_01_validatie.py` | Volledigheidscheck; normaliseert `datum_vlucht` | — |
 | `tug_02_classificatie.py` | ILT-register ophalen/cachen; NLR-tabel opzoeken | `pandas`, `odfpy` |
-| `tug_03_bronnen.py` | Alle API-calls, geo-utilities, constanten | `pyproj`, `shapely`, `geopandas` |
+| `tug_03_bronnen.py` | Re-export shim (alle `from tug_03_bronnen import ...` blijven werken) | alle tug_bronnen_* |
+| `tug_bronnen_bag.py` | BAG WFS, pandgeometrie, gevel-check, deduplicatie | `pyproj`, `shapely` |
+| `tug_bronnen_brt.py` | Begraafplaatsen, maneges, luchthavens (PDOK Location API / WFS) | `shapely` |
+| `tug_bronnen_geocode.py` | Reverse geocoding (PDOK Locatieserver) | — |
+| `tug_bronnen_natuur.py` | Natura 2000 (PDOK WFS), NNN (GeoPackage-cache, ATOM-feed) | `geopandas`, `fiona` |
+| `tug_bronnen_onderwijs.py` | LRK (KDV-koppeling), DUO-scholen (5 datasets) | `pandas` |
+| `tug_geo.py` | Coördinaattransformaties, bbox-berekeningen, extract-helpers | `pyproj`, `shapely` |
+| `tug_config.py` | Alle gedeelde constanten (één bron van waarheid) | — |
+| `tug_logging.py` | `LogAccumulator`-klasse; routing naar `logging`-module | — |
+| `tug_types.py` | Type-aliassen voor annotaties | — |
 | `tug_03_kaart.py` | Kaarttegels ophalen; cirkels en markers tekenen | `Pillow` |
-| `tug_03_ruimtelijk.py` | Coördineert alle bronnen; bouwt adresrijen | `tug_03_bronnen`, `tug_03_kaart` |
+| `tug_03_ruimtelijk.py` | Coördineert alle bronnen; bouwt adresrijen en kaartlagen | alle hierboven |
 | `tug_05_output.py` | ReportLab PDF; Leaflet HTML-kaart | `reportlab` |
 
 ### Classificatie van luchtvaartuigen
@@ -377,6 +405,35 @@ De state wordt aangemaakt door `tug_run.py` en uitgebreid door elke stap. Na suc
 | `classificatie` | `tug_02_classificatie.py` | Per luchtvaartuig: ICAO, appendix, norm; `norm_toepassing` |
 | `ruimtelijk` | `tug_03_ruimtelijk.py` | Adresrijen (wettelijk/marge/aandacht/overig), PNG-kaartpaden |
 | `logboek` | Alle scripts | Tijdgestempelde log-entries per stap |
+
+---
+
+## Kwaliteitsborging
+
+### Code review
+
+De codebase is doorgelicht aan de hand van een gelaagd review-protocol op basis van de volgende frameworks:
+
+- **SOLID-principes** (Single Responsibility, Open/Closed, …)
+- **Code Smells** — Martin Fowler, *Refactoring* (2e druk)
+- **Clean Code** — Robert C. Martin
+- **Python Coding Conventions** — PEP 8 en moderne Python 3.11+
+
+Bevindingen (11 in totaal) zijn dezelfde sessie verholpen. De belangrijkste ingreep was het opsplitsen van een 1398-regel god-module (`tug_03_bronnen.py`) in zes gespecialiseerde modules. Zie ook `Codebase Review — TUG-ontheffingen` in de projectdocumentatie.
+
+### Beveiligingsreview
+
+De pipeline is gecontroleerd op veelvoorkomende kwetsbaarheden aan de hand van de [OWASP Cheat Sheet Series](https://cheatsheetseries.owasp.org/) (CC BY-SA 4.0). De review is uitgevoerd met de Claude Code [security-review skill](https://github.com/dougwithseismic/claude-code-skills).
+
+Dreigingsmodel: lokale CLI-tool zonder netwerkinterface; alle externe aanroepen gaan naar Nederlandse overheids-API's (PDOK, ILT, RvIG, DUO). Geen direct exploiteerbare kwetsbaarheden aangetroffen. Verholpen:
+
+| Bevinding | Maatregel |
+|-----------|-----------|
+| JSON-in-script-tag (`</script>`-injectie, VERIFY-001) | `<\/`-escaping toegepast op alle `json.dumps()`-aanroepen in HTML-output |
+| Gescrapete ILT-URL zonder domeincheck (VERIFY-002) | Domeinvalidatie: alleen `*.ilent.nl` geaccepteerd |
+| PDOK-href zonder URL-validatie (OBS-001) | Allowlist: alleen `api.pdok.nl` en `geodata.nationaalgeoregister.nl` |
+| ODS ZIP zonder bom-beveiliging (OBS-002) | Limiet 50 MB uitgecomprimeerd in `_ods_data_hash()` |
+| `print()` buiten logging-systeem (OBS-004) | Vervangen door `logging.getLogger(...).warning()` |
 
 ---
 
