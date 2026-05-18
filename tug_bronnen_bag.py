@@ -177,31 +177,17 @@ def haal_pand_ids(features):
 
 
 def haal_pand_geometrie_via_bbox(pand_id, vbo_feat, log):
-    """Haal pandgeometrie op voor `pand_id`.
+    """Haal pandgeometrie op voor het gebouw dat het VBO-punt bevat.
 
-    Strategie:
-    1. Direct CQL-filter op identificatie — exact en snel.
-    2. Als dat mislukt (lege response): bbox-fallback met strikte ID-matching.
-       Bij de bbox-fallback wordt nooit `features[0]` teruggegeven als de ID
-       niet overeenkomt, om valse positieven in de gevel-check te voorkomen.
+    Strategie — ruimtelijk in plaats van ID-gebaseerd:
+    1. Bereken VBO-punt in RD.
+    2. Vraag alle panden op binnen ±PAND_BBOX_ZOEK_MARGE (in RD, native CRS).
+    3. Retourneer het pand waarvan de polygoon het VBO-punt bevat (containment).
+       Dit is robuust tegen verouderde pandidentificaties in de BAG.
+    4. Als geen pand het punt bevat: probeer strikte ID-match (pandidentificatie
+       kan ook kloppen als het punt net op de grens ligt).
+    5. Als ook dat niet lukt: retourneer None — nooit een willekeurig buurpand.
     """
-    # ── Stap 1: directe CQL-query op pand-identificatie ──────────────
-    params_cql = {
-        "service": "WFS", "version": "2.0.0", "request": "GetFeature",
-        "TYPENAME": "bag:pand", "outputFormat": "application/json",
-        "CQL_FILTER": f"identificatie='{pand_id}'",
-        "count": 1,
-    }
-    try:
-        resp = requests.get(BAG_WFS, params=params_cql, timeout=30)
-        if resp.status_code == 200:
-            feats = resp.json().get("features", [])
-            if feats:
-                return feats[0]
-    except Exception:
-        pass
-
-    # ── Stap 2: bbox-fallback met strikte ID-matching ─────────────────
     geom = vbo_feat.get("geometry", {})
     if not geom:
         return None
@@ -211,28 +197,49 @@ def haal_pand_geometrie_via_bbox(pand_id, vbo_feat, log):
         c = shape(geom).centroid
         coords = [c.x, c.y]
     x, y = coords[0], coords[1]
-    if x <= 1000:
+    if x <= 1000:          # WGS84 lon/lat → RD
         t = make_transformer("EPSG:4326", "EPSG:28992")
         x, y = t.transform(x, y)
+
+    from shapely.geometry import Point as _Point
+    vbo_pt_rd = _Point(x, y)
+
     bbox_str = (
         f"{x - PAND_BBOX_ZOEK_MARGE},{y - PAND_BBOX_ZOEK_MARGE},"
         f"{x + PAND_BBOX_ZOEK_MARGE},{y + PAND_BBOX_ZOEK_MARGE}"
     )
-    params_bbox = {
+    params = {
         "service": "WFS", "version": "2.0.0", "request": "GetFeature",
         "TYPENAME": "bag:pand", "outputFormat": "application/json",
-        "BBOX": bbox_str, "count": 50,
+        "BBOX": bbox_str, "count": 100,
     }
-    resp2 = requests.get(BAG_WFS, params=params_bbox, timeout=30)
-    if resp2.status_code != 200:
-        log(f"  WAARSCHUWING: pand bbox-query voor {pand_id} gaf status {resp2.status_code}")
+    resp = requests.get(BAG_WFS, params=params, timeout=30)
+    if resp.status_code != 200:
+        log(f"  WAARSCHUWING: pand bbox-query voor {pand_id} gaf status {resp.status_code}")
         return None
-    features = resp2.json().get("features", [])
+    features = resp.json().get("features", [])
+    if not features:
+        return None
+
+    # Stap 3: zoek het pand dat het VBO-punt ruimtelijk bevat
+    for feat in features:
+        geom_dict = feat.get("geometry")
+        if not geom_dict:
+            continue
+        try:
+            pand_shp = shape(geom_dict)
+            if pand_shp.contains(vbo_pt_rd) or pand_shp.distance(vbo_pt_rd) < 1.0:
+                return feat
+        except Exception:
+            continue
+
+    # Stap 4: geen containment — probeer strikte ID-match als vangnet
     for feat in features:
         raw_id = str(feat.get("properties", {}).get("identificatie", ""))
         if raw_id == pand_id or raw_id.endswith(pand_id) or pand_id.endswith(raw_id):
             return feat
-    log(f"  WAARSCHUWING: pand {pand_id} niet gevonden via CQL-filter of bbox-ID-match; overgeslagen.")
+
+    log(f"  WAARSCHUWING: geen pand gevonden dat VBO-punt bevat voor {pand_id}; overgeslagen.")
     return None
 
 
