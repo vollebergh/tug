@@ -275,7 +275,12 @@ De margeband (toetsingsafstand + 75 m) heeft een tweeledig doel. Ten eerste kunn
 
 ### Begraafplaatsen
 
-Wettelijk relevant als het BAG-polygoon van de begraafplaats de **toetsingsafstand** snijdt (niet de margeband). Centroid-afstand kan groter zijn dan de toetsingsafstand.
+Begraafplaatsen worden via twee parallelle bronnen opgespoord:
+
+1. **PDOK Locatieserver** — zoekt op "begraafplaats" en "erebegraafplaats" binnen straal + 1.500 m. Retourneert benoemde objecten met polygoongeometrie.
+2. **BRT top10nl OGC API** — bevraagt de `terrein_vlak`-collectie op `typelandgebruik = 'dodenakker'` binnen een bbox van straal + 500 m. Vangt begraafplaatsen op die niet als benoemd object in de Locatieserver zijn geïndexeerd. Aangrenzende deelvlakken (buffer 5 m) worden samengevoegd tot clusters.
+
+Wettelijk relevant als de polygoon de **toetsingsafstand** snijdt (niet de margeband). Centroid-afstand kan groter zijn dan de toetsingsafstand.
 
 ### Natura 2000 en NNN
 
@@ -306,7 +311,8 @@ Alle externe bestanden worden gecachet in `geo/`. De pipeline controleert de TTL
 | NNN GeoPackage | Natuurnetwerk Nederland (Overijssel) | 180 dagen | `geo/nnn_gebieden.gpkg` |
 | BAG WFS v2.0 | Verblijfsobjecten, gebruiksdoelen, pandgeometrieën | On-the-fly | — |
 | N2000 WFS | Natura 2000-gebieden | On-the-fly | — |
-| PDOK Location API | Begraafplaatsen, maneges (polygonen) | On-the-fly | — |
+| PDOK Location API | Begraafplaatsen (benoemde objecten), maneges | On-the-fly | — |
+| BRT top10nl OGC API | Begraafplaatsen (dodenakker-vlakken, clustering) | On-the-fly | — |
 | Luchthavens (GeoPortaal Overijssel) | Luchthaven puntlocaties | On-the-fly | — |
 
 ### ILT Luchtvaartregister
@@ -362,6 +368,14 @@ GeoJSON per onderwijstype. De pipeline filtert op provincie Overijssel en koppel
 ### Maneges (PDOK Location API / BRT)
 
 De pipeline zoekt maneges via de PDOK Location API met een reeks zoektermen (manege, rijschool, hippisch, paardencentrum, rijvereniging e.a.) binnen een zoekradius van toetsingsafstand + 375 m. De API retourneert gecombineerde resultaten uit de BRT en het BAG. Voor elk resultaat wordt via de BRT gebouwenlaag de polygoongeometrie opgevraagd om de werkelijke ligging te bepalen. Resultaten zonder polygoon (puntlocaties) worden op centroid-afstand beoordeeld.
+
+### BRT top10nl OGC API (PDOK)
+
+Begraafplaatsen die niet als benoemd object in de PDOK Locatieserver staan worden opgespoord via de BRT top10nl `terrein_vlak`-collectie. De API wordt bevraagd op `typelandgebruik = 'dodenakker'` binnen een bounding box van straal + 500 m. De collectie gebruikt cursor-gebaseerde paginering (geen `offset`-parameter).
+
+Endpoint: `https://api.pdok.nl/brt/top10nl/ogc/v1_0/collections/terrein_vlak/items`
+
+Één begraafplaats kan in de BRT uit meerdere afzonderlijke vlakken bestaan. Vlakken die elkaar binnen 5 m overlappen of raken worden samengevoegd tot één cluster via een union-find-algoritme. Het samengestelde polygoon wordt vervolgens getoetst aan de toetsingsafstand.
 
 ### Luchthavens (GeoPortaal Overijssel WFS)
 
