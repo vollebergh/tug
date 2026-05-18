@@ -248,8 +248,8 @@ class _ProcesLogBuilder:
         self.schrijf(
             "Proceslogboek geautomatiseerde inventarisatie van kwetsbare gebouwen en functies "
             "ten behoeve van de beoordeling van ontheffingaanvragen TUG "
-            "(Tijdelijk en Uitzonderlijk Gebruik luchtruim, artikel 8a Wet luchtvaart). "
-            f"Gegenereerd: {self.datum_l}. Versie inventarisatiesoftware: v{VERSION}.",
+            "(artikel 8a.51 Wet luchtvaart). "
+            f"Gegenereerd: {self.datum_l}. Versie: v{VERSION}.",
             kleur=self.KLEUR_MUT,
         )
 

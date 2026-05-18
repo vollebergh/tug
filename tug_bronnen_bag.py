@@ -254,7 +254,10 @@ def gevel_check(
 
     resultaat = []
     for feat in geluidgevoelig_features:
-        panden = feat.get("properties", {}).get("maaktDeelUitVan", [])
+        props  = feat.get("properties", {})
+        panden = (props.get("maaktDeelUitVan")
+                  or props.get("pandidentificatie")
+                  or [])
         if isinstance(panden, str):
             panden = [panden]
         feat["_gevel_snijdt"] = any(str(p) in snijdende_pand_ids for p in panden)
