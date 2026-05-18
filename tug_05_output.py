@@ -245,11 +245,17 @@ class _ProcesLogBuilder:
     # ── Paragrafen ───────────────────────────
 
     def _h0_opening(self):
+        model_zin = (
+            f"Taalmodel: {MODEL_LABEL}."
+            if MODEL_LABEL
+            else "Bij de verwerking is geen taalmodel ingezet."
+        )
         self.schrijf(
             "Proceslogboek geautomatiseerde inventarisatie van kwetsbare gebouwen en functies "
             "ten behoeve van de beoordeling van ontheffingaanvragen TUG "
             "(artikel 8a.51 Wet luchtvaart). "
-            f"Gegenereerd: {self.datum_l}. Versie: v{VERSION}.",
+            f"Gegenereerd: {self.datum_l}. Versie: v{VERSION}. "
+            f"{model_zin}",
             kleur=self.KLEUR_MUT,
         )
 

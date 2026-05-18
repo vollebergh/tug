@@ -6,8 +6,8 @@
   "vlucht_einde": null,
   "aantal_vluchten": 12,
   "luchtvaartuigen": [{"registratie": "PH-ANK", "type": "heli"}, {"registratie": "PH-ECE", "type": "heli"}],
-  "coord_lat": 52.40535421793369,
-  "coord_lon": 6.129962135410407,
+  "coord_lat": 52.531269,
+  "coord_lon": 6.135397,
   "datum_ondertekening": "2026-06-01",
   "tijdstip_ondertekening": "16:29"
 }
