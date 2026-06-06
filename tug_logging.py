@@ -20,6 +20,18 @@ import logging
 import sys
 
 
+class _ColorFormatter(logging.Formatter):
+    """Voegt ANSI-kleuren toe voor WARNING- en ERROR-berichten in de terminal."""
+    _ROOD_BOLD = "\033[1;31m"
+    _RESET     = "\033[0m"
+
+    def format(self, record: logging.LogRecord) -> str:
+        msg = super().format(record)
+        if record.levelno >= logging.WARNING:
+            return f"{self._ROOD_BOLD}{msg}{self._RESET}"
+        return msg
+
+
 def setup_logging(level: int = logging.INFO) -> None:
     """Configureer de root-logger één keer bij pipeline-start.
 
@@ -33,7 +45,7 @@ def setup_logging(level: int = logging.INFO) -> None:
     if root.handlers:
         return
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter("%(message)s"))
+    handler.setFormatter(_ColorFormatter("%(message)s"))
     root.addHandler(handler)
     root.setLevel(level)
 

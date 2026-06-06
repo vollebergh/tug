@@ -38,17 +38,24 @@ shapely
 odfpy
 Pillow
 reportlab
-geopandas      # aanbevolen — vereist voor NNN GeoPackage
-fiona          # aanbevolen — vereist voor NNN GeoPackage
+geopandas
+pyogrio
 ```
 
-Installeren:
+Installeren (via uv, aanbevolen):
 
 ```bash
-pip install pandas requests pyproj shapely odfpy Pillow reportlab geopandas fiona
+uv venv
+uv pip install pandas requests pyproj shapely odfpy Pillow reportlab geopandas pyogrio
 ```
 
-> **Zonder geopandas/fiona** draait de pipeline wel, maar de NNN-analyse (Natuurnetwerk Nederland) wordt overgeslagen. N2000-signalering via PDOK WFS blijft altijd actief.
+Of via pip:
+
+```bash
+pip install pandas requests pyproj shapely odfpy Pillow reportlab geopandas pyogrio
+```
+
+> **Zonder geopandas/pyogrio** draait de pipeline wel, maar de NNN-analyse (Natuurnetwerk Nederland) wordt overgeslagen. N2000-signalering via PDOK WFS blijft altijd actief.
 
 ---
 
@@ -98,11 +105,24 @@ TUG-ontheffingen/
 
 ## Gebruik
 
-### Standaard run
+### Enkelvoudige aanvraag
 
 ```bash
 python tug_run.py aanvraag.json
 ```
+
+### Batch — meerdere aanvragen
+
+Geef meerdere JSON-bestanden mee, of gebruik een array-JSON:
+
+```bash
+python tug_run.py aanvraag1.json aanvraag2.json aanvraag3.json
+python tug_run.py Documentatie/aanvragen.json
+```
+
+Elke aanvraag levert een eigen PDF en HTML. Bij een falende aanvraag logt de runner de fout en gaat verder met de volgende; aan het einde verschijnt een samenvatting met geslaagde en mislukte aanvragen.
+
+Een array-JSON (`[{...}, {...}]`) en een enkel-object-JSON (`{...}`) worden beide geaccepteerd.
 
 ### Herstart vanaf een specifieke stap
 
@@ -112,7 +132,7 @@ Als `tug_state.json` al bestaat (vorige run afgebroken of handmatig bewaard):
 python tug_run.py tug_state.json --vanaf 05
 ```
 
-Geldige stapnummers: `01`, `02`, `03`, `05` (overeenkomstig de scriptnamen).
+Geldige stapnummers: `01`, `02`, `03`, `05` (overeenkomstig de scriptnamen). Alleen bruikbaar bij één aanvraag per run.
 
 ### Testrun
 
@@ -134,6 +154,7 @@ Na een succesvolle run wordt `tug_state.json` automatisch overschreven met `{}`.
 
 ```json
 {
+  "naam": "Locatienaam datum",
   "soort_ontheffing": "locatiegebonden",
   "datum_vlucht": ["2026-06-20", "2026-07-01"],
   "vlucht_udp": true,
@@ -153,6 +174,7 @@ Na een succesvolle run wordt `tug_state.json` automatisch overschreven met `{}`.
 
 | Veld | Type | Toelichting |
 |------|------|-------------|
+| `naam` | string | Vrije naam voor de aanvraag; wordt opgenomen in de output-bestandsnamen en het proceslogboek zodat JSON-input en PDF/HTML-output koppelbaar zijn |
 | `soort_ontheffing` | string | `"locatiegebonden"` of `"generiek"` |
 | `datum_vlucht` | string of array | YYYY-MM-DD; één datum of een array van meerdere data |
 | `vlucht_udp` | boolean | Indien `true`: universal daylight period; `vlucht_start`/`vlucht_einde` worden genegeerd |
@@ -160,6 +182,17 @@ Na een succesvolle run wordt `tug_state.json` automatisch overschreven met `{}`.
 | `coord_lat` / `coord_lon` | float | WGS84, minimaal 6 decimalen |
 | `datum_ondertekening` | string | YYYY-MM-DD; zie 4-weken-regel |
 | `tijdstip_ondertekening` | string | `HH:MM` formaat |
+
+### Batch-invoerformaat
+
+Meerdere aanvragen in één bestand als JSON-array:
+
+```json
+[
+  { "naam": "Locatie A 15 juni", ... },
+  { "naam": "Locatie B 22 juni", ... }
+]
+```
 
 ---
 
@@ -171,6 +204,7 @@ Na een succesvolle run wordt `tug_state.json` automatisch overschreven met `{}`.
 |----------|-----------------|
 | Aanwezigheid van alle 7 verplichte velden | **Fataal** — pipeline stopt |
 | `datum_vlucht` als string → automatisch omgezet naar `[string]` | Normalisatie (geen fout) |
+| `datum_vlucht` ontbreekt of is null | **Waarschuwing** — pipeline gaat door |
 | Datum-formaat YYYY-MM-DD voor alle vluchtdata | **Fataal** |
 | Datum-formaat YYYY-MM-DD voor `datum_ondertekening` | **Fataal** |
 | Structuur `luchtvaartuigen`: array van objecten met `registratie` | **Fataal** |
@@ -184,9 +218,9 @@ Na een succesvolle run wordt `tug_state.json` automatisch overschreven met `{}`.
 ### Modulaire opbouw
 
 ```
-aanvraag.json
-    ↓  tug_run.py (orchestrator, v4.1.0)
-    ↓
+aanvraag.json  (enkel object of array)
+    ↓  tug_run.py (orchestrator, v4.2.0)
+    ↓  [per aanvraag — batch doorloopt alle elementen]
     ├── tug_01_validatie.py   (v1.0.0)   Stap 2 — volledigheidscheck + 4-weken-regel
     ↓
     ├── tug_02_classificatie.py (v1.0.0)  Stap 3 — PH-code → ICAO → NLR → toetsingsafstand
@@ -212,7 +246,7 @@ tug_state.json  communicatie tussen stappen; gewist na succesvolle run
 ### Modulerollen
 
 | Module | Rol | Afhankelijkheden |
-|--------|-----|-----------------|
+|--------|-----|------------------|
 | `tug_run.py` | Orchestrator; start stappen via `subprocess` | — |
 | `tug_01_validatie.py` | Volledigheidscheck; normaliseert `datum_vlucht` | — |
 | `tug_02_classificatie.py` | ILT-register ophalen/cachen; NLR-tabel opzoeken | `pandas`, `odfpy` |
@@ -244,6 +278,8 @@ De NLR-tabel (CR-96650L, Suppl. 1, oktober 2022) bevat per ICAO-type een appendi
 
 Bij appendix 013/015/016/017 zijn de normen niet vastgesteld in de NLR-tabel. De pipeline signaleert deze categorie in het proceslog en past een standaard van 500 m toe. De vergunningverlener bepaalt handmatig de juiste norm.
 
+**Niet gevonden in ILT-register:** luchtvaartuigen die niet in het register staan (bijv. buitenlandse registraties zoals OO-, D-, F-) worden in het proceslogboek in het rood gesignaleerd. Zorgvuldigheidshalve wordt een afstandsnorm van 500 m aangehouden. De vergunningverlener dient de definitieve norm handmatig te bepalen.
+
 ---
 
 ## Toetsingslogica
@@ -251,7 +287,7 @@ Bij appendix 013/015/016/017 zijn de normen niet vastgesteld in de NLR-tabel. De
 ### Zones
 
 | Zone | Berekening | Gebruik |
-|------|-----------|---------|
+|------|-----------|----------|
 | Toetsingsafstand | Norm luidste luchtvaartuig (NLR-tabel) | Geluidgevoelige gebouwen, begraafplaatsen, kinderopvangverblijf, scholen |
 | Margeband | Toetsingsafstand + 75 m | Optionele signalering overige gebouwen |
 | Aandachtsgebied maneges | Toetsingsafstand + 375 m | Manegesignalering |
@@ -293,7 +329,7 @@ Er zijn geen landelijk dekkende polygoongeometrieën van manegegebieden beschikb
 ### Luchthavens
 
 | Grens | Afstand |
-|-------|---------|
+|-------|----------|
 | Wettelijke minimumafstand | 1000 m |
 | Signaleringmarge | 2000 m |
 
@@ -304,7 +340,7 @@ Er zijn geen landelijk dekkende polygoongeometrieën van manegegebieden beschikb
 Alle externe bestanden worden gecachet in `geo/`. De pipeline controleert de TTL bij elke run en herdownloadt automatisch als de cache verlopen is.
 
 | Bron | Gebruik | TTL | Cachebestand |
-|------|---------|-----|--------------|
+|------|---------|-----|---------------|
 | ILT Luchtvaartregister | PH-code → ICAO | 30 dagen | `geo/luchtvaartuigregister_ilt.ods` |
 | DUO Open Onderwijsdata | Scholen PO/SO/VO/MBO/HO | 90 dagen | `geo/duo_scholen_po.geojson`, `geo/duo_scholen_overig.geojson` |
 | LRK (Landelijk Register Kinderopvang) | KDV-locaties via BAG-koppeling | 7 dagen | In-memory (geen lokale cache) |
@@ -326,7 +362,7 @@ Bronpagina: https://www.ilent.nl/documenten/lijsten/luchtvaart/databestanden/luc
 Verblijfsobjecten via WFS-query met `propertyName`-filter op 9 velden:
 
 | Veld | Gebruik |
-|------|---------|
+|------|----------|
 | `identificatie` | Koppeling met KDV (LRK `bag_id`) en DUO (`vbo_id`) |
 | `gebruiksdoel` | Geluidgevoelige functiebepaling |
 | `openbare_ruimte`, `huisnummer`, `huisletter`, `toevoeging`, `postcode`, `woonplaats` | Adresopbouw |
@@ -375,7 +411,7 @@ Begraafplaatsen die niet als benoemd object in de PDOK Locatieserver staan worde
 
 Endpoint: `https://api.pdok.nl/brt/top10nl/ogc/v1_0/collections/terrein_vlak/items`
 
-Één begraafplaats kan in de BRT uit meerdere afzonderlijke vlakken bestaan. Vlakken die elkaar binnen 5 m overlappen of raken worden samengevoegd tot één cluster via een union-find-algoritme. Het samengestelde polygoon wordt vervolgens getoetst aan de toetsingsafstand.
+Eén begraafplaats kan in de BRT uit meerdere afzonderlijke vlakken bestaan. Vlakken die elkaar binnen 5 m overlappen of raken worden samengevoegd tot één cluster via een union-find-algoritme. Het samengestelde polygoon wordt vervolgens getoetst aan de toetsingsafstand.
 
 ### Luchthavens (GeoPortaal Overijssel WFS)
 
@@ -389,9 +425,11 @@ Laag: `B64_nutsvoorzieningen:B6_Luchthaven_puntlocaties`
 Alle bestanden worden opgeslagen in `output/`:
 
 | Bestand | Omschrijving |
-|---------|--------------|
-| `tug_rapport_{timestamp}.pdf` | PDF-rapport: proceslog (12 paragrafen) + adressenlijst + situatie- en omgevingskaart |
-| `tug_kaart_{timestamp}.html` | Interactieve Leaflet-kaart met alle geïnventariseerde objecten en zones |
+|---------|---------------|
+| `tug_rapport_{naam}_{timestamp}.pdf` | PDF-rapport: proceslog (12 paragrafen) + adressenlijst + situatie- en omgevingskaart |
+| `tug_kaart_{naam}_{timestamp}.html` | Interactieve Leaflet-kaart met alle geïnventariseerde objecten en zones |
+
+`{naam}` is het `naam`-veld uit de aanvraag-JSON, gesaneerd naar bestandsnaamveilige tekens (maximaal 40 tekens). Bij afwezigheid van een `naam`-veld vervalt het infix en worden de bestandsnamen `tug_rapport_{timestamp}.pdf` resp. `tug_kaart_{timestamp}.html`.
 
 ### PDF-proceslog
 

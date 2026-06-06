@@ -1,4 +1,5 @@
 {
+  "naam": "test_aanvraag_tug",
   "soort_ontheffing": "locatiegebonden",
   "datum_vlucht": ["2026-06-20", "2026-07-01"],
   "vlucht_udp": true,
