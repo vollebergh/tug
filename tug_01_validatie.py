@@ -5,6 +5,7 @@ Versie: 1.0.0  |  2026-05-15
 Volledigheidscheck van de aanvraag:
   - Controleert aanwezigheid van verplichte velden
   - Normaliseert datum_vlucht naar een lijst (str → [str])
+  - datum_vlucht null/ontbrekend = waarschuwing (niet fataal)
   - Controleert of datum_ondertekening niet meer dan 4 weken vóór
     de vroegste vluchtdatum ligt
 
@@ -24,7 +25,6 @@ VERSION = "1.0.0"
 
 VERPLICHTE_VELDEN = [
     "soort_ontheffing",
-    "datum_vlucht",
     "luchtvaartuigen",
     "coord_lat",
     "coord_lon",
@@ -35,9 +35,9 @@ VERPLICHTE_VELDEN = [
 MAX_VOORUIT_WEKEN = 4  # ondertekening mag maximaal 4 weken vóór vroegste vlucht liggen
 
 
-# ──────────────────────────────────────────────
+# ───────────────────────────────
 # Hulpfuncties
-# ──────────────────────────────────────────────
+# ───────────────────────────────
 
 def _parse_datum(waarde, veldnaam):
     """Parseer YYYY-MM-DD naar date; retourneert (date, foutmelding_of_None)."""
@@ -100,17 +100,18 @@ def _controleer_4_weken(datum_ondertekening: date, vluchtdata: list[date]):
     )
 
 
-# ──────────────────────────────────────────────
+# ───────────────────────────────
 # Hoofdfunctie
-# ──────────────────────────────────────────────
+# ───────────────────────────────
 
 def run(state_pad: str | Path) -> None:
     state_pad = Path(state_pad)
     state     = json.loads(state_pad.read_text(encoding="utf-8"))
     aanvraag  = state["aanvraag"]
 
-    fouten    = []  # stoppen de pipeline
-    waarschuw = []  # pipeline gaat door, maar worden gelogd
+    fouten           = []  # gereserveerd voor onherstelbare technische fouten
+    waarschuw        = []  # pipeline gaat door; worden rood getoond in logboek
+    ontbrekende_velden = []  # ontbrekende verplichte velden (subset van waarschuw)
 
     setup_logging()
     log = LogAccumulator("tug.01_validatie")
@@ -120,37 +121,60 @@ def run(state_pad: str | Path) -> None:
     log(f"## Versie: {VERSION}")
     log(f"{'=' * 60}")
 
-    # ── 1. Verplichte velden ──────────────────
+    # ── 1. Verplichte velden ──────────────
     log("\nStap 2a: Volledigheidscheck verplichte velden ...")
     for veld in VERPLICHTE_VELDEN:
         waarde = aanvraag.get(veld)
         if waarde is None:
-            fouten.append(f"Verplicht veld ontbreekt of is null: '{veld}'")
+            melding = f"Verplicht veld ontbreekt of is null: '{veld}'"
+            waarschuw.append(melding)
+            ontbrekende_velden.append(veld)
             log(f"  ✗ {veld}: ontbreekt")
         elif isinstance(waarde, list) and len(waarde) == 0:
-            fouten.append(f"Verplicht veld is een lege lijst: '{veld}'")
+            melding = f"Verplicht veld is een lege lijst: '{veld}'"
+            waarschuw.append(melding)
+            ontbrekende_velden.append(veld)
             log(f"  ✗ {veld}: lege lijst")
         else:
             log(f"  ✓ {veld}")
 
-    # ── 2. Normalisatie datum_vlucht ──────────
-    log("\nStap 2b: Normalisatie datum_vlucht ...")
-    datum_vlucht_lijst, norm_fout = _normaliseer_datum_vlucht(aanvraag)
-    if norm_fout:
-        fouten.append(norm_fout)
-        log(f"  ✗ {norm_fout}")
-    elif datum_vlucht_lijst is not None:
-        aanvraag["datum_vlucht"] = datum_vlucht_lijst
-        log(f"  ✓ datum_vlucht genormaliseerd naar lijst: {datum_vlucht_lijst}")
+    # ── 1b. Speciale controle: datum_vlucht ──
+    datum_vlucht_ontbreekt = aanvraag.get("datum_vlucht") is None
+    if datum_vlucht_ontbreekt:
+        melding = (
+            "datum_vlucht is niet ingevuld — vluchtdatum onbekend. "
+            "Aanvraag wordt verwerkt; vergunningverlener dient de vluchtdatum handmatig aan te vullen."
+        )
+        waarschuw.append(melding)
+        log(f"\n  ✗ ONBEKENDE VLUCHTDATUM — datum_vlucht is null of ontbreekt.")
+        log(f"  ✗ {melding}")
+    else:
+        log(f"  ✓ datum_vlucht")
 
-    # ── 3. Datum-formaat vluchtdata ───────────
+    # ── 2. Normalisatie datum_vlucht ────────
+    log("\nStap 2b: Normalisatie datum_vlucht ...")
+    datum_vlucht_lijst = None
+    if datum_vlucht_ontbreekt:
+        log("  — datum_vlucht ontbreekt — normalisatie overgeslagen.")
+    else:
+        datum_vlucht_lijst, norm_fout = _normaliseer_datum_vlucht(aanvraag)
+        if norm_fout:
+            waarschuw.append(norm_fout)
+            log(f"  ✗ {norm_fout}")
+        elif datum_vlucht_lijst is not None:
+            aanvraag["datum_vlucht"] = datum_vlucht_lijst
+            log(f"  ✓ datum_vlucht genormaliseerd naar lijst: {datum_vlucht_lijst}")
+
+    # ── 3. Datum-formaat vluchtdata ─────────
     vluchtdata_parsed = []
-    if datum_vlucht_lijst:
+    if datum_vlucht_ontbreekt:
+        log("\nStap 2c: Validatie vluchtdata — overgeslagen (datum_vlucht ontbreekt).")
+    elif datum_vlucht_lijst:
         log("\nStap 2c: Validatie vluchtdata (YYYY-MM-DD) ...")
         for d in datum_vlucht_lijst:
             parsed, fout = _parse_datum(d, "datum_vlucht")
             if fout:
-                fouten.append(fout)
+                waarschuw.append(fout)
                 log(f"  ✗ {fout}")
             else:
                 vluchtdata_parsed.append(parsed)
@@ -164,12 +188,12 @@ def run(state_pad: str | Path) -> None:
             aanvraag["datum_ondertekening"], "datum_ondertekening"
         )
         if fout:
-            fouten.append(fout)
+            waarschuw.append(fout)
             log(f"  ✗ {fout}")
         else:
             log(f"  ✓ datum_ondertekening: {datum_ondertekening}")
 
-    # ── 5. 4-weken-regel ─────────────────────
+    # ── 5. 4-weken-regel ─────────────────
     vierw_ok = None
     vierw_melding = None
     if datum_ondertekening and vluchtdata_parsed:
@@ -181,67 +205,60 @@ def run(state_pad: str | Path) -> None:
             waarschuw.append(vierw_melding)
             log(f"  ✗ {vierw_melding}")
 
-    # ── 6. Luchtvaartuigen-structuur ──────────
+    # ── 6. Luchtvaartuigen-structuur ────────
     lv_lijst = aanvraag.get("luchtvaartuigen")
     if isinstance(lv_lijst, list) and lv_lijst:
         log("\nStap 2f: Validatie luchtvaartuigen ...")
         for i, lv in enumerate(lv_lijst):
             if not isinstance(lv, dict):
-                fouten.append(f"luchtvaartuigen[{i}] is geen object")
+                waarschuw.append(f"luchtvaartuigen[{i}] is geen object")
                 log(f"  ✗ luchtvaartuigen[{i}]: geen object")
                 continue
             if not lv.get("registratie"):
-                fouten.append(f"luchtvaartuigen[{i}]: 'registratie' ontbreekt")
+                waarschuw.append(f"luchtvaartuigen[{i}]: 'registratie' ontbreekt")
                 log(f"  ✗ luchtvaartuigen[{i}]: 'registratie' ontbreekt")
             else:
                 log(f"  ✓ luchtvaartuigen[{i}]: {lv['registratie']}")
 
-    # ── Samenvatting ──────────────────────────
+    # ── Samenvatting ────────────────────
     log(f"\n{'─' * 60}")
     geslaagd = len(fouten) == 0
-    if geslaagd:
-        log(f"Validatie geslaagd — {len(waarschuw)} waarschuwing(en).")
+    if not waarschuw:
+        log("Validatie geslaagd — 0 waarschuwing(en).")
     else:
-        log(f"Validatie MISLUKT — {len(fouten)} fout(en), {len(waarschuw)} waarschuwing(en).")
-        for f in fouten:
-            log(f"  FOUT: {f}")
+        log(f"Validatie geslaagd — {len(waarschuw)} waarschuwing(en).")
     log(f"{'=' * 60}")
 
-    # ── State bijwerken ───────────────────────
+    # ── State bijwerken ─────────────────
     state["aanvraag"] = aanvraag  # genormaliseerde datum_vlucht opslaan
     state["validatie"] = {
-        "geslaagd":         geslaagd,
-        "fouten":           fouten,
-        "waarschuwingen":   waarschuw,
-        "4_weken_ok":       vierw_ok,
-        "4_weken_melding":  vierw_melding,
-        "log_regels":       log.lines,
+        "geslaagd":               geslaagd,
+        "fouten":                 fouten,
+        "waarschuwingen":         waarschuw,
+        "ontbrekende_velden":     ontbrekende_velden,
+        "datum_vlucht_ontbreekt": datum_vlucht_ontbreekt,
+        "4_weken_ok":             vierw_ok,
+        "4_weken_melding":        vierw_melding,
+        "log_regels":             log.lines,
     }
 
     state.setdefault("logboek", []).append({
         "stap":     "01_validatie",
         "tijdstip": __import__("datetime").datetime.now().isoformat(),
-        "niveau":   "fout" if not geslaagd else ("waarschuwing" if waarschuw else "info"),
+        "niveau":   "waarschuwing" if waarschuw else "info",
         "bericht":  (
-            "Validatie geslaagd." if geslaagd
-            else f"Validatie mislukt: {'; '.join(fouten)}"
+            "Validatie geslaagd." if not waarschuw
+            else f"Validatie geslaagd met {len(waarschuw)} waarschuwing(en): {'; '.join(waarschuw[:2])}"
         ),
     })
 
     state_pad.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    if not geslaagd:
-        logging.getLogger("tug.01_validatie").error(
-            "Pipeline gestopt: aanvraag voldoet niet aan de vereisten."
-        )
-        sys.exit(1)
-
     logging.getLogger("tug.01_validatie").info(f"State geschreven naar {state_pad}")
 
 
-# ──────────────────────────────────────────────
+# ───────────────────────────────
 # CLI
-# ──────────────────────────────────────────────
+# ───────────────────────────────
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
