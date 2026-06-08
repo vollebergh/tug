@@ -358,20 +358,37 @@ def _zoek_icao_in_register(ph_code, df, log):
 def _vraag_handmatige_norm(reden, standaard_m=None):
     """
     Vraag de vergunningverlener om een afstandsnorm in te voeren.
-    standaard_m: standaardwaarde die wordt gebruikt bij ENTER (None = verplichte invoer).
+    standaard_m: standaardwaarde die wordt gebruikt bij ENTER of in batch-modus.
     Retourneert een positief geheel getal.
+
+    In batch-modus (geen TTY / EOFError): standaard_m wordt automatisch toegepast.
     """
+    import sys as _sys
+    niet_interactief = not _sys.stdin.isatty()
+
     print()
     print(f"  {'─' * 55}")
     print(f"  ⚠  Handmatige invoer vereist")
     print(f"  Reden: {reden}")
+
+    if niet_interactief and standaard_m is not None:
+        print(f"  Batch-modus: standaardwaarde {standaard_m} m automatisch aangenomen.")
+        print(f"  {'─' * 55}")
+        return standaard_m
+
     if standaard_m is not None:
         print(f"  Druk op ENTER om de standaardwaarde ({standaard_m} m) te gebruiken.")
     print(f"  {'─' * 55}")
 
     while True:
         prompt = f"  Afstandsnorm (m){f' [{standaard_m}]' if standaard_m else ''}: "
-        invoer = input(prompt).strip()
+        try:
+            invoer = input(prompt).strip()
+        except EOFError:
+            if standaard_m is not None:
+                print(f"  → Batch-modus: standaardwaarde {standaard_m} m aangenomen.")
+                return standaard_m
+            raise
         if not invoer and standaard_m is not None:
             print(f"  → Standaardwaarde {standaard_m} m aangenomen.")
             return standaard_m
@@ -409,10 +426,17 @@ def _classificeer_luchtvaartuig(lv, df, log):
         norm_m = _vraag_handmatige_norm(
             f"{ph_code} niet gevonden in ILT luchtvaartregister "
             f"(registratie mogelijk in ander EU-land of onbekend)",
+            standaard_m=500,
+        )
+        log(
+            f"  ✗ {ph_code}: niet gevonden in ILT-register — "
+            f"zorgvuldigheidshalve {norm_m} m aangehouden."
         )
         signalen.append(
-            f"{ph_code} niet gevonden in ILT luchtvaartregister. "
-            f"Norm {norm_m} m handmatig bepaald door vergunningverlener."
+            f"✗ {ph_code} niet gevonden in ILT luchtvaartregister "
+            f"(registratie mogelijk in ander EU-land of onbekend). "
+            f"Zorgvuldigheidshalve wordt een afstandsnorm van {norm_m} m aangehouden. "
+            f"Definitieve norm vereist controle door vergunningverlener."
         )
         return {
             "registratie":       ph_code,

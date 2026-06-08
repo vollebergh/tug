@@ -5,7 +5,6 @@ Versie: 1.0.0  |  2026-05-15
 Volledigheidscheck van de aanvraag:
   - Controleert aanwezigheid van verplichte velden
   - Normaliseert datum_vlucht naar een lijst (str → [str])
-  - datum_vlucht null/ontbrekend = waarschuwing (niet fataal)
   - Controleert of datum_ondertekening niet meer dan 4 weken vóór
     de vroegste vluchtdatum ligt
 
@@ -35,9 +34,9 @@ VERPLICHTE_VELDEN = [
 MAX_VOORUIT_WEKEN = 4  # ondertekening mag maximaal 4 weken vóór vroegste vlucht liggen
 
 
-# ───────────────────────────────
+# ──────────────────────────────────────────────
 # Hulpfuncties
-# ───────────────────────────────
+# ──────────────────────────────────────────────
 
 def _parse_datum(waarde, veldnaam):
     """Parseer YYYY-MM-DD naar date; retourneert (date, foutmelding_of_None)."""
@@ -100,9 +99,9 @@ def _controleer_4_weken(datum_ondertekening: date, vluchtdata: list[date]):
     )
 
 
-# ───────────────────────────────
+# ──────────────────────────────────────────────
 # Hoofdfunctie
-# ───────────────────────────────
+# ──────────────────────────────────────────────
 
 def run(state_pad: str | Path) -> None:
     state_pad = Path(state_pad)
@@ -121,7 +120,7 @@ def run(state_pad: str | Path) -> None:
     log(f"## Versie: {VERSION}")
     log(f"{'=' * 60}")
 
-    # ── 1. Verplichte velden ──────────────
+    # ── 1. Verplichte velden ──────────────────
     log("\nStap 2a: Volledigheidscheck verplichte velden ...")
     for veld in VERPLICHTE_VELDEN:
         waarde = aanvraag.get(veld)
@@ -151,7 +150,7 @@ def run(state_pad: str | Path) -> None:
     else:
         log(f"  ✓ datum_vlucht")
 
-    # ── 2. Normalisatie datum_vlucht ────────
+    # ── 2. Normalisatie datum_vlucht ──────────
     log("\nStap 2b: Normalisatie datum_vlucht ...")
     datum_vlucht_lijst = None
     if datum_vlucht_ontbreekt:
@@ -165,7 +164,7 @@ def run(state_pad: str | Path) -> None:
             aanvraag["datum_vlucht"] = datum_vlucht_lijst
             log(f"  ✓ datum_vlucht genormaliseerd naar lijst: {datum_vlucht_lijst}")
 
-    # ── 3. Datum-formaat vluchtdata ─────────
+    # ── 3. Datum-formaat vluchtdata ───────────
     vluchtdata_parsed = []
     if datum_vlucht_ontbreekt:
         log("\nStap 2c: Validatie vluchtdata — overgeslagen (datum_vlucht ontbreekt).")
@@ -193,7 +192,7 @@ def run(state_pad: str | Path) -> None:
         else:
             log(f"  ✓ datum_ondertekening: {datum_ondertekening}")
 
-    # ── 5. 4-weken-regel ─────────────────
+    # ── 5. 4-weken-regel ─────────────────────
     vierw_ok = None
     vierw_melding = None
     if datum_ondertekening and vluchtdata_parsed:
@@ -205,7 +204,7 @@ def run(state_pad: str | Path) -> None:
             waarschuw.append(vierw_melding)
             log(f"  ✗ {vierw_melding}")
 
-    # ── 6. Luchtvaartuigen-structuur ────────
+    # ── 6. Luchtvaartuigen-structuur ──────────
     lv_lijst = aanvraag.get("luchtvaartuigen")
     if isinstance(lv_lijst, list) and lv_lijst:
         log("\nStap 2f: Validatie luchtvaartuigen ...")
@@ -220,7 +219,7 @@ def run(state_pad: str | Path) -> None:
             else:
                 log(f"  ✓ luchtvaartuigen[{i}]: {lv['registratie']}")
 
-    # ── Samenvatting ────────────────────
+    # ── Samenvatting ──────────────────────────
     log(f"\n{'─' * 60}")
     geslaagd = len(fouten) == 0
     if not waarschuw:
@@ -229,7 +228,7 @@ def run(state_pad: str | Path) -> None:
         log(f"Validatie geslaagd — {len(waarschuw)} waarschuwing(en).")
     log(f"{'=' * 60}")
 
-    # ── State bijwerken ─────────────────
+    # ── State bijwerken ───────────────────────
     state["aanvraag"] = aanvraag  # genormaliseerde datum_vlucht opslaan
     state["validatie"] = {
         "geslaagd":               geslaagd,
@@ -256,9 +255,9 @@ def run(state_pad: str | Path) -> None:
     logging.getLogger("tug.01_validatie").info(f"State geschreven naar {state_pad}")
 
 
-# ───────────────────────────────
+# ──────────────────────────────────────────────
 # CLI
-# ───────────────────────────────
+# ──────────────────────────────────────────────
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:

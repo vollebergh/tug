@@ -204,7 +204,6 @@ Meerdere aanvragen in één bestand als JSON-array:
 |----------|-----------------|
 | Aanwezigheid van alle 7 verplichte velden | **Fataal** — pipeline stopt |
 | `datum_vlucht` als string → automatisch omgezet naar `[string]` | Normalisatie (geen fout) |
-| `datum_vlucht` ontbreekt of is null | **Waarschuwing** — pipeline gaat door |
 | Datum-formaat YYYY-MM-DD voor alle vluchtdata | **Fataal** |
 | Datum-formaat YYYY-MM-DD voor `datum_ondertekening` | **Fataal** |
 | Structuur `luchtvaartuigen`: array van objecten met `registratie` | **Fataal** |
@@ -246,7 +245,7 @@ tug_state.json  communicatie tussen stappen; gewist na succesvolle run
 ### Modulerollen
 
 | Module | Rol | Afhankelijkheden |
-|--------|-----|------------------|
+|--------|-----|-----------------|
 | `tug_run.py` | Orchestrator; start stappen via `subprocess` | — |
 | `tug_01_validatie.py` | Volledigheidscheck; normaliseert `datum_vlucht` | — |
 | `tug_02_classificatie.py` | ILT-register ophalen/cachen; NLR-tabel opzoeken | `pandas`, `odfpy` |
@@ -287,7 +286,7 @@ Bij appendix 013/015/016/017 zijn de normen niet vastgesteld in de NLR-tabel. De
 ### Zones
 
 | Zone | Berekening | Gebruik |
-|------|-----------|----------|
+|------|-----------|---------|
 | Toetsingsafstand | Norm luidste luchtvaartuig (NLR-tabel) | Geluidgevoelige gebouwen, begraafplaatsen, kinderopvangverblijf, scholen |
 | Margeband | Toetsingsafstand + 75 m | Optionele signalering overige gebouwen |
 | Aandachtsgebied maneges | Toetsingsafstand + 375 m | Manegesignalering |
@@ -329,7 +328,7 @@ Er zijn geen landelijk dekkende polygoongeometrieën van manegegebieden beschikb
 ### Luchthavens
 
 | Grens | Afstand |
-|-------|----------|
+|-------|---------|
 | Wettelijke minimumafstand | 1000 m |
 | Signaleringmarge | 2000 m |
 
@@ -340,7 +339,7 @@ Er zijn geen landelijk dekkende polygoongeometrieën van manegegebieden beschikb
 Alle externe bestanden worden gecachet in `geo/`. De pipeline controleert de TTL bij elke run en herdownloadt automatisch als de cache verlopen is.
 
 | Bron | Gebruik | TTL | Cachebestand |
-|------|---------|-----|---------------|
+|------|---------|-----|--------------|
 | ILT Luchtvaartregister | PH-code → ICAO | 30 dagen | `geo/luchtvaartuigregister_ilt.ods` |
 | DUO Open Onderwijsdata | Scholen PO/SO/VO/MBO/HO | 90 dagen | `geo/duo_scholen_po.geojson`, `geo/duo_scholen_overig.geojson` |
 | LRK (Landelijk Register Kinderopvang) | KDV-locaties via BAG-koppeling | 7 dagen | In-memory (geen lokale cache) |
@@ -362,7 +361,7 @@ Bronpagina: https://www.ilent.nl/documenten/lijsten/luchtvaart/databestanden/luc
 Verblijfsobjecten via WFS-query met `propertyName`-filter op 9 velden:
 
 | Veld | Gebruik |
-|------|----------|
+|------|---------|
 | `identificatie` | Koppeling met KDV (LRK `bag_id`) en DUO (`vbo_id`) |
 | `gebruiksdoel` | Geluidgevoelige functiebepaling |
 | `openbare_ruimte`, `huisnummer`, `huisletter`, `toevoeging`, `postcode`, `woonplaats` | Adresopbouw |
@@ -411,7 +410,7 @@ Begraafplaatsen die niet als benoemd object in de PDOK Locatieserver staan worde
 
 Endpoint: `https://api.pdok.nl/brt/top10nl/ogc/v1_0/collections/terrein_vlak/items`
 
-Eén begraafplaats kan in de BRT uit meerdere afzonderlijke vlakken bestaan. Vlakken die elkaar binnen 5 m overlappen of raken worden samengevoegd tot één cluster via een union-find-algoritme. Het samengestelde polygoon wordt vervolgens getoetst aan de toetsingsafstand.
+Één begraafplaats kan in de BRT uit meerdere afzonderlijke vlakken bestaan. Vlakken die elkaar binnen 5 m overlappen of raken worden samengevoegd tot één cluster via een union-find-algoritme. Het samengestelde polygoon wordt vervolgens getoetst aan de toetsingsafstand.
 
 ### Luchthavens (GeoPortaal Overijssel WFS)
 
@@ -425,7 +424,7 @@ Laag: `B64_nutsvoorzieningen:B6_Luchthaven_puntlocaties`
 Alle bestanden worden opgeslagen in `output/`:
 
 | Bestand | Omschrijving |
-|---------|---------------|
+|---------|--------------|
 | `tug_rapport_{naam}_{timestamp}.pdf` | PDF-rapport: proceslog (12 paragrafen) + adressenlijst + situatie- en omgevingskaart |
 | `tug_kaart_{naam}_{timestamp}.html` | Interactieve Leaflet-kaart met alle geïnventariseerde objecten en zones |
 

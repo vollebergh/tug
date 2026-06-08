@@ -12,6 +12,7 @@ Gebruik: python tug_05_output.py tug_state.json
 import io as _io
 import json
 import logging
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -71,6 +72,13 @@ from tug_config import (
 
 def _datum_leesbaar(dt):
     return f"{dt.day} {_MAANDEN_NL[dt.month]} {dt.year}, {dt.strftime('%H:%M')}"
+
+
+def _naam_slug(naam: str) -> str:
+    """Zet een aanvraaknaam om naar een veilige bestandsnaamcomponent."""
+    slug = re.sub(r"[^\w\-]", "_", naam.strip())
+    slug = re.sub(r"_+", "_", slug).strip("_")
+    return slug[:40]
 
 
 # ──────────────────────────────────────────────
@@ -261,7 +269,10 @@ class _ProcesLogBuilder:
 
     def _h1_input(self):
         self.kop("1. Inputparameters aanvraag")
-        vluchtdata = self.aanvraag.get("datum_vlucht", [])
+        naam = self.aanvraag.get("naam", "")
+        if naam:
+            self.regel(f"Naam aanvraag: {naam}")
+        vluchtdata = self.aanvraag.get("datum_vlucht") or []
         if isinstance(vluchtdata, str):
             vluchtdata = [vluchtdata]
         lv_lijst = self.aanvraag.get("luchtvaartuigen", [])
@@ -269,7 +280,8 @@ class _ProcesLogBuilder:
             f"{lv.get('registratie','?')} (type: {lv.get('type','?')})" for lv in lv_lijst
         )
         self.regel(f"Soort ontheffing: {self.aanvraag.get('soort_ontheffing', '—')}")
-        self.regel(f"Vluchtdatum/data: {', '.join(vluchtdata)}")
+        vluchtdata_str = ', '.join(vluchtdata) if vluchtdata else "— ONBEKEND —"
+        self.regel(f"Vluchtdatum/data: {vluchtdata_str}", rood=not bool(vluchtdata))
         self.regel(
             f"Aantal vluchten: {self.aanvraag.get('aantal_vluchten', '—')}  |  "
             f"UDP: {'ja' if self.aanvraag.get('vlucht_udp') else 'nee'}"
@@ -287,6 +299,21 @@ class _ProcesLogBuilder:
         )
         for f in self.validatie.get("fouten", []):
             self.regel(f"Fout: {f}", rood=True, ind=12)
+        ontbrekende = self.validatie.get("ontbrekende_velden", [])
+        if ontbrekende:
+            self.kop("⚠ Ontbrekende verplichte velden", rood=True)
+            for v in ontbrekende:
+                self.regel(
+                    f"'{v}' ontbreekt in de aanvraag. Dient te worden aangevuld door de aanvrager.",
+                    rood=True, ind=8,
+                )
+        if self.validatie.get("datum_vlucht_ontbreekt"):
+            self.kop("⚠ Vluchtdatum onbekend", rood=True)
+            self.regel(
+                "datum_vlucht is niet ingevuld. Vergunningverlener dient de vluchtdatum "
+                "handmatig aan te vullen voordat de ontheffing kan worden verleend.",
+                rood=True, ind=8,
+            )
         vierw_melding = self.validatie.get("4_weken_melding")
         vierw_ok      = self.validatie.get("4_weken_ok")
         if vierw_melding:
@@ -563,8 +590,11 @@ class _ProcesLogBuilder:
         aandacht_n  = len(self.ruimtelijk.get("adressen_aandacht", []))
         overig_n    = len(self.ruimtelijk.get("adressen_overig", []))
         timestamp   = self.ruimtelijk.get("timestamp", "")
-        pdf_naam    = f"tug_rapport_{timestamp}.pdf" if timestamp else "tug_rapport_<timestamp>.pdf"
-        html_naam   = f"tug_kaart_{timestamp}.html"  if timestamp else "tug_kaart_<timestamp>.html"
+        naam        = self.aanvraag.get("naam", "")
+        naam_slug   = _naam_slug(naam)
+        naam_infix  = f"_{naam_slug}" if naam_slug else ""
+        pdf_naam    = f"tug_rapport{naam_infix}_{timestamp}.pdf" if timestamp else "tug_rapport_<naam>_<timestamp>.pdf"
+        html_naam   = f"tug_kaart{naam_infix}_{timestamp}.html"  if timestamp else "tug_kaart_<naam>_<timestamp>.html"
         self.schrijf(
             "Op basis van de bovenstaande inventarisatie zijn de adressen gecategoriseerd "
             "en opgenomen in de adressenlijst. De resultaten zijn verwerkt in een PDF-rapport "
@@ -829,7 +859,9 @@ def genereer_pdf(state, log):
 
     signaal_straal = straal + MANEGE_SIGNAAL_MARGE
 
-    bestand = OUTPUT_DIR / f"tug_rapport_{timestamp}.pdf"
+    naam_slug = _naam_slug(state.get("aanvraag", {}).get("naam", ""))
+    naam_infix = f"_{naam_slug}" if naam_slug else ""
+    bestand = OUTPUT_DIR / f"tug_rapport{naam_infix}_{timestamp}.pdf"
     c = _NumberedCanvas(str(bestand), pagesize=A4)
 
     _pdf_proceslog(c, state)
@@ -877,6 +909,11 @@ def genereer_html(state, log):
     signaal_straal = straal + MANEGE_SIGNAAL_MARGE
     marge_straal   = straal + MARGE_M
 
+    naam           = state.get("aanvraag", {}).get("naam", "")
+    naam_slug      = _naam_slug(naam)
+    naam_infix     = f"_{naam_slug}" if naam_slug else ""
+    html_titel     = f"TUG-ontheffingen — Kaart ({naam})" if naam else "TUG-ontheffingen — Kaart"
+
     data_js = (
         f"var CENTER_LAT={lat};\n"
         f"var CENTER_LON={lon};\n"
@@ -896,7 +933,7 @@ def genereer_html(state, log):
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TUG-ontheffingen — Kaart</title>
+<title>""" + html_titel + """</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H"
       crossorigin="anonymous"/>
@@ -1037,7 +1074,7 @@ legend.addTo(map);
 </html>"""
     )
 
-    bestand = OUTPUT_DIR / f"tug_kaart_{timestamp}.html"
+    bestand = OUTPUT_DIR / f"tug_kaart{naam_infix}_{timestamp}.html"
     bestand.write_text(html, encoding="utf-8")
     log(f"  HTML-kaart opgeslagen: {bestand}")
     return bestand

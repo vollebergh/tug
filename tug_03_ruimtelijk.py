@@ -15,6 +15,7 @@ Module-afhankelijkheden:
 
 import json
 import logging
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +37,17 @@ from tug_03_bronnen import (
     transform_geom_to_rd, shapely_from_geojson_geom,
 )
 from tug_03_kaart import _render_kaart, _bereken_zoom
+
+
+# ──────────────────────────────────────────────
+# Hulpfuncties
+# ──────────────────────────────────────────────
+
+def _naam_slug(naam: str) -> str:
+    """Zet een aanvraaknaam om naar een veilige bestandsnaamcomponent."""
+    slug = re.sub(r"[^\w\-]", "_", naam.strip())
+    slug = re.sub(r"_+", "_", slug).strip("_")
+    return slug[:40]
 
 
 # ──────────────────────────────────────────────
@@ -761,8 +773,10 @@ def run(state_pad: str | Path) -> None:
     )
     img2 = _render_kaart(lon, lat, zoom2, map_w_px, map_h_px, straal, signaal_straal, **render_kwargs)
 
-    kaart1_pad = OUTPUT_DIR / f"tug_kaart_situatie_{timestamp}.png"
-    kaart2_pad = OUTPUT_DIR / f"tug_kaart_omgeving_{timestamp}.png"
+    naam_slug  = _naam_slug(state.get("aanvraag", {}).get("naam", ""))
+    naam_infix = f"_{naam_slug}" if naam_slug else ""
+    kaart1_pad = OUTPUT_DIR / f"tug_kaart_situatie{naam_infix}_{timestamp}.png"
+    kaart2_pad = OUTPUT_DIR / f"tug_kaart_omgeving{naam_infix}_{timestamp}.png"
     img1.rotate(90, expand=True).save(kaart1_pad, format="PNG")
     img2.rotate(90, expand=True).save(kaart2_pad, format="PNG")
     log(f"  Kaart 1 opgeslagen: {kaart1_pad.name}")
@@ -796,6 +810,7 @@ def run(state_pad: str | Path) -> None:
     log(f"{'=' * 60}")
 
     state["ruimtelijk"] = {
+        "naam":               state.get("aanvraag", {}).get("naam", ""),
         "straal":             straal,
         "lat":                lat,
         "lon":                lon,
