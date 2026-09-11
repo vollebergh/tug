@@ -13,7 +13,7 @@ from shapely.geometry import Point, Polygon, shape
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform as shapely_transform
 
-from tug_config import _MAANDEN_NL
+from tug_config import MAX_PUNT_AFSTAND_M, _MAANDEN_NL
 from tug_types import Feature
 
 
@@ -70,6 +70,50 @@ def _geom_rings_wgs84(geom_wgs: BaseGeometry) -> list[list[tuple[float, float]]]
     elif geom_wgs.geom_type == "MultiPolygon":
         return [list(p.exterior.coords) for p in geom_wgs.geoms]
     return []
+
+
+# ──────────────────────────────────────────────
+# Puntlocaties (B03: één of meer per aanvraag)
+# ──────────────────────────────────────────────
+
+def puntlocaties(aanvraag: dict[str, Any]) -> list[tuple[float, float]]:
+    """Retourneer de puntlocaties van een aanvraag als lijst (lat, lon).
+
+    `coord_lat` en `coord_lon` zijn elk een getal (één locatie) of een lijst van
+    even lange lengte (meerdere locaties; de n-de lat hoort bij de n-de lon).
+    Meerdere locaties liggen onderling hooguit MAX_PUNT_AFSTAND_M uit elkaar.
+    Gooit ValueError bij een ongeldige invoer.
+    """
+    lat, lon = aanvraag.get("coord_lat"), aanvraag.get("coord_lon")
+    lats = lat if isinstance(lat, list) else [lat]
+    lons = lon if isinstance(lon, list) else [lon]
+    if len(lats) != len(lons):
+        raise ValueError(f"coord_lat ({len(lats)}) en coord_lon ({len(lons)}) "
+                         f"bevatten niet evenveel waarden")
+    if not lats:
+        raise ValueError("coord_lat/coord_lon mogen geen lege lijst zijn")
+    punten = []
+    for i, (la, lo) in enumerate(zip(lats, lons), 1):
+        try:
+            la, lo = float(la), float(lo)
+        except (TypeError, ValueError):
+            raise ValueError(f"puntlocatie {i}: geen geldige coördinaten ({la!r}, {lo!r})")
+        if not (50.0 <= la <= 54.0 and 3.0 <= lo <= 8.0):
+            raise ValueError(f"puntlocatie {i}: ({la}, {lo}) ligt niet in Nederland "
+                             f"(lat/lon verwisseld?)")
+        punten.append((la, lo))
+
+    # Meerdere puntlocaties mogen onderling niet verder dan MAX_PUNT_AFSTAND_M uit elkaar liggen
+    rd = [wgs84_to_rd(lo, la) for la, lo in punten]
+    for i in range(len(rd)):
+        for j in range(i + 1, len(rd)):
+            afstand = ((rd[i][0] - rd[j][0]) ** 2 + (rd[i][1] - rd[j][1]) ** 2) ** 0.5
+            if afstand > MAX_PUNT_AFSTAND_M:
+                raise ValueError(
+                    f"puntlocatie {i + 1} en {j + 1} liggen {afstand:.0f} m uit elkaar; "
+                    f"maximaal {MAX_PUNT_AFSTAND_M} m toegestaan"
+                )
+    return punten
 
 
 # ──────────────────────────────────────────────

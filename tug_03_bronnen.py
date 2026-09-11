@@ -62,6 +62,7 @@ from tug_bronnen_bag import (
     filter_binnen_straal, filter_binnen_marge,
     _parse_doelen, dedupliceer_vbo, filter_geluidgevoelig,
     haal_pand_ids, haal_pand_geometrie_via_bbox, gevel_check,
+    haal_panden, koppel_gevelcontouren,
 )
 
 # ── PDOK Location API + Overijssel WFS ───────

@@ -3,7 +3,7 @@ tug_05_output.py -- Stap 6 TUG-ontheffingen workflow
 Versie: 4.5.0  |  2026-05-15
 
 Leest tug_state.json (sectie ruimtelijk) en genereert:
-  - PDF-rapport (proceslog + adressenlijst + twee kaartpagina's)
+  - PDF-rapport (proceslog + adressenlijst + vier kaartpagina's: situatie en omgeving, elk als luchtfoto en topografisch)
   - Interactieve HTML-kaart
 
 Gebruik: python tug_05_output.py tug_state.json
@@ -60,7 +60,7 @@ class _NumberedCanvas(rl_canvas.Canvas):
 
 from tug_config import (
     VERSION, MODEL_LABEL, OUTPUT_DIR,
-    MARGE_M, MANEGE_SIGNAAL_MARGE,
+    MARGE_M, TOETSING_TOESLAG_M, toetsing_label, MANEGE_SIGNAAL_MARGE,
     N2000_SIGNAAL_MARGE, NNN_SIGNAAL_MARGE, NNN_TTL_DAGEN,
     LUCHTHAVEN_GRENS_M, LUCHTHAVEN_SIGNAAL_M,
     KDV_BBOX_EXTRA, LRK_CACHE_DAYS,
@@ -85,7 +85,22 @@ def _naam_slug(naam: str) -> str:
 # PDF — paginakop
 # ──────────────────────────────────────────────
 
-def _pdf_pagina_kop(c, y, lat, lon, straal, datum_leesbaar, pagina_titel, page_w=None):
+def _locatie_tekst(punten, lat, lon):
+    """Korte weergave van de puntlocatie(s) voor paginakoppen."""
+    if punten and len(punten) > 1:
+        return f"{len(punten)} puntlocaties"
+    return f"lat={lat:.6f}, lon={lon:.6f}"
+
+
+def _binnen_tekst(item, n_punten):
+    """'Puntlocatie binnen gebied', bij meerdere locaties met de volgnummers erbij."""
+    nrs = item.get("punten_binnen") or []
+    if n_punten > 1 and nrs:
+        return f"Puntlocatie {', '.join(map(str, nrs))} (van {n_punten}) binnen gebied"
+    return "Puntlocatie binnen gebied"
+
+
+def _pdf_pagina_kop(c, y, lat, lon, straal, datum_leesbaar, pagina_titel, page_w=None, punten=None):
     from reportlab.pdfbase.pdfmetrics import stringWidth as _sw
     PAGE_W = page_w if page_w is not None else A4[0]
     MARGIN = _PDF_MARGIN_MM * mm
@@ -99,7 +114,7 @@ def _pdf_pagina_kop(c, y, lat, lon, straal, datum_leesbaar, pagina_titel, page_w
     c.setFont("Helvetica", 8)
     c.setFillColorRGB(0.42, 0.42, 0.42)
     meta = (f"Gegenereerd: {datum_leesbaar}   •   "
-            f"lat={lat:.6f}, lon={lon:.6f}, straal={straal:.0f} m   •   v{VERSION}")
+            f"{_locatie_tekst(punten, lat, lon)}, straal={straal:.0f} m   •   workflowversie {VERSION}")
     c.drawString(x, y, meta)
     y -= 8
 
@@ -157,6 +172,7 @@ class _ProcesLogBuilder:
         self.stat       = self.ruimtelijk.get("statistieken", {})
         self.lat        = self.ruimtelijk.get("lat", 0)
         self.lon        = self.ruimtelijk.get("lon", 0)
+        self.punten     = self.ruimtelijk.get("punten") or [[self.lat, self.lon]]
         self.straal     = self.ruimtelijk.get("straal", 0)
         self.datum_l    = self.ruimtelijk.get("datum_leesbaar", "")
         self.rlog       = self.ruimtelijk.get("log_regels", [])
@@ -262,7 +278,7 @@ class _ProcesLogBuilder:
             "Proceslogboek geautomatiseerde inventarisatie van kwetsbare gebouwen en functies "
             "ten behoeve van de beoordeling van ontheffingaanvragen TUG "
             "(artikel 8a.51 Wet luchtvaart). "
-            f"Gegenereerd: {self.datum_l}. Versie: v{VERSION}. "
+            f"Gegenereerd: {self.datum_l}. Workflowversie (git): {VERSION}. "
             f"{model_zin}",
             kleur=self.KLEUR_MUT,
         )
@@ -287,7 +303,9 @@ class _ProcesLogBuilder:
             f"UDP: {'ja' if self.aanvraag.get('vlucht_udp') else 'nee'}"
         )
         self.regel(f"Luchtvaartuigen: {lv_str}")
-        self.regel(f"Puntlocatie (WGS84): lat={self.lat:.6f}, lon={self.lon:.6f}")
+        for i, (p_lat, p_lon) in enumerate(self.punten, 1):
+            nr = f" {i}" if len(self.punten) > 1 else ""
+            self.regel(f"Puntlocatie{nr} (WGS84): lat={p_lat:.6f}, lon={p_lon:.6f}")
         self.regel(
             f"Ondertekend: {self.aanvraag.get('datum_ondertekening','—')} "
             f"om {self.aanvraag.get('tijdstip_ondertekening','—')}"
@@ -376,10 +394,20 @@ class _ProcesLogBuilder:
             "nauwkeurig uitvoerbaar zijn. Alle cirkelbuffers worden in RD aangemaakt."
         )
         self.lege()
-        rd_r = next((r.strip() for r in self.rlog if "RD: x=" in r), "—")
-        self.regel(f"GPS-invoer (WGS84):  lat={self.lat:.6f}, lon={self.lon:.6f}")
-        self.regel(f"RD-uitvoer (EPSG:28992):  {rd_r}")
-        self.regel(f"Toetsingsafstand:  {self.straal:.0f} m")
+        rd_regels = [r.strip() for r in self.rlog if "RD: x=" in r]
+        for i, (p_lat, p_lon) in enumerate(self.punten, 1):
+            rd_r = rd_regels[i - 1].split("RD: ", 1)[-1] if i <= len(rd_regels) else "—"
+            nr = f"Puntlocatie {i}:  " if len(self.punten) > 1 else ""
+            self.regel(f"{nr}GPS (WGS84) lat={p_lat:.6f}, lon={p_lon:.6f}  →  RD (EPSG:28992) {rd_r}")
+        if len(self.punten) > 1:
+            self.regel(
+                "Meerdere puntlocaties: toetsings-, marge- en aandachtsgebied zijn de vereniging "
+                "van de cirkels rond alle puntlocaties; afstanden gelden tot de dichtstbijzijnde locatie."
+            )
+        self.regel(
+            f"Toetsingsafstand:  {self.straal:.0f} m  "
+            f"(Lden-afstand {self.straal - TOETSING_TOESLAG_M:.0f} m + toeslag {TOETSING_TOESLAG_M} m)"
+        )
         self.regel(
             f"Margeband:  {self.straal + MARGE_M:.0f} m  "
             f"(toetsingsafstand + {MARGE_M} m)"
@@ -407,7 +435,7 @@ class _ProcesLogBuilder:
                 rood=True,
             )
             for item in n2000_in:
-                self.regel(f"• {item['naam']}", rood=True, ind=12)
+                self.regel(f"• {item['naam']} — {_binnen_tekst(item, len(self.punten))}", rood=True, ind=12)
         else:
             self.regel("Puntlocatie ligt niet binnen een Natura 2000-gebied.")
             if n2000_nabij:
@@ -448,7 +476,7 @@ class _ProcesLogBuilder:
                 f"TREFFER — puntlocatie ligt binnen {len(nnn_in)} NNN-gebied(en):", rood=True
             )
             for item in nnn_in:
-                self.regel(f"• {item['naam']}", rood=True, ind=12)
+                self.regel(f"• {item['naam']} — {_binnen_tekst(item, len(self.punten))}", rood=True, ind=12)
         else:
             self.regel("Puntlocatie ligt niet binnen een NNN-gebied.")
             if nnn_nabij:
@@ -496,15 +524,17 @@ class _ProcesLogBuilder:
         self.subkop("Stap 4 — Marge-adressen (margeband)")
         self.schrijf(
             f"Verblijfsobjecten in de margeband ({self.straal:.0f}–{self.straal + MARGE_M:.0f} m) worden "
-            f"apart geïnventariseerd. Geluidsgevoelige objecten in deze band worden in de "
-            f"adressenlijst opgenomen als 'instemmingsverklaring optioneel'."
+            f"apart geïnventariseerd. Deze objecten worden op de kaarten weergegeven, maar "
+            f"niet in de adressenlijst opgenomen. Geluidsgevoelige objecten in deze band "
+            f"doorlopen de gevel-check (stap 6)."
         )
         self.logregels(["Stap 4d"], stop_markers=["Stap 5"])
 
         self.subkop("Stap 5 — Filtering op geluidsgevoelige gebruiksdoelen")
         self.schrijf(
             "Alleen objecten met een geluidsgevoelig gebruiksdoel worden als wettelijk relevant "
-            "beschouwd: woonfunctie, gezondheidszorgfunctie, onderwijsfunctie, logiesfunctie."
+            "beschouwd: woonfunctie, gezondheidszorgfunctie, onderwijsfunctie. "
+            "Logiesfunctie wordt niet als geluidsgevoelig aangemerkt."
         )
         self.logregels(["Stap 5"], stop_markers=["Stap 6"])
 
@@ -598,7 +628,7 @@ class _ProcesLogBuilder:
         self.schrijf(
             "Op basis van de bovenstaande inventarisatie zijn de adressen gecategoriseerd "
             "en opgenomen in de adressenlijst. De resultaten zijn verwerkt in een PDF-rapport "
-            "(adressenlijst + situatie- en omgevingskaart) en een interactieve HTML-kaart. "
+            "(adressenlijst + situatie- en omgevingskaart, elk als luchtfoto en als topografische kaart) en een interactieve HTML-kaart op luchtfoto. "
             "De tijdelijke procesdata (tug_state.json) wordt na voltooiing gewist "
             "in het kader van dataveiligheid."
         )
@@ -607,7 +637,7 @@ class _ProcesLogBuilder:
         self.regel(f"HTML-kaart:    {html_naam}")
         self.lege()
         self.regel(f"Wettelijk relevant (instemmingsverklaring vereist):  {wettelijk_n}")
-        self.regel(f"Margeband (instemmingsverklaring optioneel):         {marge_n}")
+        self.regel(f"Margeband (alleen op kaart, niet in adressenlijst):  {marge_n}")
         self.regel(f"Aandachtslocaties (maneges, luchthavens):           {aandacht_n}")
         self.regel(f"Overig (weergave op kaart):                         {overig_n}")
 
@@ -639,7 +669,7 @@ def _pdf_proceslog(c, state):
 # ──────────────────────────────────────────────
 
 def _pdf_adressen_pagina(c, datum_leesbaar, lat, lon, straal,
-                          wettelijk, marge, aandacht, overig, n2000=None):
+                          wettelijk, marge, aandacht, overig, n2000=None, punten=None):
     from reportlab.lib.pagesizes import landscape as _landscape
     from reportlab.pdfbase.pdfmetrics import stringWidth as _sw
 
@@ -696,9 +726,10 @@ def _pdf_adressen_pagina(c, datum_leesbaar, lat, lon, straal,
             c.setPageSize(LS)
             set_y(PAGE_H - MARGIN)
             set_y(_pdf_pagina_kop(c, y(), lat, lon, straal,
-                                  datum_leesbaar, "Adressenlijst (vervolg)", page_w=PAGE_W))
+                                  datum_leesbaar, "Adressenlijst (vervolg)", page_w=PAGE_W,
+                                  punten=punten))
 
-    set_y(_pdf_pagina_kop(c, y(), lat, lon, straal, datum_leesbaar, "Adressenlijst", page_w=PAGE_W))
+    set_y(_pdf_pagina_kop(c, y(), lat, lon, straal, datum_leesbaar, "Adressenlijst", page_w=PAGE_W, punten=punten))
 
     def teken_sectie_kop(titel, n, extra_header, titel_kleur=(0.10, 0.32, 0.46)):
         check_pagina(LINE_H * 5)
@@ -752,7 +783,7 @@ def _pdf_adressen_pagina(c, datum_leesbaar, lat, lon, straal,
                 "adres":        item.get("naam", "Onbekend"),
                 "pc_wpl":       "",
                 "gebruiksdoel": "Natura 2000-gebied",
-                "extra":        "Puntlocatie binnen gebied",
+                "extra":        _binnen_tekst(item, len(punten or [None])),
             }, tekst_kleur=_ROOD)
         set_y(y() - LINE_H * 2)
 
@@ -768,7 +799,7 @@ def _pdf_adressen_pagina(c, datum_leesbaar, lat, lon, straal,
                 "adres":        item.get("naam", "Onbekend"),
                 "pc_wpl":       "",
                 "gebruiksdoel": "Natuurnetwerk Nederland",
-                "extra":        "Puntlocatie binnen gebied",
+                "extra":        _binnen_tekst(item, len(punten or [None])),
             }, tekst_kleur=_ROOD)
         set_y(y() - LINE_H * 2)
 
@@ -778,17 +809,6 @@ def _pdf_adressen_pagina(c, datum_leesbaar, lat, lon, straal,
             teken_rij(rij)
     else:
         teken_leeg("Geen wettelijk relevante adressen gevonden.")
-    set_y(y() - LINE_H * 2)
-
-    teken_sectie_kop(
-        f"Adressenlijst (marge +{MARGE_M} m) — instemmingsverklaring optioneel",
-        len(marge), "Afstand",
-    )
-    if marge:
-        for rij in marge:
-            teken_rij(rij)
-    else:
-        teken_leeg(f"Geen geluidgevoelige gebouwen in de margeband (+{MARGE_M} m).")
     set_y(y() - LINE_H * 2)
 
     heeft_maneges    = any("manege"    in (r.get("gebruiksdoel") or "").lower() for r in aandacht)
@@ -854,8 +874,7 @@ def genereer_pdf(state, log):
     marge          = ruimtelijk["adressen_marge"]
     aandacht       = ruimtelijk["adressen_aandacht"]
     overig         = ruimtelijk["adressen_overig"]
-    kaart1_pad     = ruimtelijk["kaart_situatie_png"]
-    kaart2_pad     = ruimtelijk["kaart_omgeving_png"]
+    kaarten_png    = ruimtelijk.get("kaarten_png", [])
 
     signaal_straal = straal + MANEGE_SIGNAAL_MARGE
 
@@ -863,6 +882,7 @@ def genereer_pdf(state, log):
     naam_infix = f"_{naam_slug}" if naam_slug else ""
     bestand = OUTPUT_DIR / f"tug_rapport{naam_infix}_{timestamp}.pdf"
     c = _NumberedCanvas(str(bestand), pagesize=A4)
+    c.setSubject(f"workflow_versie: {VERSION}")
 
     _pdf_proceslog(c, state)
     signaleringen = {
@@ -872,7 +892,7 @@ def genereer_pdf(state, log):
         "nnn_in_signaal":   ruimtelijk.get("nnn_in_signaal", []),
     }
     _pdf_adressen_pagina(c, datum_leesbaar, lat, lon, straal, wettelijk, marge, aandacht, overig,
-                         n2000=signaleringen)
+                         n2000=signaleringen, punten=ruimtelijk.get("punten"))
 
     c.setPageSize(A4)
     x0_pt = _PDF_MARGIN_MM * mm
@@ -880,13 +900,10 @@ def genereer_pdf(state, log):
     w_pt  = (_PDF_PAGE_W_MM - 2 * _PDF_MARGIN_MM) * mm
     h_pt  = (_PDF_PAGE_H_MM - 2 * _PDF_MARGIN_MM) * mm
 
-    c.drawImage(ImageReader(kaart1_pad), x0_pt, y0_pt, width=w_pt, height=h_pt)
-    _pdf_kaart_titel(c, "Situatiekaart", w_pt, h_pt, x0_pt, y0_pt)
-    c.showPage()
-
-    c.drawImage(ImageReader(kaart2_pad), x0_pt, y0_pt, width=w_pt, height=h_pt)
-    _pdf_kaart_titel(c, "Omgevingskaart", w_pt, h_pt, x0_pt, y0_pt)
-    c.showPage()
+    for kaart in kaarten_png:
+        c.drawImage(ImageReader(kaart["pad"]), x0_pt, y0_pt, width=w_pt, height=h_pt)
+        _pdf_kaart_titel(c, kaart["titel"], w_pt, h_pt, x0_pt, y0_pt)
+        c.showPage()
 
     c.save()
     log(f"  PDF opgeslagen: {bestand}")
@@ -907,7 +924,6 @@ def genereer_html(state, log):
     markers        = ruimtelijk.get("html_markers", [])
     polygonen      = ruimtelijk.get("html_polygonen", [])
     signaal_straal = straal + MANEGE_SIGNAAL_MARGE
-    marge_straal   = straal + MARGE_M
 
     naam           = state.get("aanvraag", {}).get("naam", "")
     naam_slug      = _naam_slug(naam)
@@ -918,9 +934,12 @@ def genereer_html(state, log):
         f"var CENTER_LAT={lat};\n"
         f"var CENTER_LON={lon};\n"
         f"var STRAAL={straal};\n"
-        f"var MARGE_STRAAL={marge_straal};\n"
+        f"var TOETSING_LABEL={json.dumps(toetsing_label(straal))};\n"
         f"var SIGNAAL_STRAAL={signaal_straal};\n"
-        f"var MARGE_M={MARGE_M};\n"
+        f"var PUNTEN={json.dumps(ruimtelijk.get('punten') or [[lat, lon]])};\n"
+        f"var TOETSING_RINGS={json.dumps(ruimtelijk.get('toetsing_rings', []))};\n"
+        f"var SIGNAAL_RINGS={json.dumps(ruimtelijk.get('signaal_rings', []))};\n"
+        f"var WORKFLOW_VERSIE={json.dumps(VERSION)};\n"
         f"var MANEGE_SIGNAAL_MARGE={MANEGE_SIGNAAL_MARGE};\n"
         f"var DATUM='{datum_leesbaar}';\n"
         f"var MARKERS={json.dumps(markers, ensure_ascii=False).replace('</', r'<\/')};\n"
@@ -933,6 +952,7 @@ def genereer_html(state, log):
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="workflow_versie" content=""" + json.dumps(VERSION) + """>
 <title>""" + html_titel + """</title>
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
       integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H"
@@ -953,7 +973,7 @@ def genereer_html(state, log):
   .leg-ln{display:inline-block;width:24px;height:2px;margin-right:6px;vertical-align:middle;}
   .cirlabel{background:transparent!important;border:none!important;box-shadow:none!important;
             padding:0!important;}
-  .cirlabel div{font-size:11px;font-weight:bold;white-space:nowrap;
+  .cirlabel span{font-size:12px;font-weight:bold;white-space:nowrap;
                 text-shadow:1px 1px 2px #fff,-1px -1px 2px #fff,1px -1px 2px #fff,-1px 1px 2px #fff;}
 </style>
 </head>
@@ -965,48 +985,99 @@ def genereer_html(state, log):
         """
 var map = L.map('map').setView([CENTER_LAT, CENTER_LON], 15);
 
-L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png', {
-  attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> bijdragers &copy; <a href="https://carto.com/">CARTO</a>',
-  maxZoom: 19
+// Satellietkaart (B04): PDOK luchtfoto, geen API-key nodig
+L.tileLayer('https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg', {
+  attribution: 'Luchtfoto &copy; <a href="https://www.pdok.nl/">PDOK</a> / Beeldmateriaal Nederland',
+  maxNativeZoom: 19, maxZoom: 21
 }).addTo(map);
 
-function voegCirkelLabelToe(map, lat, lon, straal_m, tekst, kleur) {
-  var dLon = (straal_m / 111320) / Math.cos(lat * Math.PI / 180);
-  L.tooltip({permanent: true, direction: 'right', className: 'cirlabel'})
-    .setLatLng([lat, lon + dLon])
-    .setContent('<span style="color:' + kleur + '">' + tekst + '</span>')
-    .addTo(map);
+// Toetsings- en aandachtsgebied: omtrek van de cirkels rond alle puntlocaties (B03).
+// Label op het oostelijkste punt van de omtrek.
+function tekenGebied(rings, stijl, tekst, kleur, schaduw) {
+  var oost = null, lagen = [];
+  rings.forEach(function(ring) {
+    var ll = ring.map(function(c) { return [c[1], c[0]]; });
+    lagen.push(L.polygon(ll, stijl).addTo(map));
+    ll.forEach(function(p) { if (!oost || p[1] > oost[1]) oost = p; });
+  });
+  if (oost) {
+    L.tooltip({permanent: true, direction: 'right', className: 'cirlabel'})
+      .setLatLng(oost)
+      .setContent('<span style="color:' + kleur + (schaduw ? ';text-shadow:' + schaduw : '') + '">'
+                  + tekst + '</span>')
+      .addTo(map);
+  }
+  return lagen;
+}
+// Kleuren gekozen voor contrast op de luchtfoto: toetsingsafstand rood, aandachtsgebied geel.
+// Labels krijgen een donkere schaduw; die blijft leesbaar op de luchtfoto.
+var KLEUR_TOETSING = '#ff1a1a', KLEUR_AANDACHT = '#ffd500';
+var DONKERE_SCHADUW = '1px 1px 2px #000,-1px -1px 2px #000,1px -1px 2px #000,-1px 1px 2px #000';
+tekenGebied(SIGNAAL_RINGS, {color:KLEUR_AANDACHT, weight:2.5, fill:false, interactive:false},
+  'Aandachtsgebied (+' + MANEGE_SIGNAAL_MARGE + ' m)', KLEUR_AANDACHT, DONKERE_SCHADUW);
+var toetsingLagen = tekenGebied(TOETSING_RINGS, {color:KLEUR_TOETSING, weight:3, fill:false, interactive:false},
+  TOETSING_LABEL, KLEUR_TOETSING, DONKERE_SCHADUW);
+if (toetsingLagen.length) {
+  map.fitBounds(L.featureGroup(toetsingLagen).getBounds(), {padding: [40, 40]});
 }
 
-L.circle([CENTER_LAT, CENTER_LON], {radius: SIGNAAL_STRAAL, color:'#ca6f1e', weight:2, fill:false})
-  .addTo(map);
-voegCirkelLabelToe(map, CENTER_LAT, CENTER_LON, SIGNAAL_STRAAL,
-  'Aandachtsgebied (+' + MANEGE_SIGNAAL_MARGE + ' m)', '#ca6f1e');
+// Stijg- en landingsplaats als kruis, gelijk aan de PDF-kaart
+var kruisIcon = L.divIcon({
+  className: '',
+  html: '<svg width="28" height="28" viewBox="0 0 28 28">'
+      + '<line x1="14" y1="1" x2="14" y2="27" stroke="#c80000" stroke-width="3"/>'
+      + '<line x1="1" y1="14" x2="27" y2="14" stroke="#c80000" stroke-width="3"/></svg>',
+  iconSize: [28, 28], iconAnchor: [14, 14]
+});
+PUNTEN.forEach(function(p, i) {
+  var nr = PUNTEN.length > 1 ? ' ' + (i + 1) : '';
+  L.marker([p[0], p[1]], {icon: kruisIcon, zIndexOffset: 1000}).addTo(map)
+    .bindPopup('<b>Stijg- en landingsplaats' + nr + '</b><br>lat=' + p[0].toFixed(6) + ', lon=' + p[1].toFixed(6));
+});
 
-L.circle([CENTER_LAT, CENTER_LON], {radius: MARGE_STRAAL, color:'#ca6f1e', weight:1.5, fill:false, dashArray:'6 4'})
-  .addTo(map);
-voegCirkelLabelToe(map, CENTER_LAT, CENTER_LON, MARGE_STRAAL,
-  'Margeband (+' + MARGE_M + ' m)', '#ca6f1e');
-
-L.circle([CENTER_LAT, CENTER_LON], {radius: STRAAL, color:'#1a5276', weight:2.5, fill:false})
-  .addTo(map);
-voegCirkelLabelToe(map, CENTER_LAT, CENTER_LON, STRAAL,
-  'Toetsingsafstand TUG (' + STRAAL + ' m)', '#1a5276');
-
-L.circleMarker([CENTER_LAT, CENTER_LON], {
-  radius:8, color:'#8b0000', fillColor:'#c0392b', fillOpacity:1, weight:2
-}).addTo(map).bindPopup('<b>Stijg- en landingsplaats</b><br>lat=' + CENTER_LAT.toFixed(6) + ', lon=' + CENTER_LON.toFixed(6));
-
-var KLEUREN = {wettelijk:'#dc3545', marge:'#e67e22', aandacht:'#800080', luchthaven:'#d25a00', overig:'#888888'};
+var KLEUREN = {wettelijk:'#dc3545', marge:'#e67e22', aandacht:'#800080', luchthaven:'#d25a00', overig:'#e8e8e8'};
 var LABELS  = {wettelijk:'Wettelijk relevant', marge:'Margeband', aandacht:'Aandachtslocatie', luchthaven:'Luchthaven', overig:'Overig'};
 
-MARKERS.forEach(function(m) {
+function maakPopup(m) {
   var k = KLEUREN[m.categorie] || '#888';
   var popup = '<b>' + (m.adres || '—') + '</b>';
   if (m.pc_wpl) popup += '<br>' + m.pc_wpl;
   popup += '<br><em>' + m.gebruiksdoel + '</em>';
   if (m.extra) popup += '<br>' + m.extra;
   popup += '<br><span style="color:' + k + '">' + (LABELS[m.categorie] || m.categorie) + '</span>';
+  return popup;
+}
+
+// BAG-adressen met een gevelcontour: één vlak per pand, gekleurd naar de zwaarste
+// categorie van de adressen erin; de popup somt alle adressen op.
+var PRIORITEIT = {wettelijk:4, marge:3, aandacht:2, luchthaven:2, overig:1};
+var PANDEN = {}, PAND_VOLGORDE = [];
+MARKERS.forEach(function(m) {
+  if (!m.contour || !m.pand_id) return;
+  if (!PANDEN[m.pand_id]) { PANDEN[m.pand_id] = {contour: m.contour, adressen: []}; PAND_VOLGORDE.push(m.pand_id); }
+  PANDEN[m.pand_id].adressen.push(m);
+});
+PAND_VOLGORDE.map(function(id) { return PANDEN[id]; }).map(function(p) {
+  p.cat = p.adressen.reduce(function(a, m) {
+    return (PRIORITEIT[m.categorie] || 0) > (PRIORITEIT[a] || 0) ? m.categorie : a;
+  }, 'overig');
+  return p;
+}).sort(function(a, b) { return (PRIORITEIT[a.cat] || 0) - (PRIORITEIT[b.cat] || 0); })
+  .forEach(function(p) {
+    var k = KLEUREN[p.cat] || '#888';
+    var popup = p.adressen.map(maakPopup).join('<hr style="margin:4px 0">');
+    p.contour.forEach(function(ring) {
+      var ll = ring.map(function(c) { return [c[1], c[0]]; });
+      L.polygon(ll, {color: k, fillColor: k, weight: 1.5,
+                     fillOpacity: p.cat === 'overig' ? 0.2 : 0.6})
+        .addTo(map).bindPopup(popup, {maxHeight: 300});
+    });
+  });
+
+MARKERS.forEach(function(m) {
+  if (m.contour && m.pand_id) return;
+  var k = KLEUREN[m.categorie] || '#888';
+  var popup = maakPopup(m);
   if (m.categorie === 'luchthaven') {
     // Diamantsymbool via rotated rectangle
     var icon = L.divIcon({
@@ -1043,7 +1114,9 @@ POLYGONEN.forEach(function(p) {
   }
   p.rings.forEach(function(ring) {
     var ll = ring.map(function(c) { return [c[1], c[0]]; });
-    var fo = (p.type === 'n2000') ? (p.in_straal ? 0.35 : 0.20) : (p.in_straal ? 0.22 : 0.12);
+    var fo = (p.type === 'n2000') ? (p.in_straal ? 0.35 : 0.20)
+           : (p.type === 'nnn')   ? (p.in_straal ? 0.32 : 0.22)
+           : (p.in_straal ? 0.22 : 0.12);
     L.polygon(ll, {color:k, fillColor:k, fillOpacity:fo, weight:1.5})
       .addTo(map)
       .bindPopup(label);
@@ -1055,17 +1128,19 @@ legend.onAdd = function() {
   var d = L.DomUtil.create('div', 'legend');
   d.innerHTML =
     '<h4>Legenda</h4>'
-    + '<span class="leg-dot" style="background:#dc3545"></span>Wettelijk relevant<br>'
-    + '<span class="leg-dot" style="background:#e67e22"></span>Margeband<br>'
+    + '<span class="leg-sq" style="background:rgba(220,53,69,.55);border:1px solid #dc3545"></span>Wettelijk relevant (gevelcontour)<br>'
+    + '<span class="leg-sq" style="background:rgba(230,126,34,.55);border:1px solid #e67e22"></span>Margeband (gevelcontour)<br>'
     + '<span class="leg-dot" style="background:#800080"></span>Aandachtslocatie<br>'
     + '<div style="display:inline-block;width:12px;height:12px;background:#d25a00;transform:rotate(45deg);margin-right:6px;vertical-align:middle;border:1px solid #7a2e00"></div>Luchthaven (signalering)<br>'
-    + '<span class="leg-dot" style="background:#888"></span>Overig<br>'
+    + '<span class="leg-sq" style="background:rgba(160,160,160,.35);border:1px solid #bbb"></span>Overig (gevelcontour)<br>'
     + '<span class="leg-sq" style="background:rgba(184,134,11,.20);border:1px solid #b8860b"></span>Begraafplaats (beschermd)<br>'
     + '<span class="leg-sq" style="background:rgba(255,215,0,.20);border:1px solid #ffd700"></span>Begraafplaats (buiten)<br>'
     + '<span class="leg-sq" style="background:rgba(0,100,0,.35);border:1px solid #006400"></span>Natura 2000-gebied<br>'
-    + '<span class="leg-sq" style="background:rgba(60,179,60,.22);border:1px solid #3cb33c"></span>Natuurnetwerk Nederland<br>'
-    + '<span class="leg-ln" style="background:#1a5276"></span>Toetsingsafstand (' + STRAAL + ' m)<br>'
-    + '<span class="leg-ln" style="background:#ca6f1e"></span>Aandachtsgebied';
+    + '<span class="leg-sq" style="background:rgba(60,179,60,.32);border:1px solid #3cb33c"></span>Natuurnetwerk Nederland<br>'
+    + '<span class="leg-ln" style="background:' + KLEUR_TOETSING + '"></span>' + TOETSING_LABEL + '<br>'
+    + '<span class="leg-ln" style="background:' + KLEUR_AANDACHT + '"></span>Aandachtsgebied<br>'
+    + '<span style="color:#c80000;font-weight:bold;font-size:15px;margin-right:6px">+</span>Stijg- en landingsplaats<br>'
+    + '<span style="color:#777;font-size:10px">Workflowversie: ' + WORKFLOW_VERSIE + '</span>';
   return d;
 };
 legend.addTo(map);
@@ -1104,8 +1179,8 @@ def run(state_pad: str | Path) -> None:
     log("Stap 6: Output genereren ...")
     genereer_pdf(state, log)
 
-    for pad_key in ("kaart_situatie_png", "kaart_omgeving_png"):
-        pad = Path(state["ruimtelijk"].get(pad_key, ""))
+    for kaart in state["ruimtelijk"].get("kaarten_png", []):
+        pad = Path(kaart["pad"])
         if pad.exists():
             try:
                 pad.unlink()

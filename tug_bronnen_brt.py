@@ -31,9 +31,11 @@ from tug_types import LogFn, SignaalResultaat
 # ──────────────────────────────────────────────
 
 def signaleer_begraafplaatsen(
-    circle_rd: BaseGeometry, straal: float, log: LogFn
+    circle_rd: BaseGeometry, straal: float, log: LogFn,
+    punten_rd: BaseGeometry | None = None
 ) -> SignaalResultaat:
-    centrum = circle_rd.centroid
+    # Afstanden tot de dichtstbijzijnde puntlocatie (B03)
+    centrum = punten_rd if punten_rd is not None else circle_rd.centroid
     circle_zoek_rd  = circle_rd.buffer(BEGRAAFPLAATS_ZOEK_MARGE)
     lon_min, lat_min, lon_max, lat_max = circle_bbox_wgs84(circle_zoek_rd)
     bbox_str = f"{lon_min},{lat_min},{lon_max},{lat_max}"
@@ -301,9 +303,11 @@ def _cluster_dodenakker_geoms(
 # ──────────────────────────────────────────────
 
 def haal_maneges_pdok(
-    circle_rd: BaseGeometry, straal: float, log: LogFn
+    circle_rd: BaseGeometry, straal: float, log: LogFn,
+    punten_rd: BaseGeometry | None = None
 ) -> SignaalResultaat:
-    centrum = circle_rd.centroid
+    # Afstanden tot de dichtstbijzijnde puntlocatie (B03)
+    centrum = punten_rd if punten_rd is not None else circle_rd.centroid
     signaal_cirkel = circle_rd.buffer(MANEGE_SIGNAAL_MARGE)
     lon_min, lat_min, lon_max, lat_max = circle_bbox_wgs84(signaal_cirkel)
     bbox_str = f"{lon_min},{lat_min},{lon_max},{lat_max}"
@@ -384,7 +388,9 @@ def haal_maneges_pdok(
 # Luchthavens — GeoPortaal Overijssel WFS
 # ──────────────────────────────────────────────
 
-def signaleer_luchthavens(circle_rd: BaseGeometry, log: LogFn) -> SignaalResultaat:
+def signaleer_luchthavens(
+    circle_rd: BaseGeometry, log: LogFn, punten_rd: BaseGeometry | None = None,
+) -> SignaalResultaat:
     """Haalt luchthavenpuntlocaties op via GeoPortaal Overijssel WFS (on-the-fly, geen cache).
 
     Retourneert {'in_straal': [...], 'in_signaal': [...]}
@@ -393,7 +399,7 @@ def signaleer_luchthavens(circle_rd: BaseGeometry, log: LogFn) -> SignaalResulta
       in_signaal — aanvraaglocatie op 1.000–2.000 m van luchthaven
                    → signalering
     """
-    punt_rd  = circle_rd.centroid
+    punt_rd  = punten_rd if punten_rd is not None else circle_rd.centroid
     t_to_rd  = make_transformer("EPSG:4326", "EPSG:28992")
 
     log(f"  Luchthavens: WFS opvragen ({LUCHTHAVEN_WFS_LAYER}) ...")

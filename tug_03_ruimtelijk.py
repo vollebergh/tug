@@ -20,7 +20,12 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from shapely.geometry import MultiPoint
+from shapely.ops import transform as shapely_transform, unary_union
+
 from tug_logging import LogAccumulator, setup_logging
+from tug_config import KAART_ACHTERGRONDEN, TOETSING_TOESLAG_M
+from tug_geo import puntlocaties, make_transformer
 from tug_03_bronnen import (
     VERSION, MODEL_LABEL, OUTPUT_DIR, GEO_DIR,
     MARGE_M, MANEGE_SIGNAAL_MARGE, KDV_BBOX_EXTRA, LUCHTHAVEN_SIGNAAL_M,
@@ -29,11 +34,13 @@ from tug_03_bronnen import (
     _PDF_MARGIN_MM, _PDF_DPI, _PDF_PAGE_W_MM, _PDF_PAGE_H_MM,
     wgs84_to_rd, circle_in_rd,
     haal_verblijfsobjecten, filter_binnen_straal, filter_binnen_marge,
+    haal_panden, koppel_gevelcontouren,
     dedupliceer_vbo, filter_geluidgevoelig, vul_woonplaats_via_reverse_geocode,
     gevel_check, signaleer_begraafplaatsen, haal_maneges_pdok,
     signaleer_natura2000, signaleer_nnn, signaleer_luchthavens,
     haal_kdv_locaties, haal_scholen,
     extract_adres, extract_lon_lat, _parse_doelen, _wpl_title,
+    _geom_rings_wgs84,
     transform_geom_to_rd, shapely_from_geojson_geom,
 )
 from tug_03_kaart import _render_kaart, _bereken_zoom
@@ -368,6 +375,7 @@ def _bouw_html_markers(
             "pc_wpl": f"{pc}  {wpl}".strip(),
             "gebruiksdoel": gebruiksdoel_override or (", ".join(doelen) if doelen else "—"),
             "extra": extra,
+            "contour": feat.get("_contour"), "pand_id": feat.get("_pand_id"),
         }
 
     for feat in alle_vbo:
@@ -467,6 +475,7 @@ def _bouw_html_markers(
             "pc_wpl": f"{props.get('postcode','')}  {wpl}".strip(),
             "gebruiksdoel": f"school – {props.get('onderwijstype','')} (DUO)",
             "extra": "Binnen toetsingsafstand",
+            "contour": feat.get("_contour"), "pand_id": feat.get("_pand_id"),
         })
 
     for feat in (scholen_in_marge or []):
@@ -486,6 +495,7 @@ def _bouw_html_markers(
             "pc_wpl": f"{props.get('postcode','')}  {wpl}".strip(),
             "gebruiksdoel": f"school – {props.get('onderwijstype','')} (DUO)",
             "extra": "Marge",
+            "contour": feat.get("_contour"), "pand_id": feat.get("_pand_id"),
         })
 
     for item in maneges_in_straal:
@@ -574,11 +584,17 @@ def run(state_pad: str | Path) -> None:
     state     = json.loads(state_pad.read_text(encoding="utf-8"))
     aanvraag  = state["aanvraag"]
 
-    lat = aanvraag["coord_lat"]
-    lon = aanvraag["coord_lon"]
-
     setup_logging()
     _root_logger = logging.getLogger("tug.03_ruimtelijk")
+
+    try:
+        punten = puntlocaties(aanvraag)
+    except ValueError as e:
+        _root_logger.error(f"FOUT: ongeldige puntlocatie(s): {e}")
+        sys.exit(1)
+    # Kaartcentrum = gemiddelde van de puntlocaties (bij één locatie: die locatie zelf)
+    lat = sum(p[0] for p in punten) / len(punten)
+    lon = sum(p[1] for p in punten) / len(punten)
 
     classificatie = state.get("classificatie", {})
     straal = classificatie.get("norm_toepassing") or aanvraag.get("straal_override")
@@ -588,11 +604,12 @@ def run(state_pad: str | Path) -> None:
             "(classificatie.norm_toepassing ontbreekt en geen straal_override in aanvraag)."
         )
         sys.exit(1)
-    straal = float(straal)
+    straal_lden = float(straal)
+    straal      = straal_lden + TOETSING_TOESLAG_M
 
     # Maatgevend luchtvaartuig bepalen voor logboek
     lv_resultaten  = classificatie.get("luchtvaartuigen", [])
-    maatgevend_lv  = [r["registratie"] for r in lv_resultaten if r.get("norm_m") == straal]
+    maatgevend_lv  = [r["registratie"] for r in lv_resultaten if r.get("norm_m") == straal_lden]
     alle_lv        = [f"{r['registratie']} ({r.get('norm_m', '?')} m)" for r in lv_resultaten]
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -605,23 +622,30 @@ def run(state_pad: str | Path) -> None:
     log(f"{'=' * 60}")
     log(f"TUG-ontheffingen — Stap 4: Ruimtelijke analyse")
     log(f"## Gegenereerd: {datum}")
-    log(f"## Versie: {VERSION}")
+    log(f"## Workflowversie: {VERSION}")
     log(f"## Model: {MODEL_LABEL if MODEL_LABEL else 'geen taalmodel gebruikt'}")
     log(f"{'=' * 60}")
-    log(f"Input: lat={lat:.6f}, lon={lon:.6f}, straal={straal} m")
+    for i, (p_lat, p_lon) in enumerate(punten, 1):
+        log(f"Input: puntlocatie {i}: lat={p_lat:.6f}, lon={p_lon:.6f}")
+    log(f"Input: {len(punten)} puntlocatie(s), straal={straal:.0f} m "
+        f"(Lden-afstand {straal_lden:.0f} m + toeslag {TOETSING_TOESLAG_M} m)")
     if alle_lv:
         log(f"  Luchtvaartuigen: {', '.join(alle_lv)}")
         if maatgevend_lv:
-            log(f"  Maatgevend: {', '.join(maatgevend_lv)} → straal {straal:.0f} m")
+            log(f"  Maatgevend: {', '.join(maatgevend_lv)} → Lden-afstand {straal_lden:.0f} m")
 
     log("\nStap 1: GPS-coördinaten (WGS84) omzetten naar RD ...")
-    rd_x, rd_y = wgs84_to_rd(lon, lat)
-    log(f"  RD: x={rd_x:.0f}, y={rd_y:.0f}")
+    punten_rd_xy = [wgs84_to_rd(p_lon, p_lat) for p_lat, p_lon in punten]
+    for i, (x, y) in enumerate(punten_rd_xy, 1):
+        log(f"  Puntlocatie {i} — RD: x={x:.0f}, y={y:.0f}")
+    punten_rd = MultiPoint(punten_rd_xy)
 
     log("\nStap 2: Cirkelbuffers aanmaken in RD ...")
-    circle_rd       = circle_in_rd(rd_x, rd_y, straal)
-    circle_marge_rd = circle_in_rd(rd_x, rd_y, straal + MARGE_M)
-    log(f"  Straalcirkel: r={straal} m  |  Margeband: r={straal + MARGE_M} m (+{MARGE_M} m)")
+    # Toetsingsgebied = vereniging van de cirkels rond alle puntlocaties (B03)
+    circle_rd       = unary_union([circle_in_rd(x, y, straal) for x, y in punten_rd_xy])
+    circle_marge_rd = unary_union([circle_in_rd(x, y, straal + MARGE_M) for x, y in punten_rd_xy])
+    log(f"  Straalcirkel: r={straal:.0f} m  |  Margeband: r={straal + MARGE_M:.0f} m (+{MARGE_M} m)"
+        + (f"  |  {len(punten)} cirkels samengevoegd tot één toetsingsgebied" if len(punten) > 1 else ""))
 
     log("\nStap 3: Verblijfsobjecten ophalen via BAG WFS v2.0 ...")
     alle_vbo_bbox = haal_verblijfsobjecten(circle_marge_rd, log)
@@ -671,7 +695,7 @@ def run(state_pad: str | Path) -> None:
         log("  Geen geluidgevoelige VBOs in margeband — gevel-check overgeslagen.")
 
     log("\nStap 7: Begraafplaatsen — PDOK Location API (BRT) ...")
-    bgt_result = signaleer_begraafplaatsen(circle_rd, straal, log)
+    bgt_result = signaleer_begraafplaatsen(circle_rd, straal, log, punten_rd=punten_rd)
     begraafplaatsen_in_straal  = bgt_result["definitief"]
     begraafplaatsen_buiten_straal = bgt_result["buiten_straal"]
 
@@ -686,22 +710,22 @@ def run(state_pad: str | Path) -> None:
     scholen_in_marge  = scholen_result["in_marge"]
 
     log("\nStap 10: Maneges — PDOK Location API (BRT) ...")
-    maneges_result     = haal_maneges_pdok(circle_rd, straal, log)
+    maneges_result     = haal_maneges_pdok(circle_rd, straal, log, punten_rd=punten_rd)
     maneges_in_straal  = maneges_result["in_straal"]
     maneges_buiten_straal = maneges_result["buiten_straal"]
 
     log("\nStap 10b: Luchthavens — GeoPortaal Overijssel WFS (on-the-fly) ...")
-    luchthavens_result      = signaleer_luchthavens(circle_rd, log)
+    luchthavens_result      = signaleer_luchthavens(circle_rd, log, punten_rd=punten_rd)
     luchthavens_in_straal   = luchthavens_result["in_straal"]
     luchthavens_in_signaal  = luchthavens_result["in_signaal"]
 
     log("\nStap 11: Natura 2000 — PDOK WFS (on-the-fly) ...")
-    n2000_result     = signaleer_natura2000(circle_rd, straal, log)
+    n2000_result     = signaleer_natura2000(circle_rd, straal, log, punten_rd=punten_rd)
     n2000_in_straal  = n2000_result["in_straal"]
     n2000_in_signaal = n2000_result["in_signaal"]
 
     log("\nStap 12: Natuurnetwerk Nederland — GeoPackage-cache (ATOM-bron) ...")
-    nnn_result     = signaleer_nnn(circle_rd, straal, log)
+    nnn_result     = signaleer_nnn(circle_rd, straal, log, punten_rd=punten_rd)
     nnn_in_straal  = nnn_result["in_straal"]
     nnn_in_signaal = nnn_result["in_signaal"]
 
@@ -711,9 +735,20 @@ def run(state_pad: str | Path) -> None:
     if n2000_in_straal and not nnn_in_straal:
         log("  NNN: puntlocatie valt binnen N2000-gebied — N2000 is subset van NNN, NNN-treffer aangenomen.")
         nnn_in_straal = [
-            {"naam": f"(via N2000: {i['naam']})", "afstand_m": 0.0, "poly_rings": []}
+            {"naam": f"(via N2000: {i['naam']})", "afstand_m": 0.0, "poly_rings": [],
+             "punten_binnen": i.get("punten_binnen", [])}
             for i in n2000_in_straal
         ]
+
+    log("\nStap 12b: Gevelcontouren — BAG-panden voor kaartweergave ...")
+    panden = haal_panden(circle_marge_rd, log)
+    kaart_objecten = [
+        *alle_vbo, *marge_vbo, *marge_vbo_overig,
+        *kdv_in_straal, *kdv_in_marge, *scholen_in_straal, *scholen_in_marge,
+    ]
+    n_contour = koppel_gevelcontouren(kaart_objecten, panden)
+    log(f"  {n_contour}/{len(kaart_objecten)} kaartobjecten gekoppeld aan een gevelcontour "
+        f"(overige als punt weergegeven).")
 
     log("\nStap 13: Adresrijen samenvoegen ...")
     _args_kaart = dict(
@@ -759,28 +794,41 @@ def run(state_pad: str | Path) -> None:
         luchthavens_in_straal=luchthavens_in_straal, luchthavens_in_signaal=luchthavens_in_signaal,
     )
 
-    zoom1 = _bereken_zoom(lat, straal, _ZOOM_FILL_FRAC, map_h_px)
-    log(
-        f"  Kaart 1: zoom {zoom1} (straal {straal:.0f} m, "
-        f"locatie {_LOC_CX_FRAC*100:.0f}%/{_LOC_CY_FRAC*100:.0f}% van canvas)"
-    )
-    img1 = _render_kaart(lon, lat, zoom1, map_w_px, map_h_px, straal, signaal_straal, **render_kwargs)
+    # Toetsings- en aandachtsgebied als omtrek (WGS84-ringen) voor kaart en HTML
+    t_to_wgs = make_transformer("EPSG:28992", "EPSG:4326")
+    def _ringen(geom_rd):
+        return [[list(c) for c in ring]
+                for ring in _geom_rings_wgs84(shapely_transform(t_to_wgs.transform, geom_rd))]
+    signaal_rd     = unary_union([circle_in_rd(x, y, signaal_straal) for x, y in punten_rd_xy])
+    toetsing_rings = _ringen(circle_rd)
+    signaal_rings  = _ringen(signaal_rd)
+    render_kwargs.update(punten=punten, toetsing_rings=toetsing_rings, signaal_rings=signaal_rings)
 
-    zoom2 = _bereken_zoom(lat, signaal_straal, _ZOOM_FILL_FRAC, map_h_px)
+    # Zoom zo kiezen dat alle cirkels passen: straal + grootste afstand kaartcentrum → puntlocatie
+    c_x, c_y  = wgs84_to_rd(lon, lat)
+    spreiding = max(((x - c_x) ** 2 + (y - c_y) ** 2) ** 0.5 for x, y in punten_rd_xy)
+    zoom1 = _bereken_zoom(lat, straal + spreiding, _ZOOM_FILL_FRAC, map_h_px)
+    zoom2 = _bereken_zoom(lat, signaal_straal + spreiding, _ZOOM_FILL_FRAC, map_h_px)
     log(
-        f"  Kaart 2: zoom {zoom2} (aandachtsgebied {signaal_straal:.0f} m, "
-        f"locatie {_LOC_CX_FRAC*100:.0f}%/{_LOC_CY_FRAC*100:.0f}% van canvas)"
+        f"  Situatiekaart: zoom {zoom1} (straal {straal:.0f} m) | "
+        f"Omgevingskaart: zoom {zoom2} (aandachtsgebied {signaal_straal:.0f} m) | "
+        f"locatie {_LOC_CX_FRAC*100:.0f}%/{_LOC_CY_FRAC*100:.0f}% van canvas"
     )
-    img2 = _render_kaart(lon, lat, zoom2, map_w_px, map_h_px, straal, signaal_straal, **render_kwargs)
 
     naam_slug  = _naam_slug(state.get("aanvraag", {}).get("naam", ""))
     naam_infix = f"_{naam_slug}" if naam_slug else ""
-    kaart1_pad = OUTPUT_DIR / f"tug_kaart_situatie{naam_infix}_{timestamp}.png"
-    kaart2_pad = OUTPUT_DIR / f"tug_kaart_omgeving{naam_infix}_{timestamp}.png"
-    img1.rotate(90, expand=True).save(kaart1_pad, format="PNG")
-    img2.rotate(90, expand=True).save(kaart2_pad, format="PNG")
-    log(f"  Kaart 1 opgeslagen: {kaart1_pad.name}")
-    log(f"  Kaart 2 opgeslagen: {kaart2_pad.name}")
+    # Satelliet eerst (primair, B04), daarna topografisch als aanvulling (B05)
+    KAART_TITELS = {"situatie": "Situatiekaart", "omgeving": "Omgevingskaart"}
+    kaarten_png = []
+    for achtergrond in ("satelliet", "topografisch"):
+        for soort, zoom in (("situatie", zoom1), ("omgeving", zoom2)):
+            img = _render_kaart(lon, lat, zoom, map_w_px, map_h_px, straal, signaal_straal,
+                                achtergrond=achtergrond, **render_kwargs)
+            pad = OUTPUT_DIR / f"tug_kaart_{soort}_{achtergrond}{naam_infix}_{timestamp}.png"
+            img.rotate(90, expand=True).save(pad, format="PNG")
+            titel = f"{KAART_TITELS[soort]} — {KAART_ACHTERGRONDEN[achtergrond]['titel']}"
+            kaarten_png.append({"titel": titel, "pad": str(pad)})
+            log(f"  {titel} opgeslagen: {pad.name}")
 
     statistieken = {
         "vbo_in_straal":             len(alle_vbo),
@@ -812,21 +860,27 @@ def run(state_pad: str | Path) -> None:
     state["ruimtelijk"] = {
         "naam":               state.get("aanvraag", {}).get("naam", ""),
         "straal":             straal,
+        "straal_lden":        straal_lden,
+        "punten":             [list(pt) for pt in punten],
+        "toetsing_rings":     toetsing_rings,
+        "signaal_rings":      signaal_rings,
+        "workflow_versie":    VERSION,
         "lat":                lat,
         "lon":                lon,
         "timestamp":          timestamp,
         "datum_leesbaar":     datum,
-        "kaart_situatie_png": str(kaart1_pad),
-        "kaart_omgeving_png": str(kaart2_pad),
+        "kaarten_png":        kaarten_png,
         "adressen_wettelijk": wettelijk,
         "adressen_marge":     marge_rijen,
         "adressen_aandacht":  aandacht,
         "adressen_overig":    overig,
         "html_markers":       html_markers,
         "html_polygonen":     html_polygonen,
-        "n2000_in_straal":    [{"naam": i["naam"], "afstand_m": i["afstand_m"]} for i in n2000_in_straal],
+        "n2000_in_straal":    [{"naam": i["naam"], "afstand_m": i["afstand_m"],
+                                "punten_binnen": i.get("punten_binnen", [])} for i in n2000_in_straal],
         "n2000_in_signaal":   [{"naam": i["naam"], "afstand_m": i["afstand_m"]} for i in n2000_in_signaal],
-        "nnn_in_straal":      [{"naam": i["naam"], "afstand_m": i["afstand_m"]} for i in nnn_in_straal],
+        "nnn_in_straal":      [{"naam": i["naam"], "afstand_m": i["afstand_m"],
+                                "punten_binnen": i.get("punten_binnen", [])} for i in nnn_in_straal],
         "nnn_in_signaal":     [{"naam": i["naam"], "afstand_m": i["afstand_m"]} for i in nnn_in_signaal],
         "luchthavens_in_straal":  [
             {"naam": i["naam"], "afstand_m": i["afstand_m"], "omschrijving": i["omschrijving"]}

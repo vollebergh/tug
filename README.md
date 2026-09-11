@@ -179,7 +179,7 @@ Na een succesvolle run wordt `tug_state.json` automatisch overschreven met `{}`.
 | `datum_vlucht` | string of array | YYYY-MM-DD; één datum of een array van meerdere data |
 | `vlucht_udp` | boolean | Indien `true`: universal daylight period; `vlucht_start`/`vlucht_einde` worden genegeerd |
 | `luchtvaartuigen` | array | Objecten met minimaal `registratie` (PH-code); `type` facultatief |
-| `coord_lat` / `coord_lon` | float | WGS84, minimaal 6 decimalen |
+| `coord_lat` / `coord_lon` | float of lijst van floats | WGS84, minimaal 6 decimalen. Meerdere puntlocaties: twee even lange lijsten, bv. `"coord_lat": [52.40, 52.41], "coord_lon": [7.01, 7.02]` (n-de lat hoort bij n-de lon). De puntlocaties mogen onderling maximaal 100 m uit elkaar liggen (`MAX_PUNT_AFSTAND_M`); anders stopt de validatie voor die aanvraag. Toetsings-, marge- en aandachtsgebied worden dan de vereniging van de cirkels rond alle locaties; één adressenlijst per aanvraag. |
 | `datum_ondertekening` | string | YYYY-MM-DD; zie 4-weken-regel |
 | `tijdstip_ondertekening` | string | `HH:MM` formaat |
 
@@ -218,13 +218,13 @@ Meerdere aanvragen in één bestand als JSON-array:
 
 ```
 aanvraag.json  (enkel object of array)
-    ↓  tug_run.py (orchestrator, v4.2.0)
+    ↓  tug_run.py (orchestrator)
     ↓  [per aanvraag — batch doorloopt alle elementen]
-    ├── tug_01_validatie.py   (v1.0.0)   Stap 2 — volledigheidscheck + 4-weken-regel
+    ├── tug_01_validatie.py              Stap 2 — volledigheidscheck + 4-weken-regel
     ↓
-    ├── tug_02_classificatie.py (v1.0.0)  Stap 3 — PH-code → ICAO → NLR → toetsingsafstand
+    ├── tug_02_classificatie.py          Stap 3 — PH-code → ICAO → NLR → toetsingsafstand
     ↓
-    ├── tug_03_ruimtelijk.py  (v4.5.0)   Stap 4 — ruimtelijke analyse (orchestrator)
+    ├── tug_03_ruimtelijk.py            Stap 4 — ruimtelijke analyse (orchestrator)
     │       ├── tug_03_bronnen.py         re-export shim (backward compat)
     │       ├── tug_bronnen_bag.py        BAG WFS, gevel-check, deduplicatie
     │       ├── tug_bronnen_brt.py        begraafplaatsen, maneges, luchthavens
@@ -234,7 +234,7 @@ aanvraag.json  (enkel object of array)
     │       ├── tug_geo.py               coördinaatfuncties, extract-helpers
     │       └── tug_03_kaart.py          PIL-kaartrendering (tiles + lagen)
     ↓
-    └── tug_05_output.py      (v4.5.0)   Stap 6 — PDF-rapport + HTML-kaart
+    └── tug_05_output.py                Stap 6 — PDF-rapport + HTML-kaart
 
 tug_config.py   gedeelde constanten (URLs, drempelwaarden, bestandspaden)
 tug_types.py    type-aliassen (Feature, FeatureList, LogFn, …)
@@ -287,8 +287,8 @@ Bij appendix 013/015/016/017 zijn de normen niet vastgesteld in de NLR-tabel. De
 
 | Zone | Berekening | Gebruik |
 |------|-----------|---------|
-| Toetsingsafstand | Norm luidste luchtvaartuig (NLR-tabel) | Geluidgevoelige gebouwen, begraafplaatsen, kinderopvangverblijf, scholen |
-| Margeband | Toetsingsafstand + 75 m | Optionele signalering overige gebouwen |
+| Toetsingsafstand | Norm luidste luchtvaartuig (NLR-tabel, Lden) + 10 m | Geluidgevoelige gebouwen, begraafplaatsen, kinderopvangverblijf, scholen |
+| Margeband | Toetsingsafstand + 150 m | Gevel-check en signalering op de kaart; niet in de adressenlijst |
 | Aandachtsgebied maneges | Toetsingsafstand + 375 m | Manegesignalering |
 
 ### Categorieën adressenlijst
@@ -296,17 +296,16 @@ Bij appendix 013/015/016/017 zijn de normen niet vastgesteld in de NLR-tabel. De
 | Sectie | Inhoud | Actie |
 |--------|--------|-------|
 | **Wettelijk relevant** | Geluidgevoelige gebouwen binnen toetsingsafstand + begraafplaatsen (polygoon snijdt toetsingsafstand) + kinderopvangverblijf + scholen | Instemmingsverklaring vereist |
-| **Margeband** | Overige verblijfsobjecten in de margeband | Instemmingsverklaring optioneel |
 | **Aandachtslocaties** | Maneges (aandachtsgebied) + luchthavens | Signalering; geen instemmingsvereiste |
 | **Overig** | Overige objecten buiten margeband | Weergave op kaart; geen actie |
 
 ### Geluidgevoelige functies (BAG)
 
-Woonbestemming, onderwijsfunctie, gezondheidszorgfunctie, logiesfunctie (proxy voor gezondheidszorgfunctie met bed).
+Woonbestemming, onderwijsfunctie, gezondheidszorgfunctie. Logiesfunctie telt niet als geluidgevoelig.
 
 ### Margeband
 
-De margeband (toetsingsafstand + 75 m) heeft een tweeledig doel. Ten eerste kunnen grote gebouwen een BAG-adres hebben dat buiten de toetsingsafstand valt, terwijl de gevel van dat gebouw er nog wel binnen snijdt; de gevelcheck via pandgeometrie vangt dit op. Ten tweede kan het voorkomen dat een piloot niet exact opstijgt of landt op de aangevraagde locatie. Gebouwen die binnen de margeband maar buiten de toetsingsafstand vallen worden daarom apart gesignaleerd, zodat de vergunningverlener kan beoordelen of ook hiervoor instemming wenselijk is.
+De margeband (toetsingsafstand + 150 m) heeft een tweeledig doel. Ten eerste kunnen grote gebouwen een BAG-adres hebben dat buiten de toetsingsafstand valt, terwijl de gevel van dat gebouw er nog wel binnen snijdt; de gevelcheck via pandgeometrie vangt dit op. Ten tweede kan het voorkomen dat een piloot niet exact opstijgt of landt op de aangevraagde locatie. Gebouwen die binnen de margeband maar buiten de toetsingsafstand vallen worden daarom op de kaarten (PDF en HTML) apart gesignaleerd, maar niet in de adressenlijst opgenomen, zodat de vergunningverlener kan beoordelen of ook hiervoor instemming wenselijk is.
 
 ### Begraafplaatsen
 
@@ -425,7 +424,7 @@ Alle bestanden worden opgeslagen in `output/`:
 
 | Bestand | Omschrijving |
 |---------|--------------|
-| `tug_rapport_{naam}_{timestamp}.pdf` | PDF-rapport: proceslog (12 paragrafen) + adressenlijst + situatie- en omgevingskaart |
+| `tug_rapport_{naam}_{timestamp}.pdf` | PDF-rapport: proceslog (12 paragrafen) + adressenlijst + situatie- en omgevingskaart, elk als luchtfoto (primair) en topografisch (PDOK BRT, verhoogd contrast) |
 | `tug_kaart_{naam}_{timestamp}.html` | Interactieve Leaflet-kaart met alle geïnventariseerde objecten en zones |
 
 `{naam}` is het `naam`-veld uit de aanvraag-JSON, gesaneerd naar bestandsnaamveilige tekens (maximaal 40 tekens). Bij afwezigheid van een `naam`-veld vervalt het infix en worden de bestandsnamen `tug_rapport_{timestamp}.pdf` resp. `tug_kaart_{timestamp}.html`.
@@ -436,12 +435,13 @@ Het proceslog documenteert per analysestap de uitgevoerde controles, gebruikte b
 
 ### Adressenlijst
 
-Vier secties per aanvraag:
+Drie secties per aanvraag:
 
 1. **Wettelijk relevant** — instemmingsverklaring vereist (geluidgevoelig + begraafplaats + KDV + school)
-2. **Margeband** — instemmingsverklaring optioneel
-3. **Aandachtslocaties** — maneges en luchthavens (geen instemmingsvereiste)
-4. **Overig** — weergave op kaart, geen actie vereist
+2. **Aandachtslocaties** — maneges en luchthavens (geen instemmingsvereiste)
+3. **Overig** — weergave op kaart, geen actie vereist
+
+De margeband staat alleen op de kaarten, niet in de adressenlijst.
 
 ---
 
@@ -491,3 +491,10 @@ Dreigingsmodel: lokale CLI-tool zonder netwerkinterface; alle externe aanroepen 
 ## Licentie
 
 Intern gebruik Provincie Overijssel. Niet bestemd voor publieke distributie.
+
+### Versionering
+
+Git is de enige versiegeschiedenis; er zijn geen handmatige versienummers. Elke output
+(runlog, PDF, HTML, state) draagt de workflowversie: de korte commit-hash, met de toevoeging
+"(niet-gecommitte wijzigingen)" als getrackte bestanden lokaal gewijzigd zijn
+(`tug_config.VERSION`).

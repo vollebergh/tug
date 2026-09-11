@@ -1,6 +1,6 @@
 """
 tug_run.py -- Orchestrator TUG-ontheffingen workflow
-Versie: 4.2.0  |  2026-05-29
+Versie: zie git (workflowversie = korte commit-hash, zie tug_config.VERSION)
 
 Gebruik:
     python tug_run.py aanvraag1.json [aanvraag2.json ...]
@@ -20,6 +20,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from tug_config import VERSION
 from tug_logging import setup_logging
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -128,6 +129,7 @@ def _verwerk_aanvraag(aanvraag: dict, label: str, vanaf=None) -> None:
         _initialiseer_state(aanvraag, label)
         te_draaien = STAPPEN
 
+    _log(f"Workflowversie: {VERSION}")
     _log(f"Pipeline: {len(te_draaien)} stap(pen) te verwerken.")
 
     try:

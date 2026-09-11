@@ -35,8 +35,15 @@ except ImportError:
 # Natura 2000 — PDOK WFS (RVO), on-the-fly
 # ──────────────────────────────────────────────
 
+def _punten_binnen(geom_rd: BaseGeometry, punt_rd: BaseGeometry) -> list[int]:
+    """Volgnummers (1-based) van de puntlocaties die binnen geom_rd liggen (B03)."""
+    punten = list(punt_rd.geoms) if hasattr(punt_rd, "geoms") else [punt_rd]
+    return [i for i, p in enumerate(punten, 1) if geom_rd.intersects(p)]
+
+
 def signaleer_natura2000(
-    circle_rd: BaseGeometry, straal: float, log: LogFn
+    circle_rd: BaseGeometry, straal: float, log: LogFn,
+    punten_rd: BaseGeometry | None = None,
 ) -> SignaalResultaat:
     """Query Natura 2000-gebieden via PDOK WFS (geen lokale cache, on-the-fly BBOX-query).
 
@@ -45,7 +52,8 @@ def signaleer_natura2000(
       in_straal  — puntlocatie ligt BINNEN het N2000-gebied
       in_signaal — puntlocatie ligt BUITEN maar op < N2000_SIGNAAL_MARGE m van het N2000-gebied
     """
-    punt_rd    = circle_rd.centroid
+    # Puntlocatie(s); bij meerdere geldt de dichtstbijzijnde (B03)
+    punt_rd    = punten_rd if punten_rd is not None else circle_rd.centroid
     signaal_rd = punt_rd.buffer(N2000_SIGNAAL_MARGE)
     lon_min, lat_min, lon_max, lat_max = circle_bbox_wgs84(signaal_rd)
     # PDOK WFS 2.0 + EPSG:4326: axis-volgorde is lat-first (conform de CRS-definitie)
@@ -95,10 +103,12 @@ def signaleer_natura2000(
                      or "Onbekend N2000-gebied")
         afstand_p = punt_rd.distance(geom_rd)
         rings     = _geom_rings_wgs84(geom_wgs)
-        item      = {"naam": naam, "afstand_m": round(afstand_p), "poly_rings": rings}
+        binnen    = _punten_binnen(geom_rd, punt_rd)
+        item      = {"naam": naam, "afstand_m": round(afstand_p), "poly_rings": rings,
+                     "punten_binnen": binnen}
 
-        if geom_rd.contains(punt_rd):
-            log(f"  N2000 TREFFER: puntlocatie ligt BINNEN '{naam}'.")
+        if binnen:
+            log(f"  N2000 TREFFER: puntlocatie {', '.join(map(str, binnen))} ligt BINNEN '{naam}'.")
             in_straal.append(item)
         elif afstand_p <= N2000_SIGNAAL_MARGE:
             log(f"  N2000 nabij: puntlocatie op {afstand_p:.0f} m van '{naam}' "
@@ -270,7 +280,8 @@ def _nnn_maak_gpkg(log):
 
 
 def signaleer_nnn(
-    circle_rd: BaseGeometry, straal: float, log: LogFn
+    circle_rd: BaseGeometry, straal: float, log: LogFn,
+    punten_rd: BaseGeometry | None = None,
 ) -> SignaalResultaat:
     """Laad NNN GeoPackage (download + verwerk indien nodig) en check intersectie.
 
@@ -302,7 +313,8 @@ def signaleer_nnn(
                 pass
         log(f"  NNN: GeoPackage actueel ({NNN_GPKG.name}{meta_str}).")
 
-    punt_rd    = circle_rd.centroid
+    # Puntlocatie(s); bij meerdere geldt de dichtstbijzijnde (B03)
+    punt_rd    = punten_rd if punten_rd is not None else circle_rd.centroid
     signaal_rd = punt_rd.buffer(NNN_SIGNAAL_MARGE)
     minx, miny, maxx, maxy = signaal_rd.bounds
     t_to_wgs = make_transformer("EPSG:28992", "EPSG:4326")
@@ -327,10 +339,12 @@ def signaleer_nnn(
         afstand_p = punt_rd.distance(geom_rd)
         geom_wgs  = shapely_transform(lambda x, y: t_to_wgs.transform(x, y), geom_rd)
         rings     = _geom_rings_wgs84(geom_wgs)
-        item      = {"naam": naam, "afstand_m": round(afstand_p), "poly_rings": rings}
+        binnen    = _punten_binnen(geom_rd, punt_rd)
+        item      = {"naam": naam, "afstand_m": round(afstand_p), "poly_rings": rings,
+                     "punten_binnen": binnen}
 
-        if geom_rd.contains(punt_rd):
-            log(f"  NNN TREFFER: puntlocatie ligt BINNEN '{naam}'.")
+        if binnen:
+            log(f"  NNN TREFFER: puntlocatie {', '.join(map(str, binnen))} ligt BINNEN '{naam}'.")
             in_straal.append(item)
         elif afstand_p <= NNN_SIGNAAL_MARGE:
             log(f"  NNN nabij: puntlocatie op {afstand_p:.0f} m van '{naam}' "

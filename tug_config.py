@@ -6,13 +6,36 @@ Importeer hier vanuit zowel tug_03_bronnen.py als tug_05_output.py om
 dubbele definities en silent inconsistenties te voorkomen.
 """
 
+import subprocess
 from pathlib import Path
 
 # ──────────────────────────────────────────────
 # Versie- en paddefinities
 # ──────────────────────────────────────────────
 
-VERSION     = "4.5.0"
+def _workflow_versie() -> str:
+    """Git-commit van de workflowcode; git is de enige versiegeschiedenis.
+
+    Niet-gecommitte wijzigingen aan getrackte bestanden worden gemarkeerd, zodat
+    elke output herleidbaar is naar de exacte code. Untracked bestanden tellen
+    niet mee (bv. backup/).
+    """
+    root = Path(__file__).parent
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=root,
+            capture_output=True, text=True, check=True, timeout=10,
+        ).stdout.strip()
+        wijzigingen = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"], cwd=root,
+            capture_output=True, text=True, check=True, timeout=10,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return "onbekend (geen git)"
+    return f"{commit} (niet-gecommitte wijzigingen)" if wijzigingen else commit
+
+
+VERSION     = _workflow_versie()
 MODEL_LABEL = ""
 
 _ROOT      = Path(__file__).parent
@@ -23,10 +46,18 @@ GEO_DIR    = _ROOT / "geo"
 # Toetsingsafstanden en zones
 # ──────────────────────────────────────────────
 
-MARGE_M                  = 75    # margeband rond toetsingsafstand
+TOETSING_TOESLAG_M       = 10    # vaste toeslag op de Lden-afstand; toetsingsafstand = Lden-afstand + toeslag
+MAX_PUNT_AFSTAND_M       = 100   # max. onderlinge afstand tussen puntlocaties van één aanvraag (B03)
+MARGE_M                  = 150   # margeband rond toetsingsafstand (gelijk aan KDV_BBOX_EXTRA)
 MANEGE_SIGNAAL_MARGE     = 375   # aandachtsgebied maneges (boven toetsingsafstand)
 BEGRAAFPLAATS_ZOEK_MARGE = 1500  # extra zoekruimte voor begraafplaats-bbox
 PAND_BBOX_ZOEK_MARGE     = 100   # bbox-marge voor pandgeometrie-query (BAG)
+
+def toetsing_label(straal: float) -> str:
+    """Kaartlabel voor de toetsingsafstand, met de Lden-afstand en de toeslag apart zichtbaar."""
+    lden = straal - TOETSING_TOESLAG_M
+    return f"Toetsingsafstand TUG ({lden:.0f} m + {TOETSING_TOESLAG_M} m = {straal:.0f} m)"
+
 
 # ──────────────────────────────────────────────
 # BAG / PDOK endpoints
@@ -88,8 +119,9 @@ MANEGE_ZOEKTERMEN = [
 # BAG geluidgevoelige gebruiksdoelen
 # ──────────────────────────────────────────────
 
+# Logiesfunctie telt bewust niet mee: geen geluidgevoelig gebouw in de zin van art. 3.21 Bkl.
 GELUIDGEVOELIGE_DOELEN = {
-    "woonfunctie", "onderwijsfunctie", "gezondheidszorgfunctie", "logiesfunctie",
+    "woonfunctie", "onderwijsfunctie", "gezondheidszorgfunctie",
 }
 
 # ──────────────────────────────────────────────
@@ -99,8 +131,8 @@ GELUIDGEVOELIGE_DOELEN = {
 LRK_URL        = "https://www.landelijkregisterkinderopvang.nl/opendata/export_opendata_lrk.csv"
 LRK_CACHE_DAYS = 7
 # De LRK-server weigert de standaard python-requests User-Agent (HTTP 400)
-LRK_HEADERS    = {"User-Agent": "Mozilla/5.0 (compatible; TUG-ontheffingen/4.5; Provincie Overijssel)"}
-KDV_BBOX_EXTRA = 150  # m extra bbox voor KDV-zoekradius
+LRK_HEADERS    = {"User-Agent": "Mozilla/5.0 (compatible; TUG-ontheffingen; Provincie Overijssel)"}
+KDV_BBOX_EXTRA = MARGE_M  # m extra bbox voor KDV-zoekradius; valt samen met de margeband
 
 # ──────────────────────────────────────────────
 # DUO Open Onderwijsdata
@@ -126,7 +158,23 @@ SCHOLEN_META           = GEO_DIR / "duo_scholen.meta.json"
 # Kaarttegels en PDF
 # ──────────────────────────────────────────────
 
-_TILE_URL  = "https://a.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png"
+# Achtergrondkaarten (PDOK, open data, geen API-key). Satelliet is primair (B04);
+# topografisch is aanvulling, met extra contrast bij het renderen (B05).
+KAART_ACHTERGRONDEN = {
+    "satelliet": {
+        "titel": "luchtfoto",
+        "url": "https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg",
+        "contrast": 1.0,
+        "bron": "Luchtfoto: PDOK / Beeldmateriaal Nederland",
+    },
+    "topografisch": {
+        "titel": "topografisch",
+        "url": "https://service.pdok.nl/brt/achtergrondkaart/wmts/v2_0/standaard/EPSG:3857/{z}/{x}/{y}.png",
+        "contrast": 1.35,
+        "bron": "Achtergrond: PDOK BRT-Achtergrondkaart (Kadaster)",
+    },
+}
+_TILE_URL  = KAART_ACHTERGRONDEN["topografisch"]["url"]
 _TILE_SIZE = 256
 
 _LOC_CX_FRAC    = 0.40

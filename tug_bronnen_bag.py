@@ -26,7 +26,17 @@ from tug_types import Feature, FeatureList, LogFn
 # BAG — verblijfsobjecten ophalen
 # ──────────────────────────────────────────────
 
+def _deelgebieden(geom: BaseGeometry) -> list:
+    """Losse delen van een (multi)polygoon: bij ver uiteen liggende puntlocaties (B03)
+    wordt per deel een eigen bbox opgevraagd i.p.v. één grote omhullende bbox."""
+    return list(geom.geoms) if hasattr(geom, "geoms") else [geom]
+
+
 def haal_verblijfsobjecten(circle_rd: BaseGeometry, log: LogFn) -> FeatureList:
+    delen = _deelgebieden(circle_rd)
+    if len(delen) > 1:
+        # Dubbele features (overlap van bboxen) worden later door dedupliceer_vbo samengevoegd
+        return [f for deel in delen for f in haal_verblijfsobjecten(deel, log)]
     lon_min, lat_min, lon_max, lat_max = circle_bbox_wgs84(circle_rd)
     bbox_str = f"{lat_min},{lon_min},{lat_max},{lon_max},EPSG:4326"
     log(f"  Ophalen verblijfsobjecten via BAG WFS v2.0 "
@@ -154,6 +164,90 @@ def filter_geluidgevoelig(features: FeatureList, log: LogFn) -> FeatureList:
     ]
     log(f"  {len(resultaat)} verblijfsobjecten hebben een geluidgevoelig gebruiksdoel.")
     return resultaat
+
+
+# ──────────────────────────────────────────────
+# BAG — gevelcontouren voor kaartweergave
+# ──────────────────────────────────────────────
+
+def haal_panden(circle_rd: BaseGeometry, log: LogFn) -> FeatureList:
+    """Haal alle BAG-panden op binnen de bbox van circle_rd (WGS84-geometrie)."""
+    delen = _deelgebieden(circle_rd)
+    if len(delen) > 1:
+        return [f for deel in delen for f in haal_panden(deel, log)]
+    lon_min, lat_min, lon_max, lat_max = circle_bbox_wgs84(circle_rd)
+    bbox_str = f"{lat_min},{lon_min},{lat_max},{lon_max},EPSG:4326"
+    panden = []
+    start_index = 0
+    while True:
+        params = {
+            "service": "WFS", "version": "2.0.0", "request": "GetFeature",
+            "TYPENAME": "bag:pand", "outputFormat": "application/json",
+            "srsName": "EPSG:4326", "SRSNAME": "urn:ogc:def:crs:EPSG::4326",
+            "BBOX": bbox_str, "count": BAG_PAGE_SIZE, "startIndex": start_index,
+            "propertyName": "bag:identificatie,bag:geom",
+        }
+        resp = requests.get(BAG_WFS, params=params, timeout=60)
+        if resp.status_code != 200:
+            log(f"  WAARSCHUWING: BAG WFS (pand) gaf statuscode {resp.status_code}; "
+                f"kaart valt terug op puntweergave.")
+            break
+        batch = resp.json().get("features", [])
+        panden.extend(batch)
+        if len(batch) < BAG_PAGE_SIZE:
+            break
+        start_index += BAG_PAGE_SIZE
+    log(f"  {len(panden)} panden opgehaald voor gevelcontouren.")
+    return panden
+
+
+def koppel_gevelcontouren(features: FeatureList, panden: FeatureList) -> int:
+    """Zet per feature `_contour` (ringen [lon, lat]) en `_pand_id` van het pand waarin
+    het adrespunt ligt. Koppeling op pandidentificatie, anders ruimtelijk (punt in pand).
+    Features zonder pand behouden hun puntweergave. Retourneert het aantal gekoppelde.
+    """
+    from shapely.geometry import Point
+    from shapely.strtree import STRtree
+
+    geoms, ids = [], []
+    for p in panden:
+        g = p.get("geometry")
+        if not g:
+            continue
+        try:
+            geoms.append(shape(g))
+        except Exception:
+            continue
+        ids.append(str(p.get("properties", {}).get("identificatie", "")))
+    if not geoms:
+        return 0
+    per_id = {pid: i for i, pid in enumerate(ids)}
+    boom = STRtree(geoms)
+
+    gekoppeld = 0
+    for feat in features:
+        props = feat.get("properties", {})
+        idx = None
+        pid = props.get("pandidentificatie") or props.get("maaktDeelUitVan")
+        for p in ([pid] if isinstance(pid, str) else (pid or [])):
+            if str(p) in per_id:
+                idx = per_id[str(p)]
+                break
+        if idx is None:
+            geom = feat.get("geometry") or {}
+            if geom.get("type") != "Point":
+                continue
+            pt = Point(geom["coordinates"][0], geom["coordinates"][1])
+            kandidaten = [i for i in boom.query(pt.buffer(1e-5)) if geoms[i].distance(pt) < 1e-5]
+            if not kandidaten:
+                continue
+            idx = kandidaten[0]
+        g = geoms[idx]
+        polys = [g] if g.geom_type == "Polygon" else list(getattr(g, "geoms", []))
+        feat["_contour"] = [[list(c)[:2] for c in poly.exterior.coords] for poly in polys]
+        feat["_pand_id"] = ids[idx]
+        gekoppeld += 1
+    return gekoppeld
 
 
 # ──────────────────────────────────────────────

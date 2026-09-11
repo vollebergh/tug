@@ -32,7 +32,7 @@ from tug_logging import LogAccumulator, setup_logging
 # Configuratie
 # ──────────────────────────────────────────────
 
-VERSION = "1.0.0"
+from tug_config import VERSION
 
 GEO_DIR           = Path(__file__).parent / "geo"
 REGISTER_ODS_PAD  = GEO_DIR / "luchtvaartuigregister_ilt.ods"
@@ -532,7 +532,7 @@ def run(state_pad: str | Path) -> None:
 
     log(f"{'=' * 60}")
     log("TUG-ontheffingen — Stap 3: Classificatie luchtvaartuigen")
-    log(f"## Versie: {VERSION}")
+    log(f"## Workflowversie: {VERSION}")
     log(f"{'=' * 60}")
     log(f"Aantal luchtvaartuigen in aanvraag: {len(luchtvaartuigen)}")
 

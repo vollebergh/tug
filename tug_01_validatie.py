@@ -18,9 +18,9 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from tug_config import VERSION
+from tug_geo import puntlocaties
 from tug_logging import LogAccumulator, setup_logging
-
-VERSION = "1.0.0"
 
 VERPLICHTE_VELDEN = [
     "soort_ontheffing",
@@ -117,7 +117,7 @@ def run(state_pad: str | Path) -> None:
 
     log(f"{'=' * 60}")
     log("TUG-ontheffingen — Stap 2: Validatie aanvraag")
-    log(f"## Versie: {VERSION}")
+    log(f"## Workflowversie: {VERSION}")
     log(f"{'=' * 60}")
 
     # ── 1. Verplichte velden ──────────────────
@@ -219,10 +219,23 @@ def run(state_pad: str | Path) -> None:
             else:
                 log(f"  ✓ luchtvaartuigen[{i}]: {lv['registratie']}")
 
+    # ── 7. Puntlocaties (één of meer) ─────────
+    if "coord_lat" in aanvraag and "coord_lon" in aanvraag:
+        log("\nStap 2g: Validatie puntlocaties ...")
+        try:
+            punten = puntlocaties(aanvraag)
+            for i, (la, lo) in enumerate(punten, 1):
+                log(f"  ✓ puntlocatie {i}: lat={la:.6f}, lon={lo:.6f}")
+        except ValueError as e:
+            fouten.append(str(e))
+            log(f"  ✗ {e}")
+
     # ── Samenvatting ──────────────────────────
     log(f"\n{'─' * 60}")
     geslaagd = len(fouten) == 0
-    if not waarschuw:
+    if fouten:
+        log(f"Validatie MISLUKT — {len(fouten)} fout(en): {'; '.join(fouten)}")
+    elif not waarschuw:
         log("Validatie geslaagd — 0 waarschuwing(en).")
     else:
         log(f"Validatie geslaagd — {len(waarschuw)} waarschuwing(en).")
@@ -253,6 +266,9 @@ def run(state_pad: str | Path) -> None:
 
     state_pad.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
     logging.getLogger("tug.01_validatie").info(f"State geschreven naar {state_pad}")
+    if fouten:
+        logging.getLogger("tug.01_validatie").error(f"FOUT: {'; '.join(fouten)}")
+        sys.exit(1)
 
 
 # ──────────────────────────────────────────────
