@@ -21,7 +21,7 @@ from shapely.geometry.base import BaseGeometry
 
 from tug_config import (
     GEO_DIR,
-    LRK_URL, LRK_CACHE_DAYS, KDV_BBOX_EXTRA,
+    LRK_URL, LRK_CACHE_DAYS, LRK_HEADERS, KDV_BBOX_EXTRA,
     LOCATIESERVER_FREE,
     DUO_PROVINCIE, DUO_TTL_DAGEN, DUO_DATASETS,
     _DUO_PO_GROEP, _DUO_OVERIG_GROEP,
@@ -49,12 +49,14 @@ def _laad_lrk_csv(log):
 
     if downloaden:
         log(f"  LRK CSV: downloaden van {LRK_URL} ...")
+        # Download naar een tijdelijk bestand, zodat een afgebroken download de cache niet beschadigt
+        tmp_pad = lrk_pad.with_suffix(".csv.part")
         try:
-            resp = requests.get(LRK_URL, stream=True, timeout=120)
+            resp = requests.get(LRK_URL, headers=LRK_HEADERS, stream=True, timeout=120)
             resp.raise_for_status()
             totaal = int(resp.headers.get("content-length", 0))
             ontvangen = 0
-            with open(lrk_pad, "wb") as fout:
+            with open(tmp_pad, "wb") as fout:
                 for chunk in resp.iter_content(chunk_size=65536):
                     if chunk:
                         fout.write(chunk)
@@ -68,11 +70,17 @@ def _laad_lrk_csv(log):
                             print(f"\r  LRK downloaden: {ontvangen // 1024} KB ontvangen   ",
                                   end="", flush=True)
             print()
+            tmp_pad.replace(lrk_pad)
             log(f"  LRK CSV opgeslagen: {lrk_pad.name} ({ontvangen // 1024} KB).")
         except Exception as e:
             print()
+            tmp_pad.unlink(missing_ok=True)
             log(f"  FOUT: LRK CSV downloaden mislukt: {e}")
-            return None
+            if not lrk_pad.exists():
+                return None
+            leeftijd = (datetime.now() - datetime.fromtimestamp(lrk_pad.stat().st_mtime)).days
+            log(f"  WAARSCHUWING: verouderde lokale LRK CSV als noodoplossing gebruikt "
+                f"({lrk_pad.name}, {leeftijd} dag(en) oud).")
 
     for sep in (";", ","):
         for enc in ("utf-8", "latin-1"):

@@ -49,7 +49,8 @@ def signaleer_begraafplaatsen(
     buiten_straal = []
 
     for zoekterm in ("begraafplaats", "erebegraafplaats"):
-        params = {"q": zoekterm, "gebouw[version]": "1", "bbox": bbox_str, "limit": 50}
+        # Begraafplaatsen staan in de collectie functioneel_gebied (niet gebouw)
+        params = {"q": zoekterm, "functioneel_gebied[version]": "1", "bbox": bbox_str, "limit": 50}
         try:
             resp = requests.get(PDOK_LOCATION_API, params=params, timeout=15)
             if resp.status_code != 200:

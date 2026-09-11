@@ -98,6 +98,8 @@ GELUIDGEVOELIGE_DOELEN = {
 
 LRK_URL        = "https://www.landelijkregisterkinderopvang.nl/opendata/export_opendata_lrk.csv"
 LRK_CACHE_DAYS = 7
+# De LRK-server weigert de standaard python-requests User-Agent (HTTP 400)
+LRK_HEADERS    = {"User-Agent": "Mozilla/5.0 (compatible; TUG-ontheffingen/4.5; Provincie Overijssel)"}
 KDV_BBOX_EXTRA = 150  # m extra bbox voor KDV-zoekradius
 
 # ──────────────────────────────────────────────
