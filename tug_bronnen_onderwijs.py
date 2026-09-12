@@ -31,7 +31,10 @@ from tug_config import (
 from tug_geo import shapely_from_geojson_geom, transform_geom_to_rd
 from tug_bronnen_bag import haal_verblijfsobjecten, dedupliceer_vbo
 from tug_bronnen_geocode import vul_woonplaats_via_reverse_geocode
-from tug_types import LogFn, SignaalResultaat
+from tug_types import LogFn
+
+
+_logger = logging.getLogger("tug.bronnen_onderwijs")
 
 
 # ──────────────────────────────────────────────
@@ -49,14 +52,15 @@ def _laad_lrk_csv(log):
 
     if downloaden:
         log(f"  LRK CSV: downloaden van {LRK_URL} ...")
-        # Download naar een tijdelijk bestand, zodat een afgebroken download de cache niet beschadigt
+        # Download naar een tijdelijk bestand, zodat een afgebroken download
+        # de cache niet beschadigt
         tmp_pad = lrk_pad.with_suffix(".csv.part")
         try:
             resp = requests.get(LRK_URL, headers=LRK_HEADERS, stream=True, timeout=120)
             resp.raise_for_status()
             totaal = int(resp.headers.get("content-length", 0))
             ontvangen = 0
-            with open(tmp_pad, "wb") as fout:
+            with tmp_pad.open("wb") as fout:
                 for chunk in resp.iter_content(chunk_size=65536):
                     if chunk:
                         fout.write(chunk)
@@ -90,16 +94,15 @@ def _laad_lrk_csv(log):
                     log(f"  LRK CSV geladen: {len(df)} rijen, {len(df.columns)} kolommen "
                         f"(sep='{sep}', enc='{enc}').")
                     return df
-            except Exception:
+            except (ValueError, UnicodeDecodeError, pd.errors.ParserError) as fout:
+                _logger.debug(f"LRK CSV niet leesbaar met sep='{sep}', enc='{enc}': {fout}")
                 continue
 
     log("  FOUT: LRK CSV kon niet worden geparsed.")
     return None
 
 
-def haal_kdv_locaties(
-    circle_rd: BaseGeometry, straal: float, log: LogFn
-) -> dict[str, list]:
+def haal_kdv_locaties(circle_rd: BaseGeometry, log: LogFn) -> dict[str, list]:
     circle_kdv_rd = circle_rd.buffer(KDV_BBOX_EXTRA)
     df = _laad_lrk_csv(log)
     if df is None:
@@ -218,11 +221,30 @@ def _geocodeer_adres(straat, huisnr, postcode):
         if not m:
             return None, None, vbo_id or None, "fout"
         return float(m.group(1)), float(m.group(2)), vbo_id, "ok"
-    except Exception:
+    except (requests.RequestException, ValueError, KeyError, IndexError) as fout:
+        _logger.debug(f"Geocodering mislukt voor {straat} {huisnr}, {postcode}: {fout}")
         return None, None, None, "fout"
 
 
-def _geocodeer_groep(groep_sleutel, groep_keys, geojson_pad, log, meta, cached_bytes=None):
+def _maak_veldlezer(velden: list[str]):
+    """Geeft een functie die één veld uit een DUO-record leest.
+
+    De DUO-API levert records als dict of als rij; in het tweede geval geeft de
+    veldenlijst van diezelfde dataset de kolomvolgorde. Die lijst wordt hier
+    expliciet meegegeven in plaats van uit de omsluitende lus geleend.
+    """
+    def veld(rec, naam):
+        if isinstance(rec, dict):
+            return str(rec.get(naam, "")).strip()
+        try:
+            idx = velden.index(naam)
+            return str(rec[idx]).strip() if idx < len(rec) else ""
+        except (ValueError, IndexError, TypeError):
+            return ""
+    return veld
+
+
+def _geocodeer_groep(groep_keys, geojson_pad, log, meta, cached_bytes=None):
     features = []
     cb = cached_bytes or {}
 
@@ -247,14 +269,7 @@ def _geocodeer_groep(groep_sleutel, groep_keys, geojson_pad, log, meta, cached_b
         if velden:
             log(f"    DUO {type_key}: velden (eerste 8): {velden[:8]}")
 
-        def veld(rec, naam):
-            if isinstance(rec, dict):
-                return str(rec.get(naam, "")).strip()
-            try:
-                idx = velden.index(naam)
-                return str(rec[idx]).strip() if idx < len(rec) else ""
-            except (ValueError, IndexError, TypeError):
-                return ""
+        veld = _maak_veldlezer(velden)
 
         rec_prov = [r for r in records if veld(r, "PROVINCIE").upper() == DUO_PROVINCIE.upper()]
         log(f"    DUO {type_key}: {len(rec_prov)} vestigingen in {DUO_PROVINCIE}.")
@@ -334,18 +349,18 @@ def _verwerk_scholen_groep(groep_sleutel, groep_keys, geojson_pad, log):
                     log(f"    DUO {type_key}: hash gewijzigd → {groep_sleutel} hergeocodeert.")
                     moet_vernieuwen = True
                     break
-                else:
-                    log(f"    DUO {type_key}: hash ongewijzigd. GeoJSON hergebruikt.")
-                    meta[type_key]["timestamp"] = datetime.now().isoformat()
-                    _schrijf_scholen_meta(meta)
-            except Exception:
+                log(f"    DUO {type_key}: hash ongewijzigd. GeoJSON hergebruikt.")
+                meta[type_key]["timestamp"] = datetime.now().isoformat()
+                _schrijf_scholen_meta(meta)
+            except (OSError, ValueError, KeyError) as fout:
+                _logger.debug(f"DUO-meta onbruikbaar ({fout}); groep wordt hergeocodeerd")
                 moet_vernieuwen = True
                 break
 
     if moet_vernieuwen:
         log(f"  DUO {groep_sleutel}: GeoJSON aanmaken / vernieuwen ...")
         GEO_DIR.mkdir(parents=True, exist_ok=True)
-        _geocodeer_groep(groep_sleutel, groep_keys, geojson_pad, log, meta, cached_bytes)
+        _geocodeer_groep(groep_keys, geojson_pad, log, meta, cached_bytes)
         _schrijf_scholen_meta(meta)
     else:
         log(f"  DUO {groep_sleutel}: GeoJSON actueel, geen vernieuwing nodig.")
@@ -376,9 +391,7 @@ def _laad_scholen(log):
     return po_features + overig_features
 
 
-def haal_scholen(
-    circle_rd: BaseGeometry, straal: float, log: LogFn
-) -> dict[str, list]:
+def haal_scholen(circle_rd: BaseGeometry, log: LogFn) -> dict[str, list]:
     alle_scholen = _laad_scholen(log)
     circle_marge_rd = circle_rd.buffer(MARGE_M)
     in_straal = []
@@ -390,7 +403,8 @@ def haal_scholen(
             continue
         try:
             pt_rd = transform_geom_to_rd(shapely_from_geojson_geom(geom))
-        except Exception:
+        except (ValueError, TypeError, KeyError) as fout:
+            _logger.warning(f"School met onleesbare geometrie overgeslagen: {fout}")
             continue
         if circle_rd.contains(pt_rd) or circle_rd.intersects(pt_rd):
             in_straal.append(feat)

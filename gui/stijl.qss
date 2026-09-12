@@ -1,0 +1,228 @@
+/* stijl.qss -- Donker thema voor de grafische schil (tug_gui.py) */
+
+/* ── Basis ─────────────────────────────────────────────── */
+QWidget {
+    background: transparent;
+    color: #e6ebf2;
+    font-family: "Inter", "Ubuntu", "Segoe UI", sans-serif;
+    font-size: 13px;
+}
+QMainWindow, QWidget#wortel { background: #0f131a; }
+
+QToolTip {
+    background: #232c38;
+    color: #e6ebf2;
+    border: 1px solid #3a475a;
+    border-radius: 6px;
+    padding: 7px 10px;
+    font-size: 12px;
+}
+
+/* ── Kop ───────────────────────────────────────────────── */
+QWidget#kop { background: #151b24; border-bottom: 1px solid #232c38; }
+QLabel#kopTitel   { font-size: 15px; font-weight: 700; letter-spacing: .2px; }
+QLabel#kopVersie  { font-size: 11px; color: #7f8da0; font-family: monospace; }
+
+/* ── Kaarten (secties) ─────────────────────────────────── */
+QFrame#kaartje {
+    background: #171e27;
+    border: 1px solid #262f3c;
+    border-radius: 12px;
+}
+QLabel#sectie {
+    font-size: 11px; font-weight: 700; color: #7f8da0;
+    letter-spacing: 1.1px; text-transform: uppercase;
+}
+QLabel#label { color: #b6c2d1; font-size: 12.5px; }
+QLabel#hulp  { color: #7f8da0; font-size: 11.5px; }
+QLabel#leeg  { color: #66738a; font-size: 12px; font-style: italic; }
+QLabel#waarschuwing { color: #ffb454; font-size: 11.5px; }
+QLabel#fout         { color: #ff6b6b; font-size: 11.5px; }
+QFrame#scheiding { background: #262f3c; max-height: 1px; border: none; }
+
+/* ── Invoervelden ──────────────────────────────────────── */
+QLineEdit, QComboBox, QDateEdit, QTimeEdit, QSpinBox, QPlainTextEdit {
+    background: #101620;
+    border: 1px solid #2d3849;
+    border-radius: 8px;
+    padding: 7px 10px;
+    selection-background-color: #4b93ff;
+    selection-color: #ffffff;
+}
+QLineEdit:hover, QComboBox:hover, QDateEdit:hover, QTimeEdit:hover, QSpinBox:hover {
+    border-color: #3c4a5f;
+}
+QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QTimeEdit:focus, QSpinBox:focus {
+    border-color: #4b93ff;
+    background: #121a26;
+}
+QLineEdit::placeholder { color: #5d6a7e; }
+QLineEdit:disabled, QTimeEdit:disabled, QSpinBox:disabled {
+    color: #5d6a7e; background: #0d1219; border-color: #232c38;
+}
+
+QComboBox::drop-down, QDateEdit::drop-down {
+    border: none; width: 26px; subcontrol-origin: padding; subcontrol-position: center right;
+}
+QComboBox::down-arrow, QDateEdit::down-arrow {
+    image: url(__PIJL_NEER__);
+    width: 11px; height: 11px; margin-right: 9px;
+}
+QComboBox::down-arrow:disabled, QDateEdit::down-arrow:disabled { image: url(__PIJL_NEER_ZWAK__); }
+QComboBox QAbstractItemView {
+    background: #1a2029;
+    border: 1px solid #33404f;
+    border-radius: 8px;
+    padding: 4px;
+    outline: none;
+    selection-background-color: #4b93ff;
+    selection-color: #ffffff;
+}
+
+QSpinBox::up-button, QSpinBox::down-button,
+QTimeEdit::up-button, QTimeEdit::down-button { width: 16px; border: none; background: transparent; }
+QSpinBox::up-arrow, QTimeEdit::up-arrow {
+    image: url(__PIJL_OP__); width: 9px; height: 9px; margin-right: 6px;
+}
+QSpinBox::down-arrow, QTimeEdit::down-arrow {
+    image: url(__PIJL_NEER__); width: 9px; height: 9px; margin-right: 6px;
+}
+QSpinBox::up-arrow:disabled, QTimeEdit::up-arrow:disabled     { image: url(__PIJL_OP_ZWAK__); }
+QSpinBox::down-arrow:disabled, QTimeEdit::down-arrow:disabled { image: url(__PIJL_NEER_ZWAK__); }
+
+/* ── Kalenderpopup ─────────────────────────────────────── */
+QCalendarWidget QWidget { alternate-background-color: #151b24; color: #e6ebf2; }
+QCalendarWidget QWidget#qt_calendar_navigationbar {
+    background: #1f2733; border-top-left-radius: 8px; border-top-right-radius: 8px;
+}
+QCalendarWidget QToolButton::menu-indicator { image: none; }
+QCalendarWidget QToolButton {
+    background: transparent; color: #e6ebf2; border: none;
+    border-radius: 6px; padding: 5px 10px; font-weight: 600;
+}
+QCalendarWidget QToolButton:hover { background: #2c3746; }
+QCalendarWidget QMenu { background: #1a2029; border: 1px solid #33404f; }
+QCalendarWidget QSpinBox { background: #101620; border: 1px solid #2d3849; }
+QCalendarWidget QAbstractItemView:enabled {
+    background: #151b24; color: #e6ebf2; outline: none;
+    selection-background-color: #4b93ff; selection-color: #ffffff;
+}
+QCalendarWidget QAbstractItemView:disabled { color: #4a5566; }
+
+/* ── Knoppen ───────────────────────────────────────────── */
+QPushButton {
+    background: #232c38;
+    border: 1px solid #33404f;
+    border-radius: 8px;
+    padding: 7px 14px;
+    color: #dbe3ee;
+    font-weight: 600;
+}
+QPushButton:hover   { background: #2c3746; border-color: #435266; }
+QPushButton:pressed { background: #1d2530; }
+QPushButton:disabled{ color: #5d6a7e; background: #171e27; border-color: #262f3c; }
+
+QPushButton#plus {
+    background: #4b93ff; border: none; color: #ffffff;
+    border-radius: 8px; font-size: 17px; font-weight: 700;
+    min-width: 34px; max-width: 34px; min-height: 34px; max-height: 34px; padding: 0;
+}
+QPushButton#plus:hover   { background: #62a2ff; }
+QPushButton#plus:pressed { background: #3a7fe0; }
+QPushButton#plus:disabled{ background: #253145; color: #5d6a7e; }
+
+QPushButton#verwijder {
+    background: transparent; border: none; color: #7f8da0;
+    font-size: 15px; font-weight: 700; padding: 0;
+    min-width: 24px; max-width: 24px; min-height: 24px; max-height: 24px;
+    border-radius: 12px;
+}
+QPushButton#verwijder:hover { background: #3a2029; color: #ff6b6b; }
+
+QPushButton#genereer {
+    background: #4b93ff; border: none; color: #ffffff;
+    border-radius: 10px; padding: 13px 20px;
+    font-size: 14.5px; font-weight: 700; letter-spacing: .3px;
+}
+QPushButton#genereer:hover   { background: #62a2ff; }
+QPushButton#genereer:pressed { background: #3a7fe0; }
+QPushButton#genereer:disabled{ background: #253145; color: #66738a; }
+
+QPushButton#segment {
+    background: transparent; border: none; color: #93a1b3;
+    border-radius: 6px; padding: 5px 12px; font-size: 12px; font-weight: 600;
+}
+QPushButton#segment:hover   { background: #232c38; color: #e6ebf2; }
+QPushButton#segment:checked { background: #4b93ff; color: #ffffff; }
+QFrame#segmentbalk { background: #101620; border: 1px solid #2d3849; border-radius: 8px; }
+
+/* ── Rijen in de overzichtsvelden ──────────────────────── */
+QFrame#rij {
+    background: #101620; border: 1px solid #262f3c; border-radius: 8px;
+}
+QFrame#rij:hover { border-color: #3c4a5f; background: #121a26; }
+QLabel#rijTitel { font-weight: 600; font-size: 13px; }
+QLabel#rijSub   { color: #7f8da0; font-size: 11px; font-family: monospace; }
+QLabel#rijNr {
+    background: #4b93ff; color: #ffffff; border-radius: 11px;
+    font-size: 11.5px; font-weight: 700; min-width: 22px; max-width: 22px;
+    min-height: 22px; max-height: 22px;
+}
+QLabel#badge {
+    background: #232c38; color: #93a1b3; border-radius: 9px;
+    padding: 2px 8px; font-size: 10.5px; font-weight: 600;
+}
+
+/* ── Info-icoon ────────────────────────────────────────── */
+QLabel#info {
+    color: #6d7c91; font-size: 11px; font-weight: 700;
+    border: 1px solid #3a475a; border-radius: 8px;
+    min-width: 16px; max-width: 16px; min-height: 16px; max-height: 16px;
+}
+QLabel#info:hover { color: #4b93ff; border-color: #4b93ff; }
+
+/* ── Selectievakje ─────────────────────────────────────── */
+QCheckBox { color: #b6c2d1; spacing: 8px; font-size: 12.5px; }
+QCheckBox::indicator {
+    width: 16px; height: 16px; border-radius: 5px;
+    border: 1px solid #3c4a5f; background: #101620;
+}
+QCheckBox::indicator:hover   { border-color: #4b93ff; }
+QCheckBox::indicator:checked { background: #4b93ff; border-color: #4b93ff; image: url(__VINK__); }
+
+/* ── Scrollbalken ──────────────────────────────────────── */
+QScrollArea { border: none; background: transparent; }
+QScrollBar:vertical {
+    background: transparent; width: 10px; margin: 2px 0;
+}
+QScrollBar::handle:vertical {
+    background: #2d3849; border-radius: 5px; min-height: 32px;
+}
+QScrollBar::handle:vertical:hover { background: #3c4a5f; }
+QScrollBar::add-line, QScrollBar::sub-line { height: 0; background: none; border: none; }
+QScrollBar::add-page, QScrollBar::sub-page { background: none; }
+QScrollBar:horizontal { background: transparent; height: 10px; }
+QScrollBar::handle:horizontal { background: #2d3849; border-radius: 5px; min-width: 32px; }
+
+/* ── Voortgangsvenster ─────────────────────────────────── */
+QWidget#sluier { background: rgba(9, 12, 17, 0.82); }
+QFrame#voortgang {
+    background: #151b24; border: 1px solid #2d3849; border-radius: 14px;
+}
+QLabel#voortgangTitel { font-size: 16px; font-weight: 700; }
+QLabel#voortgangStap  { color: #93a1b3; font-size: 12.5px; }
+QPlainTextEdit#logboek {
+    background: #0c1017; border: 1px solid #232c38; border-radius: 9px;
+    font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+    font-size: 11px; color: #9fb2c9; padding: 10px;
+}
+QProgressBar {
+    background: #101620; border: 1px solid #262f3c; border-radius: 5px;
+    height: 6px; text-align: center; color: transparent;
+}
+QProgressBar::chunk { background: #4b93ff; border-radius: 4px; }
+
+/* ── Statusregel ───────────────────────────────────────── */
+QLabel#status     { color: #7f8da0; font-size: 11.5px; }
+QLabel#statusOk   { color: #4ecb8d; font-size: 11.5px; font-weight: 600; }
+QLabel#statusFout { color: #ff6b6b; font-size: 11.5px; font-weight: 600; }

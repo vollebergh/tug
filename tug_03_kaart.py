@@ -1,11 +1,14 @@
 """
 tug_03_kaart.py -- Kaartgeneratie (TUG-ontheffingen workflow)
-Versie: 4.4.0  |  2026-05-04
+Versie: zie git (workflowversie = korte commit-hash, zie tug_config.VERSION)
 
 Bevat: tile-helpers, pixel-coördinatenconversie, teken-primitieven,
 legenda-rendering en de hoofd-renderfunctie `_render_kaart`.
 
-Afhankelijkheden: tug_03_bronnen (constanten + extract_lon_lat).
+Deze module tekent; hij beoordeelt niet. Welke verblijfsobjecten wettelijk
+relevant zijn, in de margeband vallen of alleen ter informatie meegaan, is al
+bepaald in tug_03_ruimtelijk en komt binnen als `oordelen`. Hier wordt alleen
+nog een kleur en een tekenvolgorde aan dat oordeel gehangen.
 """
 
 import io as _io
@@ -14,24 +17,19 @@ import math
 import requests
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 
-from tug_config import KAART_ACHTERGRONDEN, toetsing_label
-from tug_03_bronnen import (
+from tug_config import (
+    KAART_ACHTERGRONDEN,
     MARGE_M,
     MANEGE_SIGNAAL_MARGE,
-    N2000_SIGNAAL_MARGE,
-    NNN_SIGNAAL_MARGE,
     LUCHTHAVEN_GRENS_M,
     LUCHTHAVEN_SIGNAAL_M,
+    toetsing_label,
     _TILE_URL,
     _TILE_SIZE,
     _LOC_CX_FRAC,
     _LOC_CY_FRAC,
-    _PDF_MARGIN_MM,
-    _PDF_DPI,
-    _PDF_PAGE_W_MM,
-    _PDF_PAGE_H_MM,
-    extract_lon_lat,
 )
+from tug_geo import extract_lon_lat
 
 
 # ──────────────────────────────────────────────
@@ -41,7 +39,8 @@ from tug_03_bronnen import (
 def _world_px(lon, lat, zoom):
     x = (lon + 180) / 360 * _TILE_SIZE * (2 ** zoom)
     lat_r = math.radians(lat)
-    y = (1 - math.log(math.tan(lat_r) + 1 / math.cos(lat_r)) / math.pi) / 2 * _TILE_SIZE * (2 ** zoom)
+    y = ((1 - math.log(math.tan(lat_r) + 1 / math.cos(lat_r)) / math.pi) / 2
+         * _TILE_SIZE * (2 ** zoom))
     return x, y
 
 
@@ -106,7 +105,7 @@ def _teken_kruis(draw, cx, cy, size, color, breedte=3):
     draw.line([cx, cy - size, cx, cy + size], fill=color, width=breedte)
 
 
-def _teken_legenda(img, straal, signaal_straal):
+def _teken_legenda(img, straal):
     map_w, map_h = img.size
     try:
         font      = ImageFont.truetype("arial.ttf", 17)
@@ -167,16 +166,21 @@ def _teken_legenda(img, straal, signaal_straal):
                 kleur = tuple(int(c * 0.35 + 255 * 0.65) for c in kleur)
             draw.ellipse([rx, mid_y - DOT_R, rx + DOT_R * 2, mid_y + DOT_R],
                          fill=kleur, outline=(80, 80, 80) if soort == "dot" else (180, 180, 180))
-            draw.text((rx + TEXT_X, ry), tekst, fill=(20, 20, 20) if soort == "dot" else (140, 140, 140), font=font)
+            draw.text((rx + TEXT_X, ry), tekst, font=font,
+                      fill=(20, 20, 20) if soort == "dot" else (140, 140, 140))
         elif soort in ("vlak", "vlak_dim", "vlak_sterk"):
-            vul  = kleur if soort == "vlak_sterk" else tuple(int(c * 0.25 + 255 * 0.75) for c in kleur)
+            vul  = (kleur if soort == "vlak_sterk"
+                    else tuple(int(c * 0.25 + 255 * 0.75) for c in kleur))
             rand = (120, 120, 120) if soort == "vlak_dim" else kleur
-            draw.rectangle([rx, mid_y - DOT_R, rx + DOT_R * 2, mid_y + DOT_R], fill=vul, outline=rand, width=1)
-            draw.text((rx + TEXT_X, ry), tekst, fill=(140, 140, 140) if soort == "vlak_dim" else (20, 20, 20), font=font)
+            draw.rectangle([rx, mid_y - DOT_R, rx + DOT_R * 2, mid_y + DOT_R],
+                           fill=vul, outline=rand, width=1)
+            draw.text((rx + TEXT_X, ry), tekst, font=font,
+                      fill=(140, 140, 140) if soort == "vlak_dim" else (20, 20, 20))
         elif soort in ("ruit", "ruit_conf"):
             alpha = 200 if soort == "ruit_conf" else 130
             cx_r  = rx + DOT_R
-            pts   = [(cx_r, mid_y - DOT_R), (cx_r + DOT_R, mid_y), (cx_r, mid_y + DOT_R), (cx_r - DOT_R, mid_y)]
+            pts   = [(cx_r, mid_y - DOT_R), (cx_r + DOT_R, mid_y),
+                     (cx_r, mid_y + DOT_R), (cx_r - DOT_R, mid_y)]
             draw.polygon(pts, fill=kleur + (alpha,), outline=kleur + (255,))
             draw.text((rx + TEXT_X, ry), tekst, fill=(20, 20, 20), font=font)
         elif soort == "kruis":
@@ -233,20 +237,16 @@ def _teken_bronvermelding(img, tekst):
     return img_rgba.convert("RGB")
 
 
-def _render_kaart(clon, clat, zoom, map_w, map_h,
-                  straal, signaal_straal,
-                  alle_vbo, geluidgevoelig_vbo,
-                  begraafplaatsen_in_straal, begraafplaatsen_buiten_straal,
-                  maneges_in_straal, maneges_buiten_straal,
-                  toon_legenda, log, marge_vbo=None, marge_vbo_overig=None,
-                  kdv_in_straal=None, kdv_in_marge=None,
-                  scholen_in_straal=None, scholen_in_marge=None,
-                  n2000_in_straal=None, n2000_in_signaal=None,
-                  nnn_in_straal=None, nnn_in_signaal=None,
-                  luchthavens_in_straal=None, luchthavens_in_signaal=None,
+def _render_kaart(clon, clat, zoom, map_w, map_h, straal,
+                  bev, oordelen, toon_legenda, log,
                   achtergrond="satelliet",
-                  punten=None, toetsing_rings=None, signaal_rings=None,
-                  **_kw):
+                  punten=None, toetsing_rings=None, signaal_rings=None):
+    """Render één kaartuitsnede.
+
+    `bev` is het Bevindingen-record van de bronstap, `oordelen` het oordeel per
+    verblijfsobject uit de classificatiestap — dezelfde twee die ook de PDF-tabel
+    en de HTML-markers voeden.
+    """
     # Verschuif canvas-centrum zodat locatie op (_LOC_CX_FRAC, _LOC_CY_FRAC) valt
     px_loc, py_loc = _world_px(clon, clat, zoom)
     px_canvas = px_loc + (0.5 - _LOC_CX_FRAC) * map_w
@@ -261,7 +261,6 @@ def _render_kaart(clon, clat, zoom, map_w, map_h,
     img = img.convert("RGBA")
     overlay = Image.new("RGBA", (map_w, map_h), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    cx, cy = _LOC_CX_FRAC * map_w, _LOC_CY_FRAC * map_h
 
     def ll2px(lon, lat):
         return _ll_to_img(lon, lat, clon_c, clat_c, zoom, map_w, map_h)
@@ -294,17 +293,26 @@ def _render_kaart(clon, clat, zoom, map_w, map_h,
             return
         px, py = ll2px(lon_f, lat_f)
         r = stijl[3]
-        draw.ellipse([px - r, py - r, px + r, py + r], fill=stijl[2], outline=(50, 50, 50, 130), width=1)
+        draw.ellipse([px - r, py - r, px + r, py + r],
+                     fill=stijl[2], outline=(50, 50, 50, 130), width=1)
 
-    geluidgevoelig_ids = {id(f) for f in geluidgevoelig_vbo}
-    for feat in (marge_vbo_overig or []):
-        _adres(feat, 0, LICHT)
-    for feat in alle_vbo:
-        is_gev = id(feat) in geluidgevoelig_ids
-        _adres(feat, 4 if is_gev else 1, ROOD if is_gev else GRIJS)
-    for feat in (marge_vbo or []) + (kdv_in_marge or []) + (scholen_in_marge or []):
+    # Kleur en tekenvolgorde per oordeel. De prioriteit bepaalt welke categorie
+    # wint als meerdere objecten hetzelfde pand delen; het oordeel zelf komt uit
+    # tug_03_ruimtelijk, zodat kaart en tabel hetzelfde laten zien.
+    # De volgorde van de banden is de tekenvolgorde: wat later komt, komt bovenop.
+    STIJL_PER_BAND = {
+        # In de margeband is het overige alleen achtergrond: lichtgrijs, onderop.
+        "marge_overig": {"marge": (3, GEEL), "overig": (0, LICHT)},
+        "straal":       {"wettelijk": (4, ROOD), "overig": (1, GRIJS)},
+        "marge":        {"marge": (3, GEEL), "overig": (1, GRIJS)},
+    }
+    for band, stijlen in STIJL_PER_BAND.items():
+        for oordeel in oordelen.get(band, []):
+            prio, stijl = stijlen[oordeel.categorie]
+            _adres(oordeel.feature, prio, stijl)
+    for feat in [*bev.kdv_in_marge, *bev.scholen_in_marge]:
         _adres(feat, 3, GEEL)
-    for feat in (kdv_in_straal or []) + (scholen_in_straal or []):
+    for feat in [*bev.kdv_in_straal, *bev.scholen_in_straal]:
         _adres(feat, 4, ROOD)
 
     def _teken_poly_rings(draw, rings, fill_rgba, outline_rgba):
@@ -313,42 +321,45 @@ def _render_kaart(clon, clat, zoom, map_w, map_h,
             if len(pixels) >= 3:
                 draw.polygon(pixels, fill=fill_rgba, outline=outline_rgba, width=1)
 
-    for item in begraafplaatsen_buiten_straal:
+    for item in bev.begraafplaatsen_buiten_straal:
         _teken_poly_rings(draw, item.get("poly_rings", []), (255, 215, 0, 51), (200, 160, 0, 180))
-    for item in begraafplaatsen_in_straal:
+    for item in bev.begraafplaatsen_in_straal:
         _teken_poly_rings(draw, item.get("poly_rings", []), (184, 134, 11, 51), (140, 90, 0, 200))
 
     # NNN — lichtgroen (onder N2000 renderen, zodat N2000 dominant blijft)
-    for item in (nnn_in_signaal or []):
-        _teken_poly_rings(draw, item.get("poly_rings", []), (144, 238, 144, 35), (102, 205, 102, 110))
-    for item in (nnn_in_straal or []):
+    for item in bev.nnn_in_signaal:
+        _teken_poly_rings(draw, item.get("poly_rings", []),
+                          (144, 238, 144, 35), (102, 205, 102, 110))
+    for item in bev.nnn_in_straal:
         _teken_poly_rings(draw, item.get("poly_rings", []), (102, 205, 102, 55), (60, 179, 60, 160))
 
     # Natura 2000 — dominant donkergroen, over NNN heen (hogere alpha)
-    for item in (n2000_in_signaal or []):
+    for item in bev.n2000_in_signaal:
         _teken_poly_rings(draw, item.get("poly_rings", []), (34, 139, 34, 60), (0, 120, 0, 170))
-    for item in (n2000_in_straal or []):
+    for item in bev.n2000_in_straal:
         _teken_poly_rings(draw, item.get("poly_rings", []), (0, 100, 0, 100), (0, 80, 0, 230))
 
-    for prio, contour, stijl in sorted(pand_vlakken.values(), key=lambda v: v[0]):
+    for _prio, contour, stijl in sorted(pand_vlakken.values(), key=lambda v: v[0]):
         _teken_poly_rings(draw, contour, stijl[0], stijl[1])
 
-    for item in maneges_buiten_straal:
+    for item in bev.maneges_buiten_straal:
         px, py = ll2px(item["lon"], item["lat"])
-        draw.ellipse([px - 7, py - 7, px + 7, py + 7], fill=(128, 0, 128, 80), outline=(160, 110, 160, 160), width=1)
-    for item in maneges_in_straal:
+        draw.ellipse([px - 7, py - 7, px + 7, py + 7],
+                     fill=(128, 0, 128, 80), outline=(160, 110, 160, 160), width=1)
+    for item in bev.maneges_in_straal:
         px, py = ll2px(item["lon"], item["lat"])
-        draw.ellipse([px - 8, py - 8, px + 8, py + 8], fill=(128, 0, 128, 200), outline=(80, 0, 80, 255), width=2)
+        draw.ellipse([px - 8, py - 8, px + 8, py + 8],
+                     fill=(128, 0, 128, 200), outline=(80, 0, 80, 255), width=2)
 
     def _teken_diamant(draw, px, py, r, fill, outline):
         """Teken een ◇ diamantsymbool (rotated square) rondom (px, py)."""
         pts = [(px, py - r), (px + r, py), (px, py + r), (px - r, py)]
         draw.polygon(pts, fill=fill, outline=outline)
 
-    for item in (luchthavens_in_signaal or []):
+    for item in bev.luchthavens_in_signaal:
         px, py = ll2px(item["lon"], item["lat"])
         _teken_diamant(draw, px, py, 9, (210, 90, 0, 120), (160, 60, 0, 200))
-    for item in (luchthavens_in_straal or []):
+    for item in bev.luchthavens_in_straal:
         px, py = ll2px(item["lon"], item["lat"])
         _teken_diamant(draw, px, py, 10, (210, 40, 0, 220), (140, 0, 0, 255))
 
@@ -372,7 +383,7 @@ def _render_kaart(clon, clat, zoom, map_w, map_h,
 
     img = Image.alpha_composite(img, overlay).convert("RGB")
     if toon_legenda:
-        img = _teken_legenda(img, straal, signaal_straal)
+        img = _teken_legenda(img, straal)
     if "toetsing" in label_anker:
         ax, ay = label_anker["toetsing"]
         img = _teken_cirkel_label(img, int(ax), int(ay), 0, toetsing_label(straal), (26, 82, 118))

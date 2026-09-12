@@ -1,0 +1,53 @@
+# Gereedschapsconfiguratie voor de TUG-ontheffingen-pipeline.
+#
+# Dit bestand pakketteert de workflow niet; het legt alleen vast waar ruff,
+# bandit en pytest op letten, zodat een controle op elke machine hetzelfde
+# oordeel geeft. Draaien:
+#
+#     .venv/bin/ruff check .
+#     .venv/bin/bandit -c pyproject.toml -r .
+#     .venv/bin/pytest test
+
+[tool.ruff]
+# 100 in plaats van de gebruikelijke 88. De modules gebruiken uitgelijnde
+# toekenningsblokken (`VERSION     = ...`) en Nederlandse, beschrijvende namen;
+# op 88 tekens moet de helft van die blokken worden afgebroken, wat de
+# leesbaarheid die de uitlijning oplevert weer wegneemt.
+line-length = 100
+target-version = "py312"
+exclude = [".venv", "archief", "tmp", "output", "geo", "obsidian"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "SIM", "UP", "C4", "RET", "ARG", "PTH", "N"]
+ignore = [
+    "E741",
+    # `zip(..., strict=)` toevoegen aan geometrielussen verandert gedrag bij
+    # ongelijke lengtes; per geval afgewogen in plaats van collectief afgedwongen.
+    "B905",
+    # De codebase is Nederlandstalig; "Fout" is hier het achtervoegsel dat de
+    # regel met "Error" bedoelt (_StapFout).
+    "N818",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# De GUI volgt de Qt-naamconventie voor overschreven methoden (resizeEvent,
+# closeEvent) en voor slots die vanuit JavaScript worden aangeroepen.
+"tug_gui.py" = ["N802", "N815"]
+# PIL-kleurconstanten en layoutmaten binnen een functie zijn hoofdletters per
+# conventie: het zijn constanten, ook al staan ze lokaal.
+"tug_03_kaart.py" = ["N806"]
+# Idem voor de PDF-layoutmaten; showPage is een override van reportlab.
+"tug_05_output.py" = ["N806", "N802"]
+# pytest kent fixtures toe op parameternaam; een ongebruikte parameter is daar
+# de manier om een fixture aan te vragen.
+"test/*.py" = ["ARG001", "ARG002"]
+
+[tool.bandit]
+exclude_dirs = [".venv", "archief", "tmp", "output", "geo", "obsidian", "test"]
+
+[tool.pytest.ini_options]
+testpaths = ["test"]
+python_files = ["test_*.py"]
+# test_regressie.py is een zelfstandig script met een eigen CLI (--herijk) en
+# geen pytest-suite; pytest verzamelt daar geen tests uit.
+addopts = "-q --ignore=test/test_regressie.py"

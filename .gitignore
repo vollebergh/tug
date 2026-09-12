@@ -6,6 +6,8 @@ geo/
 
 # ── Vertrouwelijke procesdata ─────────────────
 tug_state.json
+tmp/
+aanvragen.json
 
 # ── Registerbestanden (ILT, LRK) ─────────────
 *.ods
@@ -15,7 +17,6 @@ tug_state.json
 sessies/
 
 # ── Documentatie (interne stukken) ───────────
-Documentatie/
 obsidian/
 
 # ── Oud / archief ─────────────────────────────

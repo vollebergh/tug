@@ -1,9 +1,9 @@
 """
 tug_config.py -- Gedeelde configuratie en constanten (TUG-ontheffingen workflow)
 
-Bevat alle constanten die door meerdere pipeline-modules worden gebruikt.
-Importeer hier vanuit zowel tug_03_bronnen.py als tug_05_output.py om
-dubbele definities en silent inconsistenties te voorkomen.
+Bevat alle constanten, grenswaarden en endpoints die door meerdere
+pipeline-modules worden gebruikt. Elke module importeert ze hier vandaan; een
+waarde die op twee plaatsen staat, loopt vroeg of laat uiteen.
 """
 
 import subprocess
@@ -41,17 +41,37 @@ MODEL_LABEL = ""
 _ROOT      = Path(__file__).parent
 OUTPUT_DIR = _ROOT / "output"
 GEO_DIR    = _ROOT / "geo"
+GUI_DIR    = _ROOT / "gui"   # kaartsjablonen en stijlblad
 
 # ──────────────────────────────────────────────
 # Toetsingsafstanden en zones
 # ──────────────────────────────────────────────
 
-TOETSING_TOESLAG_M       = 10    # vaste toeslag op de Lden-afstand; toetsingsafstand = Lden-afstand + toeslag
-MAX_PUNT_AFSTAND_M       = 100   # max. onderlinge afstand tussen puntlocaties van één aanvraag (B03)
+# Vaste toeslag op de Lden-afstand: toetsingsafstand = Lden-afstand + toeslag.
+TOETSING_TOESLAG_M       = 10
+# Maximale onderlinge afstand tussen de puntlocaties van één aanvraag (B03).
+MAX_PUNT_AFSTAND_M       = 100
 MARGE_M                  = 150   # margeband rond toetsingsafstand (gelijk aan KDV_BBOX_EXTRA)
 MANEGE_SIGNAAL_MARGE     = 375   # aandachtsgebied maneges (boven toetsingsafstand)
 BEGRAAFPLAATS_ZOEK_MARGE = 1500  # extra zoekruimte voor begraafplaats-bbox
 PAND_BBOX_ZOEK_MARGE     = 100   # bbox-marge voor pandgeometrie-query (BAG)
+
+# Omhullende van Nederland (lat_min, lat_max, lon_min, lon_max). Ruim genomen:
+# de controle vangt verwisselde of buitenlandse coördinaten, niet de landsgrens.
+NL_BBOX = (50.0, 54.0, 3.0, 8.0)
+
+# Indientermijn: de aanvraag moet minimaal zoveel dagen vóór de vroegste
+# vluchtdatum zijn ondertekend. Korter is niet verboden, maar levert een gebrek
+# op in het rapport. Zowel de GUI als de validatiestap toetst hierop.
+MIN_INDIENTERMIJN_DAGEN = 28
+
+# Registratiekenmerk luchtvaartuig, bijv. PH-ECE. Alleen een vormcontrole voor
+# de invoer; het ILT-register bepaalt of het kenmerk ook bestaat.
+REGISTRATIE_PATROON = r"^[A-Z0-9]{1,2}-[A-Z0-9]{2,5}$"
+
+# Maximale lengte van de dossiernaam in een bestandsnaam.
+NAAM_SLUG_MAX = 60
+
 
 def toetsing_label(straal: float) -> str:
     """Kaartlabel voor de toetsingsafstand, met de Lden-afstand en de toeslag apart zichtbaar."""

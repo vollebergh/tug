@@ -1,156 +1,478 @@
-# TUG-ontheffingen — Geautomatiseerde inventarisatie
+# TUG-ontheffingen — geautomatiseerde ruimtelijke toetsing
 
-Automatisering van de ruimtelijke analyse voor ontheffingaanvragen **Tijdelijk en Uitzonderlijk Gebruik (TUG)** van het luchtruim buiten luchthavens, op grond van artikel 8a.51 van de Wet luchtvaart. Ontwikkeld voor de Provincie Overijssel.
+Automatisering van de ruimtelijke analyse voor ontheffingaanvragen **Tijdelijk en Uitzonderlijk
+Gebruik (TUG)** van terreinen buiten luchthavens, op grond van artikel 8a.51 van de Wet luchtvaart.
+Ontwikkeld voor en in opdracht van de Provincie Overijssel.
 
-Elke provincie hanteert zijn eigen TUG-beleid en beoordelingscriteria. Dit project is daarom een maatwerkautomatisering voor de Provincie Overijssel en niet zonder aanpassingen toepasbaar op andere provincies.
+De pipeline leest een aanvraag, classificeert de opgegeven luchtvaartuigen via het ILT
+Luchtvaartuigregister en de NLR-indelingslijst, bepaalt daaruit de toetsingsafstand, inventariseert
+alle wettelijk beschermde objecten en functies rond de opstijg- en landingslocatie, en levert een
+PDF-rapport met proceslogboek, adressenlijst en kaarten plus een interactieve HTML-kaart.
 
-De pipeline verwerkt een aanvraag-JSON, classificeert de betrokken luchtvaartuigen via het ILT Luchtvaartregister en de NLR-categorietabel, voert een ruimtelijke analyse uit op alle wettelijk relevante objecten en functies rondom de aanvraaglocatie, en genereert een PDF-rapport met proceslog en adressenlijst en een interactieve HTML-kaart. De HTML-kaart is bedoeld voor de vergunningverlener om in te zoomen op de aanvraaglocatie en de geïnventariseerde objecten in hun ruimtelijke context te beoordelen.
+Elke provincie hanteert eigen TUG-beleid en eigen beoordelingscriteria. Dit is daarom een
+maatwerkautomatisering voor Overijssel en niet zonder aanpassing bruikbaar voor andere provincies.
+
+> **Over dit document.** Het dient twee doelen. **Deel A** beschrijft wat het systeem doet, welke
+> gegevens het verwerkt, waar het faalt en hoe de mens in het proces staat — geschreven om zonder
+> technische kennis te lezen en bruikbaar als procesbeschrijving voor een algoritmetoets en een
+> DPIA. **Deel B** is de technische documentatie voor wie de pipeline draait of onderhoudt.
+> **Deel C** gaat over kwaliteitsborging en beheer.
 
 ---
 
 ## Inhoudsopgave
 
-- [Vereisten](#vereisten)
-- [Installatie](#installatie)
-- [Gebruik](#gebruik)
-- [Aanvraag-JSON](#aanvraag-json)
-- [Validatieregels](#validatieregels)
-- [Architectuur](#architectuur)
-- [Toetsingslogica](#toetsingslogica)
-- [Gegevensbronnen & caching](#gegevensbronnen--caching)
-- [Uitvoer](#uitvoer)
-- [tug_state.json](#tug_statejson)
-- [Kwaliteitsborging](#kwaliteitsborging)
+**Deel A — Wat dit systeem is en hoe het wordt gebruikt**
+
+1. [Doel en juridisch kader](#1-doel-en-juridisch-kader)
+2. [Positie in het vergunningproces](#2-positie-in-het-vergunningproces)
+3. [Reikwijdte — wat het systeem wel en niet doet](#3-reikwijdte--wat-het-systeem-wel-en-niet-doet)
+4. [Werking in hoofdlijnen](#4-werking-in-hoofdlijnen)
+5. [Gegevensverwerking](#5-gegevensverwerking)
+6. [Menselijke tussenkomst en controlemomenten](#6-menselijke-tussenkomst-en-controlemomenten)
+7. [Risico's, beperkingen en wat daartegenover staat](#7-risicos-beperkingen-en-wat-daartegenover-staat)
+8. [Transparantie en verantwoording](#8-transparantie-en-verantwoording)
+
+**Deel B — Technische documentatie**
+
+9. [Installatie en omgeving](#9-installatie-en-omgeving)
+10. [Gebruik](#10-gebruik)
+11. [Grafische schil](#11-grafische-schil)
+12. [Aanvraag-JSON](#12-aanvraag-json)
+13. [Validatieregels](#13-validatieregels)
+14. [Classificatie van luchtvaartuigen](#14-classificatie-van-luchtvaartuigen)
+15. [Toetsingslogica](#15-toetsingslogica)
+16. [Gegevensbronnen en caching](#16-gegevensbronnen-en-caching)
+17. [Architectuur](#17-architectuur)
+18. [Uitvoer](#18-uitvoer)
+
+**Deel C — Beheer**
+
+19. [Kwaliteitsborging](#19-kwaliteitsborging)
+20. [Onderhoud en houdbaarheid](#20-onderhoud-en-houdbaarheid)
+21. [Licentie en eigenaarschap](#21-licentie-en-eigenaarschap)
 
 ---
-
-## Vereisten
-
-- Python 3.11 of hoger (geen adminrechten vereist voor installatie via `pip`)
-
-### Python-packages
-
-```
-pandas
-requests
-pyproj
-shapely
-odfpy
-Pillow
-reportlab
-geopandas
-pyogrio
-```
-
-Installeren (via uv, aanbevolen):
-
-```bash
-uv venv
-uv pip install pandas requests pyproj shapely odfpy Pillow reportlab geopandas pyogrio
-```
-
-Of via pip:
-
-```bash
-pip install pandas requests pyproj shapely odfpy Pillow reportlab geopandas pyogrio
-```
-
-> **Zonder geopandas/pyogrio** draait de pipeline wel, maar de NNN-analyse (Natuurnetwerk Nederland) wordt overgeslagen. N2000-signalering via PDOK WFS blijft altijd actief.
-
 ---
 
-## Installatie
+# Deel A — Wat dit systeem is en hoe het wordt gebruikt
 
-1. Clone of download de repository.
-2. Geen verdere configuratie nodig — mappen `geo/` en `output/` worden automatisch aangemaakt bij de eerste run.
+## 1. Doel en juridisch kader
 
-### Bestanden die bij eerste run worden gedownload
+Wie met een luchtvaartuig wil opstijgen of landen buiten een luchthaven heeft daarvoor een
+ontheffing nodig van gedeputeerde staten (art. 8a.51 Wet luchtvaart). De provincie beoordeelt zo'n
+aanvraag onder meer op de geluidbelasting voor de omgeving: rond de opstijg- en landingsplaats geldt
+een afstandsnorm, en van geluidgevoelige gebouwen binnen die afstand moet de aanvrager een
+instemmingsverklaring overleggen.
 
-De pipeline downloadt bij de eerste run externe bestanden automatisch naar `geo/` en cachet deze voor hergebruik. 
+Het bepalen van welke objecten binnen die afstand liggen is handwerk dat zich slecht verhoudt tot
+zorgvuldigheid: het vergt het combineren van vijf à tien landelijke registers per aanvraag, en een
+gemist adres betekent een omwonende die niet om instemming is gevraagd. Dat deel — en alleen dat
+deel — automatiseert deze pipeline.
 
-| Bestand | Bron | Grootte | TTL |
-|---------|------|---------|-----|
-| `luchtvaartuigregister_ilt.ods` | ILT (gescrapet van bronpagina) | ± 1,3 MB | 30 dagen |
+**Toegepast normenkader**
+
+| Bron | Wat eruit volgt |
+|---|---|
+| Art. 8a.51 Wet luchtvaart | Ontheffingplicht voor tijdelijk en uitzonderlijk gebruik |
+| [Beleidsregel TUG Overijssel](https://lokaleregelgeving.overheid.nl/CVDR329333/), art. 6 lid 3 | Afstandsnormen per luchtvaartuigcategorie; bescherming van begraafplaatsen en maneges; minimumafstand tot luchthavens |
+| Art. 3.21 Besluit kwaliteit leefomgeving (Bkl) | Welke gebouwen geluidgevoelig zijn: woon-, onderwijs- en gezondheidszorgfunctie, en bijeenkomstfunctie voor kinderopvang met bedgebied |
+| NLR-indelingslijst CR-96650L Suppl. 1 (okt. 2022) | ICAO-typeaanduiding → appendixcategorie → afstandsnorm |
+
+De logiesfunctie telt bewust **niet** als geluidgevoelig gebouw in de zin van art. 3.21 Bkl.
+
+## 2. Positie in het vergunningproces
+
+Het vergunningproces kent zes stappen. De pipeline automatiseert stap 2 tot en met 4 en produceert
+het materiaal voor stap 6; stap 1 en 5 zijn mensenwerk.
+
+| Processtap | Automatiseringsgraad | Uitvoerder |
+|---|---|---|
+| 1. Aanvraag binnenkomst | Handmatig | Aanvrager dient in via het webformulier; de vergunningverlener neemt de gegevens over |
+| 2. Volledigheidscheck | Volledig | `tug_01_validatie.py` |
+| 3. Classificatie luchtvaartuigen | Volledig | `tug_02_classificatie.py` |
+| 4. Ruimtelijke analyse | Grotendeels | `tug_03_ruimtelijk.py` |
+| 5. Instemmingscheck | Handmatig, buiten de pipeline | Aanvrager verzamelt, vergunningverlener beoordeelt |
+| 6. Concept-beschikking | Materiaal geautomatiseerd | `tug_05_output.py` levert rapport en kaarten; de beschikking zelf, de review en de ondertekening blijven bij de vergunningverlener |
+
+> De scriptnummers volgen de processtappen, niet hun eigen volgorde: `tug_01_validatie.py` is
+> processtap 2, `tug_02_classificatie.py` is stap 3, `tug_03_ruimtelijk.py` is stap 4 en
+> `tug_05_output.py` hoort bij stap 6.
+
+**Het systeem neemt geen besluit.** Het stelt vast welke objecten binnen welke afstand liggen en
+legt dat vast; of dat tot een ontheffing, aanvullende voorwaarden of een weigering leidt, beoordeelt
+de vergunningverlener. Er is geen sprake van geautomatiseerde besluitvorming in de zin van art. 22
+AVG: er rolt geen beslissing uit, en het resultaat wordt in alle gevallen door een mens gelezen,
+beoordeeld en ondertekend voordat er iets richting aanvrager of omgeving gaat.
+
+## 3. Reikwijdte — wat het systeem wel en niet doet
+
+**Wel**
+
+- Locatiegebonden aanvragen met een of meer opgegeven puntlocaties.
+- Controle op volledigheid van de aanvraag en op de indieningstermijn.
+- Classificatie van de opgegeven luchtvaartuigen en bepaling van de maatgevende afstandsnorm.
+- Inventarisatie van geluidgevoelige gebouwen, kinderopvanglocaties, scholen, begraafplaatsen,
+  maneges en luchthavens rond de locatie.
+- Signalering van Natura 2000- en Natuurnetwerk Nederland-gebieden.
+- Een rapport met proceslogboek, adressenlijst en kaarten, plus een interactieve kaart.
+
+**Niet**
+
+- **Het besluit.** Zie hierboven.
+- **Instemmingsverklaringen.** Het verzamelen ervan is aan de aanvrager, het beoordelen aan de
+  vergunningverlener. De pipeline levert alleen de lijst van objecten waarvoor instemming nodig is.
+- **Heteluchtballonnen.** Die zijn via een verklaring van geen bedenkingen van de burgemeester
+  vrijgesteld van de TUG-ontheffing en vallen buiten het proces.
+- **Drones.** De voorschriften daarvoor zijn nog niet vastgesteld.
+- **Generieke (niet-locatiegebonden) ontheffingen.** Zonder locatie is er geen ruimtelijke toetsing
+  mogelijk.
+- **De veiligheidsbeoordeling van de locatie.** Dat is een rijksbevoegdheid (ILT), geen
+  provinciale.
+- **Koppeling met het zaaksysteem.** De aanvraaggegevens worden handmatig overgenomen of via de
+  grafische schil ingevoerd; het zaaksysteem kan het formulier niet los exporteren.
+- **Niet-geregistreerde maneges.** Maneges die feitelijk in gebruik zijn maar niet als zodanig zijn
+  vastgelegd, hebben geen bescherming op grond van de Beleidsregel en worden niet opgespoord.
+
+## 4. Werking in hoofdlijnen
+
+De pipeline is een **deterministische regelketen**. Er zit geen machine learning in, geen
+statistisch model, geen scoring en geen training op gegevens. Elke uitkomst volgt uit een expliciet
+opgeschreven regel of uit een meting op geometrie, en is met de hand na te rekenen. Dezelfde
+aanvraag levert bij dezelfde brondata en dezelfde codeversie dezelfde uitkomst.
+
+Het systeem beoordeelt **locaties en gebouwfuncties, geen personen**. Er wordt niet geprofileerd,
+geen gedrag voorspeld en geen persoon gerangschikt of gescoord.
+
+De keten:
+
+```
+aanvraag (soort, data, luchtvaartuigen, puntlocatie(s), ondertekening)
+    │
+    ├─ 1. volledigheid en termijn          → waarschuwingen in het proceslog
+    │
+    ├─ 2. per luchtvaartuig:
+    │      PH-registratie → ILT-register → ICAO-type → NLR-tabel → afstandsnorm
+    │      de grootste norm van alle luchtvaartuigen is maatgevend
+    │
+    ├─ 3. toetsingsafstand = maatgevende norm + 10 m
+    │      cirkel(s) rond de puntlocatie(s) in RD New (EPSG:28992)
+    │
+    ├─ 4. wat ligt daarbinnen?
+    │      BAG-verblijfsobjecten (gevel, niet adrespunt) · kinderopvang via LRK ·
+    │      scholen via DUO · begraafplaatsen en maneges via BRT · luchthavens ·
+    │      Natura 2000 en NNN als signalering
+    │
+    └─ 5. categoriseren en vastleggen
+           wettelijk relevant · margeband · aandachtslocatie · overig
+           → PDF-rapport + HTML-kaart
+```
+
+De afstandsnorm komt dus **niet** uit een schatting maar uit twee openbare tabellen achter elkaar.
+Waar een van die twee geen antwoord geeft, neemt het systeem geen norm aan — zie
+[hoofdstuk 14](#14-classificatie-van-luchtvaartuigen).
+
+## 5. Gegevensverwerking
+
+Feitelijke beschrijving van welke gegevens waar vandaan komen, waar ze terechtkomen en hoe lang ze
+blijven staan.
+
+### 5.1 Wat er wordt verwerkt
+
+| Gegeven | Herkomst | Komt terecht in | Blijft staan |
+|---|---|---|---|
+| Soort ontheffing, vluchtdata, tijdvenster, aantal vluchten | Aanvraag | Proceslogboek in het PDF | In het PDF zolang dat bewaard wordt |
+| Registratiekenmerken luchtvaartuigen (PH-…) | Aanvraag | Proceslogboek, PDF | Idem |
+| Puntlocatie(s) (WGS84 en RD) | Aanvraag | Proceslogboek, PDF, kaarten; bbox-parameter in de bevragingen van externe bronnen | Idem |
+| Datum en tijdstip ondertekening | Aanvraag | Proceslogboek, termijncontrole | Idem |
+| Dossieromschrijving (`naam`) | Vrij invoerveld | Bestandsnamen van rapport en kaart, proceslogboek | Idem |
+| Adresgegevens in de omgeving: straat, huisnummer, postcode, woonplaats, gebruiksdoel, verblijfsobject- en pandidentificatie | BAG WFS (Kadaster) | Adressenlijst in het PDF, HTML-kaart | Idem |
+| Pandgeometrie (gevelcontour) | BAG WFS | Kaarten in PDF en HTML | Idem |
+| Kinderopvanglocaties (BAG-koppeling, type opvang) | LRK (open data) | Adressenlijst; volledige landelijke bronbestand in `geo/` | Cache 7 dagen |
+| Schoolvestigingen (naam, adres, verblijfsobject-id) | DUO Open Onderwijsdata | Adressenlijst; voorbewerkt bestand voor Overijssel in `geo/` | Cache 90 dagen |
+| Luchtvaartuigregister (registratie, type, ICAO-code) | ILT | `geo/luchtvaartuigregister_ilt.ods` | Cache 30 dagen |
+| Begraafplaatsen, maneges, luchthavens (naam, geometrie, dichtstbijzijnd adres) | PDOK Location API / BRT Top10NL / GeoPortaal Overijssel | Adressenlijst, kaarten | Niet gecached |
+| Natura 2000-gebieden (naam, geometrie) | PDOK WFS | Proceslogboek, kaarten | Niet gecached |
+| NNN-gebieden (alleen geometrie) | PDOK ATOM-feed | Proceslogboek, kaarten | Cache 180 dagen |
+
+### 5.2 Wat er niet wordt verwerkt
+
+- **Geen NAW- of contactgegevens van de aanvrager.** De aanvraagstructuur kent die velden niet; naam,
+  adres, KvK-nummer, telefoonnummer en e-mailadres van de aanvrager blijven in het zaaksysteem.
+- **Geen namen van bewoners of eigenaren.** De BAG levert adressen, gebruiksdoelen en geometrie —
+  geen personen. Het systeem raadpleegt geen eigendoms- of kadastrale registers.
+- **Geen instemmingsverklaringen.** Die worden buiten de pipeline om verzameld en beoordeeld.
+- **Geen houdergegevens uit het luchtvaartuigregister.** Het register wordt uitsluitend gelezen op
+  de kolommen `Registration` en `ICAO-code`. Het openbare bestand bevat geen houdersnaam.
+
+De adressenlijst bevat dus wel adresgegevens van derden — omwonenden. Dat is geen bijvangst maar het
+product zelf: de aanvrager moet op precies die adressen om instemming vragen.
+
+### 5.3 Waar gegevens naartoe gaan
+
+Alle bevraagde bronnen zijn open data van Nederlandse overheidsorganisaties: PDOK/Kadaster, RVO,
+ILT, DUO en het Landelijk Register Kinderopvang, plus het GeoPortaal van de provincie Overijssel.
+Er zijn geen accounts, API-sleutels of commerciële diensten in gebruik, en er gaat geen verkeer naar
+partijen buiten deze verzameling.
+
+Wat die bronnen te zien krijgen is per bevraging een **bounding box of coördinaat rond de
+aanvraaglocatie**, en bij begraafplaatsen en maneges een zoekterm. Gegevens over de aanvrager of de
+aanvraag zelf verlaten de machine niet.
+
+### 5.4 Opslag en verwijdering
+
+| Wat | Waar | Wat ermee gebeurt |
+|---|---|---|
+| Tussentijdse procesdata | `tug_state.json` | Na elke aanvraag overschreven met `{}` — ook wanneer een stap afbreekt |
+| Invoerbestand van de grafische schil | `tmp/` | Geleegd na afloop van de run, ook na een afgebroken run |
+| Rapport en kaart | `output/` | Blijven staan tot iemand ze verplaatst of verwijdert; de grafische schil verplaatst ze desgevraagd naar een gekozen map |
+| Bronbestanden | `geo/` | Blijven staan tot de bewaartermijn (TTL) verloopt en het bestand wordt vervangen |
+| Runlogboek | Terminalvenster | Wordt niet naar een bestand geschreven |
+
+De versiebeheerrepository bevat uitsluitend code: `output/`, `geo/`, `tug_state.json`, `tmp/`,
+`aanvragen.json`, de projectnotities en het archief zijn uitgesloten. Er komt geen aanvraag- of
+adresdata in de repository terecht.
+
+## 6. Menselijke tussenkomst en controlemomenten
+
+De pipeline is zo gebouwd dat zij **niet stilvalt op een onvolledige aanvraag**, maar ook **niets
+aanneemt wat zij niet kan onderbouwen**. Beide keuzes leiden het werk terug naar de
+vergunningverlener in plaats van naar een impliciete aanname.
+
+| Moment | Wat het systeem doet | Wat de vergunningverlener doet |
+|---|---|---|
+| Ontbrekend of onjuist gevormd veld in de aanvraag | Waarschuwing in rood in het proceslogboek; rekent door | Beoordeelt of de aanvraag moet worden aangevuld |
+| Aanvraag korter dan 28 dagen voor de vlucht ondertekend | Waarschuwing; rekent door | Beoordeelt de termijnoverschrijding |
+| Luchtvaartuig niet in het ILT-register, of ICAO-code zonder vastgestelde norm | Neemt **geen** norm aan; laat het luchtvaartuig buiten de toetsing en meldt dat in een rood blok | Bepaalt of het luchtvaartuig in de ontheffing wordt opgenomen en welke norm daarvoor geldt |
+| Object in de margeband (tot 150 m buiten de toetsingsafstand) | Toont het op de kaart, niet in de adressenlijst | Beoordeelt of ook daar instemming wenselijk is |
+| Manege in het aandachtsgebied | Signaleert de manege | Beoordeelt de feitelijke terreinsituatie |
+| Natura 2000 of NNN geraakt | Signaleert gebied en afstand | Beoordeelt of de vluchtomschrijving aanleiding geeft tot doorverwijzing naar een passende beoordeling |
+| Luchthaven binnen 1.000 m | Meldt "niet toegestaan" | Neemt het besluit |
+
+De pipeline breekt maar op twee punten af: wanneer de opgegeven puntlocaties verder dan 100 m uit
+elkaar liggen (dan is er geen samenhangend toetsingsgebied), en wanneer voor géén van de opgegeven
+luchtvaartuigen een afstandsnorm herleidbaar is (dan is er geen toetsingsafstand). In beide gevallen
+is er niets om op door te rekenen.
+
+## 7. Risico's, beperkingen en wat daartegenover staat
+
+De asymmetrie van dit systeem bepaalt het ontwerp: een **gemist object** (vals negatief) betekent
+een omwonende die niet om instemming is gevraagd en een beschikking die op onvolledige informatie
+rust. Een **te veel gesignaleerd object** (vals positief) kost de aanvrager extra werk en verder
+niets. Waar een keuze zich voordoet, is die daarom consequent naar ruim signaleren gemaakt: een
+toeslag van 10 m op de afstandsnorm, een margeband van 150 m, een aandachtsgebied van 375 m rond
+maneges, en zoekvensters die veel ruimer zijn dan de toetsingsafstand.
+
+| Risico | Oorzaak | Gevolg | Wat daartegenover staat |
+|---|---|---|---|
+| School of kinderopvang niet als geluidgevoelig herkend | Het BAG-gebruiksdoel is niet betrouwbaar: scholen staan er vaak in als bijeenkomstfunctie | Vals negatief | Twee aanvullende registers: LRK voor kinderopvang (directe koppeling op BAG-identificatie) en DUO voor scholen. Bij een treffer in die registers is dat register leidend boven het BAG-gebruiksdoel |
+| Manege niet gevonden | De detectie zoekt op objectnaam in de BRT; naamloze of generiek benoemde maneges ontbreken | Vals negatief, maar zonder rechtsgevolg | Twaalf zoektermen en een ruim aandachtsgebied. Niet-geregistreerde maneges hebben geen bescherming op grond van de Beleidsregel |
+| Schoolgebouw op de verkeerde plek gepositioneerd | DUO levert geen BAG-koppeling; het adres wordt gegeocodeerd en het hoogst scorende verblijfsobject gebruikt | Afstand tot een groot schoolcomplex kan enkele tientallen meters afwijken | Deduplicatie tegen de BAG-treffers; het gebouw verschijnt hoe dan ook in de lijst zodra het binnen de afstand ligt |
+| Gebouw net buiten de cirkel terwijl de gevel er nog binnen valt | Een BAG-adrespunt ligt niet op de gevel | Vals negatief | De toetsing gebeurt op de **pandgeometrie**, niet op het adrespunt: een pand telt mee zodra de gevel de cirkel snijdt |
+| Piloot landt niet exact op het opgegeven coördinaat | Het formulier vraagt één coördinaat; de praktijk wijkt af | Objecten net buiten de cirkel blijven ongezien | Margeband van 150 m, apart gemarkeerd op de kaarten |
+| Begraafplaats onterecht gesignaleerd | Er wordt geen onderscheid gemaakt tussen actieve en gesloten begraafplaatsen | Vals positief | Bewuste keuze; het alternatief (handmatige lijsten van gesloten begraafplaatsen) is niet betrouwbaar bij te houden |
+| NNN-gebied net buiten Overijssel niet gesignaleerd | De NNN-cache bevat alleen de provinciale begrenzing | Vals negatief bij grenslocaties | Alle Natura 2000-gebieden zijn ook NNN: bij een N2000-treffer wordt de NNN-treffer aangenomen |
+| Externe bron valt uit of wijzigt | Registers en API's zijn van hun bronhouders en veranderen zonder aankondiging | Stille onderbreking van een detectielaag | Reëel gebleken risico: het kinderopvangregister weigerde op enig moment de standaard opvraging, en een begraafplaats-collectie was na een refactor stil leeg. Sindsdien: terugval op de bestaande cache bij een mislukte download, en elke bron rapporteert in het proceslogboek per stap wat zij heeft opgeleverd, zodat nul treffers zichtbaar is in plaats van onopgemerkt |
+| Luchtvaartuig pas net geregistreerd | Het registerbestand is tot 30 dagen oud | Onterechte melding "niet in register" | Bij een registratie die niet in de cache voorkomt wordt het register eerst ververst en de opzoeking herhaald |
+| Bibliotheekversie verandert de uitkomst | Een minor release van de geometrie- of projectiebibliotheken kan een randgeval anders afhandelen; bij een grens van 500 m is het verschil tussen 499 en 501 m het verschil tussen wel en niet melden | Stille verandering in een juridisch document | Exact vastgepinde versies en een regressietest die 67 waarden vergelijkt met een vastgelegde nulmeting — zie [hoofdstuk 19](#19-kwaliteitsborging) |
+| Brondata is onjuist | Registers bevatten fouten | Onjuiste uitkomst | Buiten de invloedssfeer van de pipeline: de bronhouder is verantwoordelijk voor de integriteit van zijn data en die data geldt hier als gegeven. Het proceslogboek benoemt per stap welke bron is geraadpleegd, zodat een fout herleidbaar is tot de bron |
+
+Twee beperkingen die geen mitigatie kennen en als zodanig gelden: de detectie van
+**niet-geregistreerde maneges** en de dekking van **toekomstige, vergunde maar nog niet
+gerealiseerde functies** uit omgevingsplannen. Voor dat laatste is geen landelijk dekkende bron
+beschikbaar zolang niet alle gemeenten hun omgevingsplan hebben gedigitaliseerd.
+
+## 8. Transparantie en verantwoording
+
+**Het proceslogboek is de uitlegbaarheidsvoorziening.** Elk rapport bevat een logboek van twaalf
+paragrafen dat per stap vastlegt welke bron is bevraagd, met welk endpoint en welke parameters, wat
+dat opleverde en welke regel daarop is toegepast. Paragrafen die aandacht vragen — een geraakt
+natuurgebied, een krappe indieningstermijn, een luchtvaartuig zonder norm, een ontbrekend veld —
+worden in rood weergegeven.
+
+| Paragraaf | Inhoud |
+|---|---|
+| 1 | Inputparameters van de aanvraag; ontbrekende velden |
+| 2 | Classificatie van de luchtvaartuigen en de maatgevende toetsingsafstand |
+| 3 | Omzetting WGS84 → RD en de berekende zones |
+| 4 | Natura 2000 |
+| 5 | Natuurnetwerk Nederland |
+| 6 | Verblijfsobjecten via BAG WFS |
+| 7 | Begraafplaatsen |
+| 8 | Kinderopvanglocaties |
+| 9 | Scholen |
+| 10 | Maneges |
+| 11 | Luchthavens |
+| 12 | Synthese, aantallen per categorie en verwijzing naar de uitvoerbestanden |
+
+**Herleidbaarheid tot de exacte code.** Elk voortbrengsel — runlogboek, PDF, HTML-kaart en de
+tussentijdse state — draagt de workflowversie: de korte commit-hash van de code waarmee het is
+gemaakt, met de toevoeging *(niet-gecommitte wijzigingen)* wanneer er lokaal gewijzigde bestanden
+zijn. Van elk rapport is daarmee vast te stellen met welke versie van de regels het is opgesteld.
+
+**Reproduceerbaarheid.** Dezelfde aanvraag opnieuw doorrekenen levert hetzelfde resultaat, behoudens
+wijzigingen in de brondata. De vastgepinde bibliotheekversies en de regressietest borgen dat de
+omgeving zelf geen stille verschillen introduceert.
+
+**Verifieerbaarheid van elk afzonderlijk adres.** De adressenlijst vermeldt per object waarom het
+er staat: het gebruiksdoel uit de BAG, of de bron die het object als beschermd aanmerkt
+(`kinderdagverblijf met bedverblijf (KDV)`, `school – PO (DUO)`, `begraafplaats – {naam}`,
+`manege – {naam}`). Een lezer kan elke regel terugvoeren op een bron.
+
+---
+---
+
+# Deel B — Technische documentatie
+
+## 9. Installatie en omgeving
+
+### 9.1 Vereisten
+
+- **Python 3.12.** Ondergrens én bovengrens zijn scherp: onder 3.12 levert de vastgepinde
+  geo-stack geen kant-en-klare pakketten meer, vanaf 3.15 ondersteunt PySide6 niet. Op een andere
+  3.x-versie kan de installatie pakketten willen compileren, waarvoor een C-compiler nodig is.
+- **Geen adminrechten.** Alles komt in een virtuele omgeving binnen de projectmap terecht.
+- Voor de grafische schil onder Linux: de systeembibliotheken `libxcb-cursor0`,
+  `libxkbcommon-x11-0`, `libxcb-icccm4`, `libxcb-keysyms1` en `libxcb-xkb1`. Ontbreken die, dan
+  meldt Qt alleen dat het xcb-platformplugin niet geladen kan worden.
+
+### 9.2 Installeren
+
+```bash
+python install.py
+```
+
+Het script controleert de Python-versie, maakt `.venv/` aan in de projectmap, installeert
+`requirements.txt` en controleert daarna of elke bibliotheek zich ook werkelijk laat importeren —
+een geslaagde installatie garandeert niet dat een binaire uitbreiding laadt, daar kunnen Qt- of
+GDAL-systeembibliotheken voor ontbreken. Het script is idempotent: een tweede run hergebruikt de
+bestaande omgeving.
+
+Bewust een `.py`-bestand en geen `.sh` of `.bat`: op beheerde laptops is het uitvoeren van
+shellscripts vaak geblokkeerd, het draaien van een Python-bestand via de interpreter niet. Bij een
+proxy of een bedrijfs-CA-certificaat benoemt de foutmelding wat er moet gebeuren.
+
+Daarna starten zonder de omgeving te activeren:
+
+```bash
+.venv/bin/python tug_gui.py
+.venv/bin/python tug_run.py aanvraag.json
+```
+
+### 9.3 Dependencies
+
+`requirements.txt` pint alle twaalf directe dependencies **exact** (`==`), niet als minimumversie.
+De reden staat in het bestand zelf: de pipeline produceert documenten met een juridische functie, en
+dezelfde aanvraag moet op elke machine dezelfde afstanden en dezelfde classificatie opleveren.
+
+| Groep | Pakketten |
+|---|---|
+| Grafische schil | `PySide6` |
+| Tabellen en registers | `pandas`, `numpy`, `odfpy` (leest het ILT-register in ODS-formaat) |
+| Geo | `geopandas`, `shapely`, `pyproj`, `pyogrio` (geo-IO onder geopandas) |
+| Bronnen ophalen en parsen | `requests`, `lxml` |
+| Uitvoer | `reportlab` (PDF), `pillow` (kaartafbeeldingen) |
+
+Bijwerken is een bewuste handeling: pas de versie aan, draai daarna de regressietest
+(zie [hoofdstuk 19](#19-kwaliteitsborging)) en beoordeel elk verschil. De transitieve dependencies
+zijn niet gepind; geen ervan raakt de geometrie- of afstandsberekening.
+
+Zonder `geopandas`/`pyogrio` draait de pipeline wel, maar wordt de NNN-analyse overgeslagen;
+N2000-signalering blijft dan actief. Zonder `PySide6` werkt alleen de grafische schil niet.
+
+### 9.4 Wat er bij de eerste run wordt gedownload
+
+De pipeline maakt `geo/` en `output/` zelf aan en haalt de bronbestanden op zodra ze nodig zijn.
+
+| Bestand | Bron | Grootte | Bewaartermijn |
+|---|---|---|---|
+| `luchtvaartuigregister_ilt.ods` | ILT (link wordt van de bronpagina gelezen) | ± 1,3 MB | 30 dagen |
 | `lrk_kinderopvang.csv` | Landelijk Register Kinderopvang | ± 12 MB | 7 dagen |
 | `nnn_gebieden.gpkg` | PDOK ATOM-feed (GML → GeoPackage) | ± 111 MB | 180 dagen |
-| `duo_scholen_po.geojson` | DUO Open Onderwijsdata PO (gefilterd op Overijssel) | ± 143 KB | 90 dagen |
-| `duo_scholen_overig.geojson` | DUO Open Onderwijsdata SO/VO/MBO/HO (gefilterd op Overijssel) | ± 63 KB | 90 dagen |
+| `duo_scholen_po.geojson` | DUO, basisonderwijs, gefilterd op Overijssel | ± 143 KB | 90 dagen |
+| `duo_scholen_overig.geojson` | DUO, SO/VO/MBO/HO, gefilterd op Overijssel | ± 63 KB | 90 dagen |
 
-> De NNN GeoPackage (111 MB) wordt alleen aangemaakt als `geopandas` en `fiona` beschikbaar zijn. De overige bestanden worden altijd gedownload.
+De opbouw van de NNN-GeoPackage duurt ongeveer 30 seconden: downloaden, GML lezen, projecteren naar
+RD en wegschrijven.
 
-```
-TUG-ontheffingen/
-├── geo/                        # Automatisch aangemaakt; caches voor ILT, DUO, LRK, NNN
-├── output/                     # PDF- en HTML-uitvoer
-├── tug_run.py                  # Orchestrator
-├── tug_01_validatie.py         # Stap 2 — volledigheidscheck
-├── tug_02_classificatie.py     # Stap 3 — vliegtuigclassificatie
-├── tug_03_bronnen.py           # Stap 4 — re-export shim (backward compat)
-├── tug_03_kaart.py             # Stap 4 — kaartrendering (library)
-├── tug_03_ruimtelijk.py        # Stap 4 — ruimtelijke analyse (orchestrator)
-├── tug_05_output.py            # Stap 6 — PDF/HTML-output
-├── tug_config.py               # Gedeelde constanten (URLs, drempelwaarden, paden)
-├── tug_types.py                # Type-aliassen (Feature, FeatureList, LogFn, …)
-├── tug_logging.py              # LogAccumulator + setup_logging
-├── tug_geo.py                  # Coördinaattransformaties en extract-helpers
-├── tug_bronnen_bag.py          # BAG WFS, gevel-check, deduplicatie
-├── tug_bronnen_brt.py          # Begraafplaatsen, maneges, luchthavens (PDOK/WFS)
-├── tug_bronnen_geocode.py      # Reverse geocoding (PDOK Locatieserver)
-├── tug_bronnen_natuur.py       # Natura 2000, NNN (GeoPackage-cache)
-├── tug_bronnen_onderwijs.py    # LRK (KDV) + DUO-scholen (5 datasets)
-└── test_aanvraag_tug.json      # Testaanvraag (negatief testgeval)
-```
+## 10. Gebruik
 
----
-
-## Gebruik
-
-### Enkelvoudige aanvraag
+### 10.1 Eén of meer aanvragen
 
 ```bash
 python tug_run.py aanvraag.json
 ```
 
-### Batch — meerdere aanvragen
-
-Geef meerdere JSON-bestanden mee, of gebruik een array-JSON:
-
 ```bash
 python tug_run.py aanvraag1.json aanvraag2.json aanvraag3.json
-python tug_run.py Documentatie/aanvragen.json
 ```
 
-Elke aanvraag levert een eigen PDF en HTML. Bij een falende aanvraag logt de runner de fout en gaat verder met de volgende; aan het einde verschijnt een samenvatting met geslaagde en mislukte aanvragen.
+Een bestand mag één aanvraagobject (`{...}`) of een array van aanvragen (`[{...}, {...}]`) bevatten;
+beide vormen mogen door elkaar worden meegegeven. Elke aanvraag levert een eigen PDF en HTML.
 
-Een array-JSON (`[{...}, {...}]`) en een enkel-object-JSON (`{...}`) worden beide geaccepteerd.
+Bij een batch logt de runner een falende aanvraag en gaat door met de volgende; aan het einde volgt
+een samenvatting met geslaagde en mislukte aanvragen, en een exitcode die aangeeft of er iets is
+misgegaan. Bij één enkele aanvraag stopt de run met de exitcode van de falende stap.
 
-### Herstart vanaf een specifieke stap
+### 10.2 Herstart vanaf een stap
 
-Als `tug_state.json` al bestaat (vorige run afgebroken of handmatig bewaard):
+Wanneer `tug_state.json` nog gevuld is — een afgebroken run, of handmatig bewaard:
 
 ```bash
 python tug_run.py tug_state.json --vanaf 05
 ```
 
-Geldige stapnummers: `01`, `02`, `03`, `05` (overeenkomstig de scriptnamen). Alleen bruikbaar bij één aanvraag per run.
+Geldige stapnummers zijn `01`, `02`, `03` en `05`, overeenkomstig de scriptnamen. Alleen bruikbaar
+bij één aanvraag tegelijk.
 
-### Testrun
+### 10.3 Dataveiligheid tijdens de run
+
+`tug_state.json` bevat tijdens de run de volledige aanvraag met alle gevonden adressen. Het bestand
+wordt na afloop overschreven met `{}`, ook wanneer een stap afbreekt.
+
+## 11. Grafische schil
 
 ```bash
-python tug_run.py test_aanvraag_tug.json
+python tug_gui.py
 ```
 
-Het testbestand bevat een negatief testgeval: `datum_ondertekening` ligt 19 dagen vóór de vroegste vluchtdatum. De pipeline signaleert dat de aanvraag korter dan 28 dagen vóór de eerste vluchtdatum is ingediend en genereert een waarschuwing (niet fataal).
+Een venster (1400 × 1000) waarin één aanvraag wordt samengesteld en direct wordt doorgerekend. De
+schil vervangt de opdrachtregel niet en voert zelf niets uit: zij schrijft een aanvraagbestand en
+start daarmee `tug_run.py`, dat de enige uitvoerder blijft.
 
-### Dataveiligheid
+**Indeling** — links (⅓) de invoer, rechts (⅔) de kaart.
 
-Na een succesvolle run wordt `tug_state.json` automatisch overschreven met `{}`. Tussentijdse resultaten blijven beschikbaar zolang de run loopt.
+| Onderdeel | Toelichting |
+|---|---|
+| Aanvraaggegevens | Omschrijving dossier, soort ontheffing, aantal vluchten, vluchtdatum, datum en tijdstip ondertekening, uniforme daglichtperiode of start- en eindtijd |
+| Luchtvaartuigen | Registratiekenmerk invoeren en toevoegen met `+` of Enter; het overzicht eronder groeit mee en heeft per regel een verwijderknop |
+| Puntlocaties | Klikken op de kaart plaatst een pin, klikken op een pin verwijdert hem. Handmatige invoer in WGS84 of RD. Elke pin verschijnt in het overzicht met beide coördinaatstelsels |
+| Kaart | Dezelfde Leaflet-opzet en dezelfde PDOK-tegels als de export, zodat er geen tweede kaartimplementatie uit de pas kan lopen. Schakelbaar tussen topografisch en luchtfoto; startbeeld midden-Overijssel op zoomniveau 11 |
 
----
+**Genereren** schrijft de aanvraag naar `tmp/<omschrijving>_<timestamp>.json`, start `tug_run.py`
+daarmee en vraagt daarná pas om een exportmap — de pipeline wacht dus niet op de gebruiker. Tijdens
+de run toont een voortgangsvenster de uitvoer per stap. Na afloop worden de nieuwe bestanden uit
+`output/` naar de gekozen map verplaatst en geopend; wordt de mapkeuze geannuleerd, dan blijven ze
+in `output/` staan. Daarna wordt `tmp/` geleegd, ook na een afgebroken run — de gebruikte invoer
+blijft vastgelegd in het proceslogboek van het rapport.
 
-## Aanvraag-JSON
+**Bewaakte invoer.** De knop blijft grijs zolang omschrijving, luchtvaartuig of puntlocatie
+ontbreekt. De schil waarschuwt bij minder dan 28 dagen tussen ondertekening en vlucht, en blokkeert
+puntlocaties die verder dan 100 m uit elkaar liggen, omdat de validatiestap daarop afbreekt.
 
-### Vereiste velden
+**Datumvelden** staan op "vanaf heden". Een ondertekening in het verleden invoeren kan door
+`ONDERTEKENING_VANAF_HEDEN = False` te zetten boven in `tug_gui.py`.
+
+**Starten onder een VNC-sessie zonder GLX** (zoals op de ontwikkelmachine) vereist
+software-rendering:
+
+```bash
+DISPLAY=:1 XAUTHORITY=$HOME/.Xauthority QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu --disable-gpu-compositing --in-process-gpu" python tug_gui.py
+```
+
+Zonder die vlaggen sluit het proces af met `GLX is not present`.
+
+## 12. Aanvraag-JSON
 
 ```json
 {
@@ -165,336 +487,499 @@ Na een succesvolle run wordt `tug_state.json` automatisch overschreven met `{}`.
     {"registratie": "PH-ANK", "type": "heli"},
     {"registratie": "PH-ECE", "type": "heli"}
   ],
-  "coord_lat": 52.405354,
-  "coord_lon": 6.129962,
+  "coord_lat": [52.405354, 52.405612],
+  "coord_lon": [6.129962, 6.130331],
   "datum_ondertekening": "2026-06-01",
   "tijdstip_ondertekening": "16:29"
 }
 ```
 
 | Veld | Type | Toelichting |
-|------|------|-------------|
-| `naam` | string | Vrije naam voor de aanvraag; wordt opgenomen in de output-bestandsnamen en het proceslogboek zodat JSON-input en PDF/HTML-output koppelbaar zijn |
+|---|---|---|
+| `naam` | string | Vrije omschrijving van het dossier; komt in de bestandsnamen en het proceslogboek, zodat invoer en uitvoer koppelbaar zijn |
 | `soort_ontheffing` | string | `"locatiegebonden"` of `"generiek"` |
-| `datum_vlucht` | string of array | YYYY-MM-DD; één datum of een array van meerdere data |
-| `vlucht_udp` | boolean | Indien `true`: universal daylight period; `vlucht_start`/`vlucht_einde` worden genegeerd |
-| `luchtvaartuigen` | array | Objecten met minimaal `registratie` (PH-code); `type` facultatief |
-| `coord_lat` / `coord_lon` | float of lijst van floats | WGS84, minimaal 6 decimalen. Meerdere puntlocaties: twee even lange lijsten, bv. `"coord_lat": [52.40, 52.41], "coord_lon": [7.01, 7.02]` (n-de lat hoort bij n-de lon). De puntlocaties mogen onderling maximaal 100 m uit elkaar liggen (`MAX_PUNT_AFSTAND_M`); anders stopt de validatie voor die aanvraag. Toetsings-, marge- en aandachtsgebied worden dan de vereniging van de cirkels rond alle locaties; één adressenlijst per aanvraag. |
-| `datum_ondertekening` | string | YYYY-MM-DD; zie 4-weken-regel |
-| `tijdstip_ondertekening` | string | `HH:MM` formaat |
+| `datum_vlucht` | string of array | `YYYY-MM-DD`; één datum of meerdere. Een enkele string wordt genormaliseerd naar een array |
+| `vlucht_udp` | boolean | Bij `true` geldt de uniforme daglichtperiode en worden `vlucht_start` en `vlucht_einde` genegeerd |
+| `vlucht_start` / `vlucht_einde` | string of null | `HH:MM` |
+| `aantal_vluchten` | getal | — |
+| `luchtvaartuigen` | array | Objecten met minimaal `registratie` (PH-kenmerk); `type` is facultatief |
+| `coord_lat` / `coord_lon` | float of lijst | WGS84, minimaal zes decimalen. Bij meerdere puntlocaties twee even lange lijsten, waarbij de n-de breedtegraad bij de n-de lengtegraad hoort |
+| `datum_ondertekening` | string | `YYYY-MM-DD` |
+| `tijdstip_ondertekening` | string | `HH:MM` |
 
-### Batch-invoerformaat
+**Meerdere puntlocaties.** De locaties mogen onderling maximaal 100 m uit elkaar liggen; daarboven
+stopt de validatie voor die aanvraag. Het toetsingsgebied is de vereniging van de cirkels rond alle
+locaties, en er blijft één adressenlijst per aanvraag. Het rapport vermeldt bij een natuurtreffer
+welke puntlocatie het gebied raakt.
 
-Meerdere aanvragen in één bestand als JSON-array:
+**Batch-invoer** is dezelfde structuur als array:
 
 ```json
 [
-  { "naam": "Locatie A 15 juni", ... },
-  { "naam": "Locatie B 22 juni", ... }
+  { "naam": "Locatie A 15 juni" },
+  { "naam": "Locatie B 22 juni" }
 ]
 ```
 
----
+## 13. Validatieregels
 
-## Validatieregels
+Uitgevoerd door `tug_01_validatie.py`. Het uitgangspunt: **de validatie stopt de pipeline niet op
+een onvolledige aanvraag**, maar maakt elk gebrek zichtbaar. Zodra het aanvraagformulier de velden
+zelf afdwingt, verdwijnen deze waarschuwingen in de praktijk vanzelf.
 
-`tug_01_validatie.py` controleert de aanvraag op de volgende punten:
+| Controle | Gedrag bij afwijking |
+|---|---|
+| Aanwezigheid van `soort_ontheffing`, `luchtvaartuigen`, `coord_lat`, `coord_lon`, `datum_ondertekening`, `tijdstip_ondertekening` | Waarschuwing per veld |
+| Aanwezigheid van `datum_vlucht` | Waarschuwing "vluchtdatum onbekend"; de vergunningverlener vult de datum handmatig aan |
+| `datum_vlucht` als string | Genormaliseerd naar een array (geen melding) |
+| Datumformaat `YYYY-MM-DD` voor vluchtdata en ondertekening | Waarschuwing |
+| Ondertekening minimaal 28 dagen vóór de vroegste vluchtdatum | Waarschuwing met het werkelijke aantal dagen |
+| Ondertekening ná de vroegste vluchtdatum | Waarschuwing |
+| `luchtvaartuigen` is een array van objecten met `registratie` | Waarschuwing per element |
+| Puntlocaties: even lange lijsten, onderling maximaal 100 m | **Fataal** — de enige controle die de pipeline stopt |
 
-| Controle | Gedrag bij fout |
-|----------|-----------------|
-| Aanwezigheid van alle 7 verplichte velden | **Fataal** — pipeline stopt |
-| `datum_vlucht` als string → automatisch omgezet naar `[string]` | Normalisatie (geen fout) |
-| Datum-formaat YYYY-MM-DD voor alle vluchtdata | **Fataal** |
-| Datum-formaat YYYY-MM-DD voor `datum_ondertekening` | **Fataal** |
-| Structuur `luchtvaartuigen`: array van objecten met `registratie` | **Fataal** |
-| **4-weken-regel**: ondertekening ≥ 28 dagen vóór vroegste vluchtdatum | **Waarschuwing** (niet fataal) |
-| `datum_ondertekening` ná vluchtdatum | **Fataal** |
+Alle waarschuwingen komen rood in het proceslogboek van het rapport te staan, en het rapport wordt
+ook bij een onvolledige aanvraag geproduceerd.
 
----
+## 14. Classificatie van luchtvaartuigen
 
-## Architectuur
+Twee opzoekingen achter elkaar, per opgegeven luchtvaartuig:
 
-### Modulaire opbouw
-
-```
-aanvraag.json  (enkel object of array)
-    ↓  tug_run.py (orchestrator)
-    ↓  [per aanvraag — batch doorloopt alle elementen]
-    ├── tug_01_validatie.py              Stap 2 — volledigheidscheck + 4-weken-regel
-    ↓
-    ├── tug_02_classificatie.py          Stap 3 — PH-code → ICAO → NLR → toetsingsafstand
-    ↓
-    ├── tug_03_ruimtelijk.py            Stap 4 — ruimtelijke analyse (orchestrator)
-    │       ├── tug_03_bronnen.py         re-export shim (backward compat)
-    │       ├── tug_bronnen_bag.py        BAG WFS, gevel-check, deduplicatie
-    │       ├── tug_bronnen_brt.py        begraafplaatsen, maneges, luchthavens
-    │       ├── tug_bronnen_natuur.py     N2000, NNN GeoPackage
-    │       ├── tug_bronnen_onderwijs.py  LRK (KDV) + DUO-scholen
-    │       ├── tug_bronnen_geocode.py    reverse geocoding
-    │       ├── tug_geo.py               coördinaatfuncties, extract-helpers
-    │       └── tug_03_kaart.py          PIL-kaartrendering (tiles + lagen)
-    ↓
-    └── tug_05_output.py                Stap 6 — PDF-rapport + HTML-kaart
-
-tug_config.py   gedeelde constanten (URLs, drempelwaarden, bestandspaden)
-tug_types.py    type-aliassen (Feature, FeatureList, LogFn, …)
-tug_logging.py  LogAccumulator + setup_logging
-tug_state.json  communicatie tussen stappen; gewist na succesvolle run
-```
-
-### Modulerollen
-
-| Module | Rol | Afhankelijkheden |
-|--------|-----|-----------------|
-| `tug_run.py` | Orchestrator; start stappen via `subprocess` | — |
-| `tug_01_validatie.py` | Volledigheidscheck; normaliseert `datum_vlucht` | — |
-| `tug_02_classificatie.py` | ILT-register ophalen/cachen; NLR-tabel opzoeken | `pandas`, `odfpy` |
-| `tug_03_bronnen.py` | Re-export shim (alle `from tug_03_bronnen import ...` blijven werken) | alle tug_bronnen_* |
-| `tug_bronnen_bag.py` | BAG WFS, pandgeometrie, gevel-check, deduplicatie | `pyproj`, `shapely` |
-| `tug_bronnen_brt.py` | Begraafplaatsen, maneges, luchthavens (PDOK Location API / WFS) | `shapely` |
-| `tug_bronnen_geocode.py` | Reverse geocoding (PDOK Locatieserver) | — |
-| `tug_bronnen_natuur.py` | Natura 2000 (PDOK WFS), NNN (GeoPackage-cache, ATOM-feed) | `geopandas`, `fiona` |
-| `tug_bronnen_onderwijs.py` | LRK (KDV-koppeling), DUO-scholen (5 datasets) | `pandas` |
-| `tug_geo.py` | Coördinaattransformaties, bbox-berekeningen, extract-helpers | `pyproj`, `shapely` |
-| `tug_config.py` | Alle gedeelde constanten (één bron van waarheid) | — |
-| `tug_logging.py` | `LogAccumulator`-klasse; routing naar `logging`-module | — |
-| `tug_types.py` | Type-aliassen voor annotaties | — |
-| `tug_03_kaart.py` | Kaarttegels ophalen; cirkels en markers tekenen | `Pillow` |
-| `tug_03_ruimtelijk.py` | Coördineert alle bronnen; bouwt adresrijen en kaartlagen | alle hierboven |
-| `tug_05_output.py` | ReportLab PDF; Leaflet HTML-kaart | `reportlab` |
-
-### Classificatie van luchtvaartuigen
-
-De NLR-tabel (CR-96650L, Suppl. 1, oktober 2022) bevat per ICAO-type een appendix en een afstandsnorm. De afstandsnormen volgen uit art. 6 lid 3 van de [Beleidsregel TUG Overijssel](https://lokaleregelgeving.overheid.nl/CVDR329333/). Bij meerdere luchtvaartuigen geldt de hoogste norm (`norm_toepassing`).
+1. **PH-kenmerk → ICAO-typeaanduiding**, in het ILT Luchtvaartuigregister. Het register wordt
+   automatisch gedownload en 30 dagen gecacheerd. Staat een kenmerk niet in de cache, dan wordt het
+   register eerst ververst en de opzoeking herhaald — een pas geregistreerd toestel levert dus geen
+   onterechte melding op.
+2. **ICAO-typeaanduiding → appendixcategorie → afstandsnorm**, in de NLR-indelingslijst. Die tabel
+   staat in de code (`NLR_TABEL` in `tug_02_classificatie.py`) en wordt met de hand bijgewerkt
+   wanneer NLR of ILT de lijst wijzigt.
 
 | Appendix | Norm | Voorbeeldtypen |
-|----------|------|----------------|
-| 010 | 250 m | EC120, R66, B407, AS50 |
+|---|---|---|
+| 010 | 250 m | EC120, R66, B407, AS350 |
 | 011 | 150 m | R22, R44, H269 |
 | 012 | 350 m | A139, S76, B412 |
-| 013/015/016/017 | handmatig | handmatig vaststellen |
+| 013 / 015 / 016 / 017 | niet vastgesteld | A109, EC135, EC145, NH90, UH-1 |
 | 014 | 500 m | H60, Chinook, Puma, AS332 |
 
-Bij appendix 013/015/016/017 zijn de normen niet vastgesteld in de NLR-tabel. De pipeline signaleert deze categorie in het proceslog en past een standaard van 500 m toe. De vergunningverlener bepaalt handmatig de juiste norm.
+### Wat er gebeurt als een opzoeking geen norm oplevert
 
-**Niet gevonden in ILT-register:** luchtvaartuigen die niet in het register staan (bijv. buitenlandse registraties zoals OO-, D-, F-) worden in het proceslogboek in het rood gesignaleerd. Zorgvuldigheidshalve wordt een afstandsnorm van 500 m aangehouden. De vergunningverlener dient de definitieve norm handmatig te bepalen.
+De pipeline neemt **geen afstandsnorm aan die zij niet kan onderbouwen**.
 
----
+| Situatie | Uitkomst | In het rapport |
+|---|---|---|
+| ICAO-code met vastgestelde norm | Norm uit de NLR-tabel | Normale regel |
+| Appendixcategorie 013, 015, 016 of 017 | **Geen norm**; het luchtvaartuig blijft buiten de toetsing | Rood, met een apart blok dat de reden benoemt |
+| ICAO-code niet in de NLR-indelingslijst | 150 m op grond van de Beleidsregel; vermoedelijk een MLA of vliegtuig | Regel met bronvermelding `beleidsregel 150 m` |
+| PH-kenmerk niet in het ILT-register (bijvoorbeeld een buitenlandse registratie) | **Geen norm**; het luchtvaartuig blijft buiten de toetsing | Rood, met een apart blok dat de reden benoemt |
 
-## Toetsingslogica
+Blijft er geen enkel luchtvaartuig met een herleidbare norm over, dan stopt de pipeline: er is dan
+geen toetsingsafstand en dus geen ruimtelijke analyse mogelijk. In alle andere gevallen rekent zij
+door met de luchtvaartuigen die wél een norm hebben, en vermeldt het rapport expliciet welke
+luchtvaartuigen niet zijn meegewogen. De vergunningverlener bepaalt vervolgens — op basis van het
+geluidsrapport van het betreffende toestel — welke norm geldt, of houdt het toestel buiten de
+ontheffing.
 
-### Zones
+**Bij meerdere luchtvaartuigen** geldt de grootste norm als maatgevend voor de hele aanvraag.
 
-| Zone | Berekening | Gebruik |
-|------|-----------|---------|
-| Toetsingsafstand | Norm luidste luchtvaartuig (NLR-tabel, Lden) + 10 m | Geluidgevoelige gebouwen, begraafplaatsen, kinderopvangverblijf, scholen |
-| Margeband | Toetsingsafstand + 150 m | Gevel-check en signalering op de kaart; niet in de adressenlijst |
-| Aandachtsgebied maneges | Toetsingsafstand + 375 m | Manegesignalering |
+## 15. Toetsingslogica
 
-### Categorieën adressenlijst
+### 15.1 Zones
 
-| Sectie | Inhoud | Actie |
-|--------|--------|-------|
-| **Wettelijk relevant** | Geluidgevoelige gebouwen binnen toetsingsafstand + begraafplaatsen (polygoon snijdt toetsingsafstand) + kinderopvangverblijf + scholen | Instemmingsverklaring vereist |
-| **Aandachtslocaties** | Maneges (aandachtsgebied) + luchthavens | Signalering; geen instemmingsvereiste |
-| **Overig** | Overige objecten buiten margeband | Weergave op kaart; geen actie |
+| Zone | Berekening | Waarvoor |
+|---|---|---|
+| Toetsingsafstand | Maatgevende norm + 10 m | Geluidgevoelige gebouwen, begraafplaatsen, kinderopvang, scholen |
+| Margeband | Toetsingsafstand + 150 m | Gevelcontrole en signalering op de kaart; niet in de adressenlijst |
+| Aandachtsgebied maneges | Toetsingsafstand + 375 m | Manegesignalering; de margeband telt hier niet bovenop |
+| Signaleringszone natuur | Toetsingsafstand + 500 m | Natura 2000 en NNN |
 
-### Geluidgevoelige functies (BAG)
+Het kaartlabel toont de opbouw: *"Toetsingsafstand TUG (250 m + 10 m = 260 m)"*. Alle buffers worden
+in RD New (EPSG:28992) aangemaakt, omdat afstanden daarin in meters kloppen; de aanvraagcoördinaten
+in WGS84 worden daarvoor omgezet.
 
-Woonbestemming, onderwijsfunctie, gezondheidszorgfunctie. Logiesfunctie telt niet als geluidgevoelig.
+### 15.2 Categorieën in de adressenlijst
 
-### Margeband
+| Sectie | Inhoud | Gevolg |
+|---|---|---|
+| **Wettelijk relevant** | Geluidgevoelige gebouwen waarvan de gevel de toetsingsafstand snijdt, begraafplaatsen waarvan de polygoon de toetsingsafstand snijdt, kinderopvanglocaties en scholen binnen de toetsingsafstand | Instemmingsverklaring vereist |
+| **Aandachtslocaties** | Maneges binnen het aandachtsgebied, luchthavens | Signalering; geen instemmingsvereiste |
+| **Overig** | Overige objecten in beeld | Alleen weergave op de kaart |
 
-De margeband (toetsingsafstand + 150 m) heeft een tweeledig doel. Ten eerste kunnen grote gebouwen een BAG-adres hebben dat buiten de toetsingsafstand valt, terwijl de gevel van dat gebouw er nog wel binnen snijdt; de gevelcheck via pandgeometrie vangt dit op. Ten tweede kan het voorkomen dat een piloot niet exact opstijgt of landt op de aangevraagde locatie. Gebouwen die binnen de margeband maar buiten de toetsingsafstand vallen worden daarom op de kaarten (PDF en HTML) apart gesignaleerd, maar niet in de adressenlijst opgenomen, zodat de vergunningverlener kan beoordelen of ook hiervoor instemming wenselijk is.
+De **margeband** staat alleen op de kaarten en niet in de adressenlijst. Zij heeft twee doelen: een
+groot gebouw kan een adrespunt buiten de toetsingsafstand hebben terwijl de gevel er nog binnen
+valt, en een piloot landt niet altijd exact op het opgegeven coördinaat. De vergunningverlener kan
+daardoor zien of ook daar instemming wenselijk is.
 
-### Begraafplaatsen
+### 15.3 Geluidgevoelige functies
 
-Begraafplaatsen worden via twee parallelle bronnen opgespoord:
+Uit het BAG-gebruiksdoel tellen mee: **woonfunctie, onderwijsfunctie en gezondheidszorgfunctie**.
+De logiesfunctie telt niet mee. Omdat het BAG-gebruiksdoel niet betrouwbaar is voor scholen en
+kinderopvang, zijn DUO en LRK voor die twee categorieën leidend: een object dat daar voorkomt gaat
+naar de wettelijk relevante sectie, ook als het BAG-gebruiksdoel iets anders zegt.
 
-1. **PDOK Locatieserver** — zoekt op "begraafplaats" en "erebegraafplaats" binnen straal + 1.500 m. Retourneert benoemde objecten met polygoongeometrie.
-2. **BRT top10nl OGC API** — bevraagt de `terrein_vlak`-collectie op `typelandgebruik = 'dodenakker'` binnen een bbox van straal + 500 m. Vangt begraafplaatsen op die niet als benoemd object in de Locatieserver zijn geïndexeerd. Aangrenzende deelvlakken (buffer 5 m) worden samengevoegd tot clusters.
+De toets gebeurt op de **pandgeometrie**, niet op het adrespunt: een verblijfsobject is wettelijk
+relevant zodra de gevel van het pand de toetsingsafstand snijdt.
 
-Wettelijk relevant als de polygoon de **toetsingsafstand** snijdt (niet de margeband). Centroid-afstand kan groter zijn dan de toetsingsafstand.
+### 15.4 Begraafplaatsen
 
-### Natura 2000 en NNN
+Twee parallelle sporen, omdat geen van beide alleen volstaat:
 
-N2000 wordt on-the-fly via PDOK WFS opgevraagd (nationaal). NNN via een lokale GeoPackage (Overijssel). Omdat N2000 een subset is van NNN, wordt bij een N2000-treffer automatisch ook een NNN-treffer aangenomen — ook als de locatie net buiten de Overijsselse provinciegrenzen valt en niet in de GeoPackage staat.
+1. **PDOK Location API** (collectie `functioneel_gebied`), op de zoektermen "begraafplaats" en
+   "erebegraafplaats", binnen de toetsingsafstand + 1.500 m. Dat zoekvenster is ruim omdat de API op
+   het middelpunt van een object zoekt: een grote begraafplaats kan een middelpunt op honderden
+   meters hebben terwijl de rand vlak bij de locatie ligt.
+2. **BRT Top10NL** (`terrein_vlak` met `typelandgebruik = 'dodenakker'`), binnen de toetsingsafstand
+   + 500 m, voor begraafplaatsen die niet als benoemd object zijn geïndexeerd. Eén begraafplaats kan
+   uit meerdere aangrenzende vlakken bestaan; vlakken die elkaar binnen 5 m raken worden samengevoegd
+   tot één geheel voordat de afstand wordt bepaald.
 
-### Maneges
+Wettelijk relevant zodra de **polygoon** de toetsingsafstand snijdt. Er wordt geen onderscheid
+gemaakt tussen actieve en gesloten begraafplaatsen.
 
-Er zijn geen landelijk dekkende polygoongeometrieën van manegegebieden beschikbaar. De grootste manege van Nederland (Exloo) heeft oefenterreinen op circa 340 meter van het BAG-adres. In theorie kan een manege daardoor binnen de toetsingsafstand vallen terwijl het BAG-adres tot 340 meter buiten die afstand ligt. Om dit op te vangen wordt een aandachtsgebied van toetsingsafstand + 375 m gehanteerd: maneges waarvan het BAG-adres binnen dit aandachtsgebied valt worden gesignaleerd. De vergunningverlener beoordeelt vervolgens of de feitelijke terreinsituatie aanleiding geeft tot verdere actie.
+### 15.5 Maneges
 
-### Luchthavens
+Er bestaan geen landelijk dekkende geometrieën van manegeterreinen. De grootste manege van Nederland
+heeft oefenterreinen op ongeveer 340 m van het BAG-adres; een manege kan dus binnen de
+toetsingsafstand liggen terwijl het adres er ver buiten valt. Daarom een aandachtsgebied van
+toetsingsafstand + 375 m, waarbinnen maneges worden gesignaleerd zonder instemmingsvereiste. De
+vergunningverlener beoordeelt de feitelijke terreinsituatie.
 
-| Grens | Afstand |
-|-------|---------|
-| Wettelijke minimumafstand | 1000 m |
-| Signaleringmarge | 2000 m |
+De detectie zoekt op objectnaam met twaalf termen (manege, rijschool, hippisch, paardencentrum,
+rijvereniging, ponyclub, ruiterclub, ruitersportcentrum, paardensportcentrum, paardensportvereniging,
+paardenhouderij, hippique), omdat de API geen OR-zoekopdracht en geen filter op gebouwtype kent.
 
----
+### 15.6 Luchthavens
 
-## Gegevensbronnen & caching
+| Grens | Afstand | Gevolg |
+|---|---|---|
+| Wettelijke minimumafstand | 1.000 m | Niet toegestaan |
+| Signaleringsmarge | 2.000 m | Signalering |
 
-Alle externe bestanden worden gecachet in `geo/`. De pipeline controleert de TTL bij elke run en herdownloadt automatisch als de cache verlopen is.
+### 15.7 Natura 2000 en Natuurnetwerk Nederland
 
-| Bron | Gebruik | TTL | Cachebestand |
-|------|---------|-----|--------------|
-| ILT Luchtvaartregister | PH-code → ICAO | 30 dagen | `geo/luchtvaartuigregister_ilt.ods` |
+Beide zijn **signaleringslagen, geen weigeringsgrond**. Ligt de locatie binnen of nabij zo'n gebied,
+dan kan de vluchtomschrijving aanleiding zijn de aanvrager te wijzen op een passende beoordeling.
+
+Natura 2000 wordt landelijk en rechtstreeks bevraagd en levert echte gebiedsnamen; die gaan met
+naam en afstand het rapport in. NNN komt uit een lokale kopie voor Overijssel en levert **geen
+bruikbare namen**: het naamveld is bij ruim de helft van de gebieden leeg en de gevulde waarden zijn
+vooral provinciale categorie-aanduidingen. Dat is een eigenschap van de bron — NNN is een
+planologische begrenzing, geen register van benoemde gebieden. De signalering gebruikt daarom het
+vaste label "NNN-gebied": *"puntlocatie op 14 m van NNN-gebied (< 500 m)"*.
+
+Omdat alle Natura 2000-gebieden ook NNN zijn, wordt bij een N2000-treffer automatisch een
+NNN-treffer aangenomen, ook wanneer de locatie net buiten de provinciegrens valt en niet in de
+lokale kopie voorkomt.
+
+## 16. Gegevensbronnen en caching
+
+Alle bronnen zijn open data; er zijn geen API-sleutels of accounts in gebruik. Bestanden worden in
+`geo/` bewaard en automatisch opnieuw opgehaald zodra de bewaartermijn is verlopen.
+
+| Bron | Waarvoor | Bewaartermijn | Cachebestand |
+|---|---|---|---|
+| ILT Luchtvaartuigregister | PH-kenmerk → ICAO-code | 30 dagen, plus verversing bij een gemist kenmerk | `geo/luchtvaartuigregister_ilt.ods` |
 | DUO Open Onderwijsdata | Scholen PO/SO/VO/MBO/HO | 90 dagen | `geo/duo_scholen_po.geojson`, `geo/duo_scholen_overig.geojson` |
-| LRK (Landelijk Register Kinderopvang) | KDV-locaties via BAG-koppeling | 7 dagen | In-memory (geen lokale cache) |
-| NNN GeoPackage | Natuurnetwerk Nederland (Overijssel) | 180 dagen | `geo/nnn_gebieden.gpkg` |
-| BAG WFS v2.0 | Verblijfsobjecten, gebruiksdoelen, pandgeometrieën | On-the-fly | — |
-| N2000 WFS | Natura 2000-gebieden | On-the-fly | — |
-| PDOK Location API | Begraafplaatsen (benoemde objecten), maneges | On-the-fly | — |
-| BRT top10nl OGC API | Begraafplaatsen (dodenakker-vlakken, clustering) | On-the-fly | — |
-| Luchthavens (GeoPortaal Overijssel) | Luchthaven puntlocaties | On-the-fly | — |
+| Landelijk Register Kinderopvang | Kinderopvang met bedverblijf | 7 dagen | `geo/lrk_kinderopvang.csv` |
+| Natuurnetwerk Nederland | NNN-geometrie Overijssel | 180 dagen | `geo/nnn_gebieden.gpkg` |
+| BAG WFS v2.0 (PDOK) | Verblijfsobjecten, gebruiksdoelen, pandgeometrie | Direct | — |
+| PDOK Locatieserver | Reverse en forward geocoding | Direct | — |
+| PDOK Location API | Begraafplaatsen, maneges | Direct | — |
+| BRT Top10NL OGC API | Dodenakkervlakken, gebouw- en gebiedspolygonen | Direct | — |
+| Natura 2000 WFS (PDOK/RVO) | Natura 2000-gebieden | Direct | — |
+| GeoPortaal Overijssel WFS | Luchthavenpuntlocaties | Direct | — |
 
-### ILT Luchtvaartregister
+### 16.1 ILT Luchtvaartuigregister
 
-Wekelijks bijgewerkt .ods-bestand. De pipeline scrapet de ILT-pagina op de huidige download-URL en downloadt bij eerste run of verlopen TTL.
+De ILT plaatst wekelijks een nieuw bestand online onder een wisselende bestandsnaam en zonder
+versie-informatie in de HTTP-headers. De pipeline leest de actuele downloadlink van de
+[bronpagina](https://www.ilent.nl/documenten/lijsten/luchtvaart/databestanden/luchtvaartregister-data),
+met een terugval die de bestandsnaam op datum reconstrueert. Alleen adressen op `*.ilent.nl` worden
+geaccepteerd.
 
-Bronpagina: https://www.ilent.nl/documenten/lijsten/luchtvaart/databestanden/luchtvaartregister-data
+Het bestand is een ODS-archief; de tabelnaam wisselt en wordt genegeerd. Omdat het register zelden
+inhoudelijk verandert, wordt een SHA-256-hash van de inhoud gebruikt om onnodige herverwerking te
+voorkomen. Gelezen kolommen: `Registration` en `ICAO-code`.
 
-### BAG WFS v2.0 (PDOK)
+### 16.2 BAG WFS v2.0 (PDOK)
 
-Verblijfsobjecten via WFS-query met `propertyName`-filter op 9 velden:
+Endpoint: `https://service.pdok.nl/lv/bag/wfs/v2_0`, featuretypes `bag:verblijfsobject` en
+`bag:pand`.
 
-| Veld | Gebruik |
-|------|---------|
-| `identificatie` | Koppeling met KDV (LRK `bag_id`) en DUO (`vbo_id`) |
-| `gebruiksdoel` | Geluidgevoelige functiebepaling |
+| Opgevraagd veld | Waarvoor |
+|---|---|
+| `identificatie` | Koppeling met LRK en DUO |
+| `gebruiksdoel` | Bepaling geluidgevoeligheid |
 | `openbare_ruimte`, `huisnummer`, `huisletter`, `toevoeging`, `postcode`, `woonplaats` | Adresopbouw |
-| `pandidentificatie` | Pandgeometrie voor gevelafstandscheck |
+| `pandidentificatie` | Ophalen van de pandgeometrie voor de gevelcontrole |
 
-Endpoint: `https://service.pdok.nl/lv/bag/wfs/v2_0`
+De veldnamen wijken af van de camelCase-varianten die in sommige BAG-documentatie staan.
+Verblijfsobjecten worden in WGS84 opgevraagd, pandgeometrieën komen terug in RD.
 
-### Natura 2000 (PDOK WFS)
+### 16.3 Landelijk Register Kinderopvang
 
-On-the-fly, nationaal dekkend:
-`https://service.pdok.nl/rvo/natura2000/wfs/v1_0` — laag `natura2000:natura2000`
+`https://www.landelijkregisterkinderopvang.nl/opendata/export_opendata_lrk.csv` — ongeveer 12 MB en
+31.800 rijen, gefilterd op opvangtype KDV en gekoppeld via `bag_id` aan de BAG-identificatie. De
+server weigert de standaard opvraging van de HTTP-bibliotheek met een foutcode; er wordt daarom een
+browser-achtige identificatie meegestuurd. Mislukt de download alsnog, dan valt de pipeline terug op
+de bestaande cache in plaats van de detectie over te slaan.
 
-Signalering: treffer binnen toetsingsafstand én binnen signaleerzone (+500 m) wordt onderscheiden.
+### 16.4 DUO Open Onderwijsdata
 
-### Natuurnetwerk Nederland (NNN)
+Vijf datasets (PO, SO, VO, MBO, HO) via `https://onderwijsdata.duo.nl/datastore/dump/{resource-id}`,
+gefilterd op provincie Overijssel. DUO levert geen BAG-koppeling; adressen worden via de PDOK
+Locatieserver omgezet naar een verblijfsobject-identificatie en een RD-punt. Het basisonderwijs
+wordt apart gecacheerd omdat het vaker muteert; de overige vier zijn samengevoegd. Invalidatie
+gebeurt op een SHA-256-hash van het bronbestand.
 
-Lokale GeoPackage-cache, opgebouwd vanuit ATOM-feed. De GeoPackage bevat alleen geometrieën van provincie Overijssel. Locaties net buiten de grens worden via N2000-auto-detect ondervangen.
+### 16.5 Natuurnetwerk Nederland
 
-ATOM-feed: `https://service.pdok.nl/provincies/natuurnetwerk-nederland/atom/downloads/inspire-pv-ps.nlps-nnn.gml`
+Er is geen rechtstreekse bevragingsdienst. De GML (± 185 MB) wordt eenmalig gedownload, omgezet naar
+RD en als GeoPackage bewaard. Het bestand bevat uitsluitend geometrie — 46.792 gebieden — en geen
+namen; zie [15.7](#157-natura-2000-en-natuurnetwerk-nederland).
 
-### Landelijk Register Kinderopvang (LRK)
+### 16.6 Overige endpoints
 
-CSV-download gekoppeld aan BAG via `bag_id`. KDV-locaties met verblijfsfunctie (kinderen met bed) worden wettelijk relevant geacht.
+```
+PDOK Locatieserver   https://api.pdok.nl/bzk/locatieserver/search/v3_1/{reverse,free}
+PDOK Location API    https://api.pdok.nl/kadaster/location-api/v1/search
+BRT Top10NL          https://api.pdok.nl/brt/top10nl/ogc/v1_0/collections/terrein_vlak/items
+Natura 2000          https://service.pdok.nl/rvo/natura2000/wfs/v1_0  (laag natura2000:natura2000)
+NNN (ATOM)           https://service.pdok.nl/provincies/natuurnetwerk-nederland/atom/downloads/inspire-pv-ps.nlps-nnn.gml
+Luchthavens          https://services.geodataoverijssel.nl/geoserver/B64_nutsvoorzieningen/wfs
+Kaarttegels          https://service.pdok.nl/hwh/luchtfotorgb/... en https://service.pdok.nl/brt/achtergrondkaart/...
+```
 
-`https://www.landelijkregisterkinderopvang.nl/opendata/export_opendata_lrk.csv`
+Alle endpoints staan in `tug_config.py`; dat bestand is de enige plek waar URL's, drempelwaarden en
+marges zijn vastgelegd.
 
-### DUO Open Onderwijsdata
+## 17. Architectuur
 
-GeoJSON per onderwijstype. De pipeline filtert op provincie Overijssel en koppelt via `vbo_id` aan BAG.
+```
+tug_gui.py  (optionele grafische schil)
+    │  schrijft tmp/<naam>_<timestamp>.json en roept tug_run.py aan
+    ▼
+aanvraag.json  (enkel object of array)
+    │  tug_run.py — orchestrator, start elke stap als apart proces
+    │  [per aanvraag]
+    ├── tug_01_validatie.py       processtap 2 — volledigheid en termijn
+    ├── tug_02_classificatie.py   processtap 3 — register, NLR-tabel, toetsingsafstand
+    ├── tug_03_ruimtelijk.py      processtap 4 — ruimtelijke analyse
+    │       ├── tug_bronnen_bag.py        BAG WFS, gevelcontrole, deduplicatie
+    │       ├── tug_bronnen_brt.py        begraafplaatsen, maneges, luchthavens
+    │       ├── tug_bronnen_natuur.py     Natura 2000, NNN
+    │       ├── tug_bronnen_onderwijs.py  kinderopvang en scholen
+    │       ├── tug_bronnen_geocode.py    reverse en forward geocoding
+    │       ├── tug_geo.py                coördinaattransformaties en geometrie
+    │       └── tug_03_kaart.py           kaartopbouw uit tegels en lagen
+    └── tug_05_output.py          processtap 6 — PDF-rapport en HTML-kaart
+    │
+    ▼  tug_state.json gewist
 
-| Type | URL |
-|------|-----|
-| PO | `https://onderwijsdata.duo.nl/datastore/dump/dcc9c9a5-6d01-410b-967f-810557588ba4?format=json` |
-| SO | `https://onderwijsdata.duo.nl/datastore/dump/8f0f1639-712d-4adb-bb59-cabd43730dc8?format=json` |
-| VO | `https://onderwijsdata.duo.nl/datastore/dump/5187f8d5-ff9c-4284-8e06-4311f0354956?format=json` |
-| MBO | `https://onderwijsdata.duo.nl/datastore/dump/1a946297-a7ca-48d5-9ae8-19ad73bf8176?format=json` |
-| HO | `https://onderwijsdata.duo.nl/datastore/dump/bf1da9c6-c688-4873-91b1-b12c9ac2c132?format=json` |
+tug_config.py   alle constanten, endpoints, marges en invoerregels; workflowversie
+tug_types.py    type-aliassen; Bevindingen en VboOordeel
+tug_logging.py  logboekopbouw en terminaluitvoer
+gui/            kaart en stijlblad van de schil, sjabloon van de HTML-export
+test/           regressietest, eenheidstests en rooktest op de schil
+pyproject.toml  configuratie van ruff, bandit en pytest
+```
 
-### Maneges (PDOK Location API / BRT)
+De stappen communiceren via `tug_state.json`: elke stap leest de state, vult zijn eigen sectie aan
+en schrijft het bestand terug. Omdat elke stap een apart proces is, kan een afgebroken run met
+`--vanaf` worden hervat zonder het voorgaande werk te herhalen.
 
-De pipeline zoekt maneges via de PDOK Location API met een reeks zoektermen (manege, rijschool, hippisch, paardencentrum, rijvereniging e.a.) binnen een zoekradius van toetsingsafstand + 375 m. De API retourneert gecombineerde resultaten uit de BRT en het BAG. Voor elk resultaat wordt via de BRT gebouwenlaag de polygoongeometrie opgevraagd om de werkelijke ligging te bepalen. Resultaten zonder polygoon (puntlocaties) worden op centroid-afstand beoordeeld.
+### 17.1 Modulerollen
 
-### BRT top10nl OGC API (PDOK)
+| Module | Rol |
+|---|---|
+| `tug_run.py` | Orchestrator; leest de invoer, start de stappen, wist de state |
+| `tug_01_validatie.py` | Volledigheid, datumformaten, termijn, puntlocaties |
+| `tug_02_classificatie.py` | Register ophalen en cachen, NLR-opzoeking, maatgevende norm |
+| `tug_03_ruimtelijk.py` | Coördineert alle bronnen, bouwt adresrijen en kaartlagen |
+| `tug_bronnen_bag.py` | BAG-verblijfsobjecten en -panden, gevelcontrole, deduplicatie |
+| `tug_bronnen_brt.py` | Begraafplaatsen, maneges, luchthavens |
+| `tug_bronnen_natuur.py` | Natura 2000 en de NNN-GeoPackage |
+| `tug_bronnen_onderwijs.py` | Kinderopvang en scholen |
+| `tug_bronnen_geocode.py` | Adressen opzoeken bij coördinaten en omgekeerd |
+| `tug_geo.py` | Coördinaattransformaties, puntlocatienormalisatie, bbox-berekeningen |
+| `tug_03_kaart.py` | Kaarttegels ophalen, zones en objecten tekenen |
+| `tug_05_output.py` | PDF-rapport en interactieve kaart |
+| `tug_config.py` | Constanten, endpoints, marges, workflowversie |
+| `tug_logging.py` | Logboekregels verzamelen voor het rapport en kleuren in de terminal |
+| `tug_gui.py` | Grafische schil; stelt de aanvraag samen en start `tug_run.py` |
+| `tug_types.py` | Type-aliassen en de twee records van de ruimtelijke stap: `Bevindingen` (wat er in de omgeving is aangetroffen) en `VboOordeel` (wat dat per verblijfsobject betekent) |
 
-Begraafplaatsen die niet als benoemd object in de PDOK Locatieserver staan worden opgespoord via de BRT top10nl `terrein_vlak`-collectie. De API wordt bevraagd op `typelandgebruik = 'dodenakker'` binnen een bounding box van straal + 500 m. De collectie gebruikt cursor-gebaseerde paginering (geen `offset`-parameter).
-
-Endpoint: `https://api.pdok.nl/brt/top10nl/ogc/v1_0/collections/terrein_vlak/items`
-
-Één begraafplaats kan in de BRT uit meerdere afzonderlijke vlakken bestaan. Vlakken die elkaar binnen 5 m overlappen of raken worden samengevoegd tot één cluster via een union-find-algoritme. Het samengestelde polygoon wordt vervolgens getoetst aan de toetsingsafstand.
-
-### Luchthavens (GeoPortaal Overijssel WFS)
-
-`https://services.geodataoverijssel.nl/geoserver/B64_nutsvoorzieningen/wfs`  
-Laag: `B64_nutsvoorzieningen:B6_Luchthaven_puntlocaties`
-
----
-
-## Uitvoer
-
-Alle bestanden worden opgeslagen in `output/`:
-
-| Bestand | Omschrijving |
-|---------|--------------|
-| `tug_rapport_{naam}_{timestamp}.pdf` | PDF-rapport: proceslog (12 paragrafen) + adressenlijst + situatie- en omgevingskaart, elk als luchtfoto (primair) en topografisch (PDOK BRT, verhoogd contrast) |
-| `tug_kaart_{naam}_{timestamp}.html` | Interactieve Leaflet-kaart met alle geïnventariseerde objecten en zones |
-
-`{naam}` is het `naam`-veld uit de aanvraag-JSON, gesaneerd naar bestandsnaamveilige tekens (maximaal 40 tekens). Bij afwezigheid van een `naam`-veld vervalt het infix en worden de bestandsnamen `tug_rapport_{timestamp}.pdf` resp. `tug_kaart_{timestamp}.html`.
-
-### PDF-proceslog
-
-Het proceslog documenteert per analysestap de uitgevoerde controles, gebruikte bronnen, gevonden objecten en toegepaste regels. Paragrafen worden rood gemarkeerd bij bevindingen die actie vereisen (NNN, N2000, strakke termijn, PM-categorie).
-
-### Adressenlijst
-
-Drie secties per aanvraag:
-
-1. **Wettelijk relevant** — instemmingsverklaring vereist (geluidgevoelig + begraafplaats + KDV + school)
-2. **Aandachtslocaties** — maneges en luchthavens (geen instemmingsvereiste)
-3. **Overig** — weergave op kaart, geen actie vereist
-
-De margeband staat alleen op de kaarten, niet in de adressenlijst.
-
----
-
-## tug_state.json
-
-De state wordt aangemaakt door `tug_run.py` en uitgebreid door elke stap. Na succesvolle voltooiing wordt het bestand leeggemaakt (`{}`).
+### 17.2 tug_state.json
 
 | Sectie | Gevuld door | Inhoud |
-|--------|-------------|--------|
-| `aanvraag` | `tug_run.py` | Originele aanvraag-JSON (met genormaliseerde `datum_vlucht`) |
-| `validatie` | `tug_01_validatie.py` | Fouten, waarschuwingen, 4_weken_ok, log_regels |
-| `classificatie` | `tug_02_classificatie.py` | Per luchtvaartuig: ICAO, appendix, norm; `norm_toepassing` |
-| `ruimtelijk` | `tug_03_ruimtelijk.py` | Adresrijen (wettelijk/marge/aandacht/overig), PNG-kaartpaden |
-| `logboek` | Alle scripts | Tijdgestempelde log-entries per stap |
+|---|---|---|
+| `aanvraag` | `tug_run.py` | De aanvraag, met genormaliseerde vluchtdata |
+| `validatie` | `tug_01_validatie.py` | Fouten, waarschuwingen, termijncontrole, logregels |
+| `classificatie` | `tug_02_classificatie.py` | Per luchtvaartuig ICAO-code, appendix, norm en bron; maatgevende norm; luchtvaartuigen zonder norm |
+| `ruimtelijk` | `tug_03_ruimtelijk.py` | Adresrijen per categorie, kaartlagen, paden naar de gerenderde kaarten |
+| `logboek` | Alle stappen | Tijdgestempelde regels per stap |
+
+Het bestand wordt na elke aanvraag overschreven met `{}`.
+
+## 18. Uitvoer
+
+Beide bestanden komen in `output/`:
+
+| Bestand | Inhoud |
+|---|---|
+| `tug_rapport_{naam}_{timestamp}.pdf` | Proceslogboek in twaalf paragrafen, adressenlijst, en situatie- en omgevingskaart — elk zowel als luchtfoto als topografisch, dus vier kaartpagina's |
+| `tug_kaart_{naam}_{timestamp}.html` | Interactieve kaart op luchtfoto met alle geïnventariseerde objecten en zones |
+
+`{naam}` is het `naam`-veld uit de aanvraag, teruggebracht tot bestandsnaamveilige tekens en maximaal
+veertig posities. Ontbreekt het veld, dan vervalt dat deel van de bestandsnaam.
+
+**Adressenlijst.** Drie secties — wettelijk relevant, aandachtslocaties, overig — met per regel
+adres, postcode en woonplaats, het gebruiksdoel of de bron die het object aanmerkt, en waar van
+toepassing de afstand. De margeband staat niet in de lijst.
+
+**Kaarten.** De luchtfoto is de primaire achtergrond; de topografische kaart wordt met verhoogd
+contrast gerenderd als aanvulling. BAG-objecten worden als gevelcontour getekend, gekleurd naar de
+zwaarste categorie waarin ze vallen. Elke puntlocatie krijgt een kruis, de toetsingsafstand een rode
+omtrek en het aandachtsgebied een gele, beide met een label.
 
 ---
+---
 
-## Kwaliteitsborging
+# Deel C — Beheer
 
-### Code review
+## 19. Kwaliteitsborging
 
-De codebase is doorgelicht aan de hand van een gelaagd review-protocol op basis van de volgende frameworks:
+Drie soorten controle, met elk een eigen vraag. De regressietest vraagt of de code na een upgrade
+nog hetzelfde antwoord geeft; de eenheidstests vragen of dat antwoord juist is; ruff en bandit
+vragen of de code aan de eigen stijl- en beveiligingsafspraken voldoet.
 
-- **SOLID-principes** (Single Responsibility, Open/Closed, …)
-- **Code Smells** — Martin Fowler, *Refactoring* (2e druk)
-- **Clean Code** — Robert C. Martin
-- **Python Coding Conventions** — PEP 8 en moderne Python 3.11+
+```bash
+.venv/bin/python -m pip install -r requirements-dev.txt   # eenmalig
+.venv/bin/python test/test_regressie.py                   # omgevingsdrift
+.venv/bin/pytest test                                     # beslisregels en schil
+.venv/bin/ruff check .                                    # stijl en fouten
+.venv/bin/bandit -c pyproject.toml -r .                   # beveiliging
+```
 
-Bevindingen (11 in totaal) zijn dezelfde sessie verholpen. De belangrijkste ingreep was het opsplitsen van een 1398-regel god-module (`tug_03_bronnen.py`) in zes gespecialiseerde modules. Zie ook `Codebase Review — TUG-ontheffingen` in de projectdocumentatie.
+### 19.1 Regressietest
 
-### Beveiligingsreview
+```bash
+.venv/bin/python test/test_regressie.py
+```
 
-De pipeline is gecontroleerd op veelvoorkomende kwetsbaarheden aan de hand van de [OWASP Cheat Sheet Series](https://cheatsheetseries.owasp.org/) (CC BY-SA 4.0). De review is uitgevoerd met de Claude Code [security-review skill](https://github.com/dougwithseismic/claude-code-skills).
+De test stelt niet vast of de pipeline *werkt*, maar of zij **hetzelfde antwoord geeft** als op het
+moment dat de uitkomst is gecontroleerd. Zij meet zeventig waarden in tien groepen —
+coördinaattransformaties, geometrie, geo-bestandsinvoer met bbox-filter, puntlocatievalidatie,
+datumlogica, de NLR-normtabel, afgeleide constanten, het opzoekmechanisme van het register, de
+afhandeling van luchtvaartuigen zonder norm en de structuur van de natuursignalering — en vergelijkt
+die met een vastgelegde nulmeting in `test/golden/referentie.json`. Die nulmeting legt ook vast met
+welke Python-, PROJ-, GDAL- en pakketversies zij is gemaakt, zodat een verschil te plaatsen is.
 
-Dreigingsmodel: lokale CLI-tool zonder netwerkinterface; alle externe aanroepen gaan naar Nederlandse overheids-API's (PDOK, ILT, RvIG, DUO). Geen direct exploiteerbare kwetsbaarheden aangetroffen. Verholpen:
+Twee ontwerpkeuzes bepalen waar de test wel en niet op reageert:
+
+1. **Tolerantie op meterniveau** (1 m) in plaats van exacte gelijkheid. Afstanden worden in hele
+   meters gerapporteerd en de signaleringsgrenzen liggen op honderden meters; ruis onder een meter
+   verandert geen document. Waarden worden preciezer vastgelegd dan vergeleken.
+2. **Brondata blijft buiten de vergelijking.** BAG, LRK, DUO, PDOK en het ILT-register zijn van hun
+   bronhouders; een gewijzigd rijaantal of een hertekende gebiedsgrens is geen regressie. Waar de
+   bibliotheken toch op geometrie en geo-invoer getoetst moeten worden, gebeurt dat op
+   **synthetische geometrie** die de test zelf opbouwt en die met de hand na te rekenen is. Van
+   brongebonden code wordt alleen getoetst dat het *mechanisme* werkt — kolommen gevonden, opzoeking
+   in het verwachte formaat, afgesproken retourstructuur — nooit welke waarden de bron nu bevat.
+
+**Werkwijze bij een upgrade:** pins aanpassen, installeren, test draaien. Geen verschillen betekent
+veilig; wel verschillen betekent per meting beoordelen of het een verbetering of een regressie is.
+`--herijk` legt de nulmeting opnieuw vast en is uitsluitend bedoeld voor een bewuste, goedgekeurde
+wijziging — herijken om een onverklaarde afwijking weg te poetsen maakt de test waardeloos. Het
+script weigert te herijken zolang een meting mislukt.
+
+**Wat niet gedekt is:** de PDF-generatie (het eindproduct zelf, en daarmee het grootste gat: een
+upgrade van de PDF-bibliotheek kan de opmaak stil veranderen) en de bronparsers — dekking daarvan
+vereist bevroren voorbeeldresponsen.
+
+### 19.2 Eenheidstests
+
+```bash
+.venv/bin/pytest test
+```
+
+`test/test_eenheden.py` toetst de beslisregels zelf, op synthetische invoer en zonder netwerk: de
+puntlocatieregels, de indientermijn, de toetsingsafstand en het zoomniveau, de bestandsnaam-slug, de
+featuresleutel, en de classificatie van verblijfsobjecten in wettelijk relevant, margeband en
+overig — inclusief de begraafplaatsuitsluiting en de aanname dat een Natura 2000-treffer ook een
+NNN-treffer is.
+
+Eén groep tests bewaakt daarbij iets dat eerder is misgegaan: dat de PDF-tabel, de HTML-markers en
+de PNG-kaart **hetzelfde oordeel** laten zien. Alle drie lezen het oordeel dat
+`_bouw_classificatie_context()` één keer velt; de tests vergelijken de uitkomsten van de
+presentatiefuncties rechtstreeks met elkaar.
+
+`test/test_gui.py` is een rooktest op de schil: hij bouwt het venster zonder scherm op
+(`QT_QPA_PLATFORM=offscreen`), vult het, en controleert dat de knop pas vrijkomt als de aanvraag
+compleet is, dat een dubbel registratiekenmerk wordt geweigerd, dat RD-invoer op dezelfde plek
+uitkomt als GPS-invoer, dat de afstands- en termijnmeldingen verschijnen, en dat de aanvraag die het
+venster oplevert door de validatiestap wordt geaccepteerd.
+
+### 19.3 Stijl- en beveiligingscontrole
+
+`pyproject.toml` legt vast waar ruff, bandit en pytest op letten, zodat een controle op elke machine
+hetzelfde oordeel geeft. De regelset staat op E, F, W, B, SIM, UP, C4, RET, ARG, PTH en N met een
+regellengte van 100 tekens; de uitzonderingen staan met reden in het bestand. Bandit meldt alleen
+nog de subprocess-aanroepen naar `git` en `python` — die gaan met een argumentenlijst en zonder
+`shell=True`, en zijn inherent aan een pipeline die zijn stappen als los proces start.
+
+### 19.4 Codereview
+
+De codebase is twee keer doorgelicht aan de hand van een gelaagd reviewprotocol op basis van de
+SOLID-principes, de code smells uit Fowler's *Refactoring*, *Clean Code* en PEP 8. De eerste ronde
+leverde elf bevindingen op; de belangrijkste ingreep was het opsplitsen van een module van bijna
+1.400 regels in zes gespecialiseerde bronmodules. De tweede ronde leverde achttien bevindingen op.
+Daarvan waren de zwaarste dat het classificatieoordeel op drie plaatsen afzonderlijk werd uitgerekend
+en dat verzamelingen aan elkaar werden geknoopt via `id()` — geldig zolang elke lijst exact dezelfde
+objecten bevat, en stil onjuist zodra dat niet meer zo is. Beide zijn verholpen; de uitwerking staat
+in de interne projectdocumentatie.
+
+### 19.5 Beveiligingsreview
+
+Getoetst aan de [OWASP Cheat Sheet Series](https://cheatsheetseries.owasp.org/). Dreigingsmodel: een
+lokaal draaiend opdrachtregelprogramma zonder netwerkinterface, waarvan alle uitgaande aanroepen naar
+Nederlandse overheids-API's gaan. Er zijn geen direct exploiteerbare kwetsbaarheden aangetroffen.
+Verholpen:
 
 | Bevinding | Maatregel |
-|-----------|-----------|
-| JSON-in-script-tag (`</script>`-injectie, VERIFY-001) | `<\/`-escaping toegepast op alle `json.dumps()`-aanroepen in HTML-output |
-| Gescrapete ILT-URL zonder domeincheck (VERIFY-002) | Domeinvalidatie: alleen `*.ilent.nl` geaccepteerd |
-| PDOK-href zonder URL-validatie (OBS-001) | Allowlist: alleen `api.pdok.nl` en `geodata.nationaalgeoregister.nl` |
-| ODS ZIP zonder bom-beveiliging (OBS-002) | Limiet 50 MB uitgecomprimeerd in `_ods_data_hash()` |
-| `print()` buiten logging-systeem (OBS-004) | Vervangen door `logging.getLogger(...).warning()` |
+|---|---|
+| JSON in een scripttag in de HTML-uitvoer kon de tag voortijdig sluiten | Escaping toegepast op alle JSON die in HTML wordt ingebed |
+| De downloadlink van het ILT-register werd van een webpagina gelezen zonder domeincontrole | Alleen adressen op `*.ilent.nl` worden geaccepteerd |
+| Verwijzingen uit API-antwoorden werden zonder controle gevolgd | Toegestane domeinen vastgelegd: `api.pdok.nl` en `geodata.nationaalgeoregister.nl` |
+| Het ODS-archief werd uitgepakt zonder groottelimiet | Limiet van 50 MB ongecomprimeerd |
+| Meldingen buiten het logboeksysteem om | Alles loopt via het logboek |
 
----
+### 19.6 Bronnenaudit
 
-## Licentie
+Alle eenentwintig externe aanroepen en datasets zijn in één ronde nagelopen tegen de live bronnen.
+Dat leverde twee stille storingen op — een register dat de standaard opvraging weigerde, en een
+begraafplaatsdetectie die na een herstructurering de verkeerde collectie bevroeg en sindsdien altijd
+nul resultaten gaf. Beide zijn verholpen en gevalideerd met een volledige batch.
+
+Dat is de reden dat het proceslogboek per bron rapporteert wat zij heeft opgeleverd: een detectielaag
+die niets vindt is niet te onderscheiden van een detectielaag die stuk is, tenzij het rapport
+vermeldt dat zij is geraadpleegd.
+
+## 20. Onderhoud en houdbaarheid
+
+| Onderdeel | Wat het onderhoud vraagt |
+|---|---|
+| **Python** | Versie 3.12 heeft ondersteuning tot oktober 2028. CPython kent geen langetermijnversies: elke minor versie krijgt ongeveer twee jaar bugfixes en daarna drie jaar beveiligingsupdates. De opvolging is dus een geplande handeling, en precies waar de regressietest voor is gebouwd |
+| **Bibliotheken** | Exacte pins; bijwerken is een bewuste handeling met de regressietest als controle. Let vooral op de HTTP- en beeldbibliotheek, waar beveiligingslekken het vaakst voorkomen |
+| **NLR-indelingslijst** | Staat in de code en wordt met de hand bijgewerkt wanneer NLR of ILT de lijst wijzigt |
+| **Afstandsnormen en marges** | Alle drempelwaarden staan in `tug_config.py`; een beleidswijziging is daar één aanpassing, met de regressietest als controle op de gevolgen |
+| **Externe bronnen** | Endpoints en bestandsformaten veranderen zonder aankondiging. Het proceslogboek maakt zichtbaar wanneer een bron niets oplevert; een periodieke controle van alle endpoints tegen de live bronnen is de manier om stille uitval op te sporen |
+| **Bewaartermijnen** | Verlopen caches worden automatisch vernieuwd; handmatig vernieuwen kan door het betreffende bestand in `geo/` te verwijderen |
+
+## 21. Licentie en eigenaarschap
 
 Intern gebruik Provincie Overijssel. Niet bestemd voor publieke distributie.
 
-### Versionering
-
-Git is de enige versiegeschiedenis; er zijn geen handmatige versienummers. Elke output
-(runlog, PDF, HTML, state) draagt de workflowversie: de korte commit-hash, met de toevoeging
-"(niet-gecommitte wijzigingen)" als getrackte bestanden lokaal gewijzigd zijn
-(`tug_config.VERSION`).
+**Versionering.** Git is de enige versiegeschiedenis; er zijn geen handmatige versienummers. Elk
+voortbrengsel — runlogboek, PDF, HTML en de tussentijdse state — draagt de workflowversie: de korte
+commit-hash, met de toevoeging *(niet-gecommitte wijzigingen)* wanneer er lokaal gewijzigde
+bestanden zijn.

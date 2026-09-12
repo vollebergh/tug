@@ -6,7 +6,9 @@ en woonplaatsen. Wordt gebruikt door BAG-postprocessing en de PDOK
 Location API-gebaseerde bronnen (begraafplaatsen, maneges).
 """
 
+import logging
 import re
+from urllib.parse import urlparse
 
 import requests
 from pyproj import Transformer
@@ -14,6 +16,9 @@ from pyproj import Transformer
 from tug_config import LOCATIESERVER_REVERSE
 from tug_geo import extract_lon_lat
 from tug_types import FeatureList, LogFn
+
+
+_logger = logging.getLogger("tug.bronnen_geocode")
 
 
 # ──────────────────────────────────────────────
@@ -121,7 +126,8 @@ def vul_woonplaats_via_reverse_geocode(features: FeatureList, log: LogFn) -> Non
             continue
         try:
             lat, lon = extract_lon_lat(feat)
-        except Exception:
+        except (KeyError, IndexError, TypeError, ValueError) as fout:
+            _logger.warning(f"Reverse geocode overgeslagen (geen bruikbare geometrie): {fout}")
             continue
 
         if lon > 1000:
@@ -155,7 +161,8 @@ def vul_woonplaats_via_reverse_geocode(features: FeatureList, log: LogFn) -> Non
                             if m_w:
                                 gevonden["wpl"] = m_w.group(1).strip()
                 cache[cache_key] = gevonden
-            except Exception:
+            except (requests.RequestException, ValueError, KeyError) as fout:
+                _logger.warning(f"Reverse geocode mislukt voor {cache_key}: {fout}")
                 cache[cache_key] = {"wpl": "", "straat": ""}
 
         gevonden = cache[cache_key]
@@ -170,7 +177,8 @@ def vul_woonplaats_via_reverse_geocode(features: FeatureList, log: LogFn) -> Non
             props["openbareruimtenaam"] = gevonden["straat"]
             gevuld_straat += 1
 
-    log(f"  Adres reverse geocode: {len(ontbrekend)} VBO's verwerkt via {len(cache)} unieke locaties "
+    log(f"  Adres reverse geocode: {len(ontbrekend)} VBO's verwerkt via "
+        f"{len(cache)} unieke locaties "
         f"({gevuld_wpl} woonplaats, {gevuld_straat} straatnaam ingevuld).")
 
 
@@ -184,15 +192,14 @@ _PDOK_TOEGESTANE_DOMEINEN = ("api.pdok.nl", "geodata.nationaalgeoregister.nl")
 def _pdok_location_haal_polygoon(href, log):
     # Domeincheck: accepteer alleen bekende PDOK-domeinen
     try:
-        from urllib.parse import urlparse as _urlparse
-        hostname = _urlparse(href).hostname or ""
-        if not any(hostname == d or hostname.endswith("." + d)
-                   for d in _PDOK_TOEGESTANE_DOMEINEN):
-            log(f"  WAARSCHUWING: BRT polygoon-href verwijst naar onverwacht domein "
-                f"({hostname!r}) — overgeslagen.")
-            return None
-    except Exception:
+        hostname = urlparse(href).hostname or ""
+    except ValueError:
         log(f"  WAARSCHUWING: BRT polygoon-href ongeldig ({href!r}) — overgeslagen.")
+        return None
+    if not any(hostname == d or hostname.endswith("." + d)
+               for d in _PDOK_TOEGESTANE_DOMEINEN):
+        log(f"  WAARSCHUWING: BRT polygoon-href verwijst naar onverwacht domein "
+            f"({hostname!r}) — overgeslagen.")
         return None
     try:
         resp = requests.get(href, timeout=15)

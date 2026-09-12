@@ -5,6 +5,7 @@ Bevat alle functies voor het ophalen en filteren van BAG-verblijfsobjecten
 en pandgeometrieën, inclusief gevel-check en geluidgevoeligheidsfilter.
 """
 
+import logging
 import copy
 
 import requests
@@ -19,7 +20,10 @@ from tug_geo import (
     circle_bbox_wgs84, make_transformer,
     shapely_from_geojson_geom, transform_geom_to_rd,
 )
-from tug_types import Feature, FeatureList, LogFn
+from tug_types import FeatureList, LogFn
+
+
+_logger = logging.getLogger("tug.bronnen_bag")
 
 
 # ──────────────────────────────────────────────
@@ -216,7 +220,8 @@ def koppel_gevelcontouren(features: FeatureList, panden: FeatureList) -> int:
             continue
         try:
             geoms.append(shape(g))
-        except Exception:
+        except (ValueError, TypeError, KeyError) as fout:
+            _logger.warning(f"Pandgeometrie overgeslagen (onleesbaar): {fout}")
             continue
         ids.append(str(p.get("properties", {}).get("identificatie", "")))
     if not geoms:
@@ -324,7 +329,8 @@ def haal_pand_geometrie_via_bbox(pand_id, vbo_feat, log):
             pand_shp = shape(geom_dict)
             if pand_shp.contains(vbo_pt_rd) or pand_shp.distance(vbo_pt_rd) < 1.0:
                 return feat
-        except Exception:
+        except (ValueError, TypeError, KeyError) as fout:
+            _logger.warning(f"Pand overgeslagen bij containment-check: {fout}")
             continue
 
     # Stap 4: geen containment — probeer strikte ID-match als vangnet

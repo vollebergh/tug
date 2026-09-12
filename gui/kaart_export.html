@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="workflow_versie" content="__WORKFLOW_VERSIE__">
+<title>__TITEL__</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H"
+      crossorigin="anonymous"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH"
+        crossorigin="anonymous"></script>
+<style>
+  html,body{margin:0;padding:0;height:100%;font-family:Arial,sans-serif;}
+  #map{width:100%;height:100%;min-height:600px;}
+  .legend{background:rgba(255,255,255,.92);padding:10px 14px;border-radius:4px;
+          box-shadow:0 1px 5px rgba(0,0,0,.35);font-size:12px;line-height:22px;max-width:270px;}
+  .legend h4{margin:0 0 6px;font-size:13px;}
+  .leg-dot{display:inline-block;width:12px;height:12px;border-radius:50%;
+           margin-right:6px;vertical-align:middle;border:1px solid rgba(0,0,0,.25);}
+  .leg-sq{display:inline-block;width:12px;height:12px;border-radius:2px;
+          margin-right:6px;vertical-align:middle;}
+  .leg-ln{display:inline-block;width:24px;height:2px;margin-right:6px;vertical-align:middle;}
+  .cirlabel{background:transparent!important;border:none!important;box-shadow:none!important;
+            padding:0!important;}
+  .cirlabel span{font-size:12px;font-weight:bold;white-space:nowrap;
+                text-shadow:1px 1px 2px #fff,-1px -1px 2px #fff,1px -1px 2px #fff,-1px 1px 2px #fff;}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<script>
+__DATA__
+var map = L.map('map').setView([CENTER_LAT, CENTER_LON], 15);
+
+// Satellietkaart (B04): PDOK luchtfoto, geen API-key nodig
+L.tileLayer('https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg', {
+  attribution: 'Luchtfoto &copy; <a href="https://www.pdok.nl/">PDOK</a> / Beeldmateriaal Nederland',
+  maxNativeZoom: 19, maxZoom: 21
+}).addTo(map);
+
+// Toetsings- en aandachtsgebied: omtrek van de cirkels rond alle puntlocaties (B03).
+// Label op het oostelijkste punt van de omtrek.
+function tekenGebied(rings, stijl, tekst, kleur, schaduw) {
+  var oost = null, lagen = [];
+  rings.forEach(function(ring) {
+    var ll = ring.map(function(c) { return [c[1], c[0]]; });
+    lagen.push(L.polygon(ll, stijl).addTo(map));
+    ll.forEach(function(p) { if (!oost || p[1] > oost[1]) oost = p; });
+  });
+  if (oost) {
+    L.tooltip({permanent: true, direction: 'right', className: 'cirlabel'})
+      .setLatLng(oost)
+      .setContent('<span style="color:' + kleur + (schaduw ? ';text-shadow:' + schaduw : '') + '">'
+                  + tekst + '</span>')
+      .addTo(map);
+  }
+  return lagen;
+}
+// Kleuren gekozen voor contrast op de luchtfoto: toetsingsafstand rood, aandachtsgebied geel.
+// Labels krijgen een donkere schaduw; die blijft leesbaar op de luchtfoto.
+var KLEUR_TOETSING = '#ff1a1a', KLEUR_AANDACHT = '#ffd500';
+var DONKERE_SCHADUW = '1px 1px 2px #000,-1px -1px 2px #000,1px -1px 2px #000,-1px 1px 2px #000';
+
+// Namen en adressen komen uit externe registers en worden hier als HTML in een
+// popup gezet; escapen zodat een naam de opmaak van de kaart niet kan breken.
+function esc(waarde) {
+  return String(waarde == null ? '' : waarde).replace(/[&<>"']/g, function(teken) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[teken];
+  });
+}
+tekenGebied(SIGNAAL_RINGS, {color:KLEUR_AANDACHT, weight:2.5, fill:false, interactive:false},
+  'Aandachtsgebied (+' + MANEGE_SIGNAAL_MARGE + ' m)', KLEUR_AANDACHT, DONKERE_SCHADUW);
+var toetsingLagen = tekenGebied(TOETSING_RINGS, {color:KLEUR_TOETSING, weight:3, fill:false, interactive:false},
+  TOETSING_LABEL, KLEUR_TOETSING, DONKERE_SCHADUW);
+if (toetsingLagen.length) {
+  map.fitBounds(L.featureGroup(toetsingLagen).getBounds(), {padding: [40, 40]});
+}
+
+// Stijg- en landingsplaats als kruis, gelijk aan de PDF-kaart
+var kruisIcon = L.divIcon({
+  className: '',
+  html: '<svg width="28" height="28" viewBox="0 0 28 28">'
+      + '<line x1="14" y1="1" x2="14" y2="27" stroke="#c80000" stroke-width="3"/>'
+      + '<line x1="1" y1="14" x2="27" y2="14" stroke="#c80000" stroke-width="3"/></svg>',
+  iconSize: [28, 28], iconAnchor: [14, 14]
+});
+PUNTEN.forEach(function(p, i) {
+  var nr = PUNTEN.length > 1 ? ' ' + (i + 1) : '';
+  L.marker([p[0], p[1]], {icon: kruisIcon, zIndexOffset: 1000}).addTo(map)
+    .bindPopup('<b>Stijg- en landingsplaats' + nr + '</b><br>lat=' + p[0].toFixed(6) + ', lon=' + p[1].toFixed(6));
+});
+
+var KLEUREN = {wettelijk:'#dc3545', marge:'#e67e22', aandacht:'#800080', luchthaven:'#d25a00', overig:'#e8e8e8'};
+var LABELS  = {wettelijk:'Wettelijk relevant', marge:'Margeband', aandacht:'Aandachtslocatie', luchthaven:'Luchthaven', overig:'Overig'};
+
+function maakPopup(m) {
+  var k = KLEUREN[m.categorie] || '#888';
+  var popup = '<b>' + esc(m.adres || '—') + '</b>';
+  if (m.pc_wpl) popup += '<br>' + esc(m.pc_wpl);
+  popup += '<br><em>' + esc(m.gebruiksdoel) + '</em>';
+  if (m.extra) popup += '<br>' + esc(m.extra);
+  popup += '<br><span style="color:' + k + '">' + (LABELS[m.categorie] || m.categorie) + '</span>';
+  return popup;
+}
+
+// BAG-adressen met een gevelcontour: één vlak per pand, gekleurd naar de zwaarste
+// categorie van de adressen erin; de popup somt alle adressen op.
+var PRIORITEIT = {wettelijk:4, marge:3, aandacht:2, luchthaven:2, overig:1};
+var PANDEN = {}, PAND_VOLGORDE = [];
+MARKERS.forEach(function(m) {
+  if (!m.contour || !m.pand_id) return;
+  if (!PANDEN[m.pand_id]) { PANDEN[m.pand_id] = {contour: m.contour, adressen: []}; PAND_VOLGORDE.push(m.pand_id); }
+  PANDEN[m.pand_id].adressen.push(m);
+});
+PAND_VOLGORDE.map(function(id) { return PANDEN[id]; }).map(function(p) {
+  p.cat = p.adressen.reduce(function(a, m) {
+    return (PRIORITEIT[m.categorie] || 0) > (PRIORITEIT[a] || 0) ? m.categorie : a;
+  }, 'overig');
+  return p;
+}).sort(function(a, b) { return (PRIORITEIT[a.cat] || 0) - (PRIORITEIT[b.cat] || 0); })
+  .forEach(function(p) {
+    var k = KLEUREN[p.cat] || '#888';
+    var popup = p.adressen.map(maakPopup).join('<hr style="margin:4px 0">');
+    p.contour.forEach(function(ring) {
+      var ll = ring.map(function(c) { return [c[1], c[0]]; });
+      L.polygon(ll, {color: k, fillColor: k, weight: 1.5,
+                     fillOpacity: p.cat === 'overig' ? 0.2 : 0.6})
+        .addTo(map).bindPopup(popup, {maxHeight: 300});
+    });
+  });
+
+MARKERS.forEach(function(m) {
+  if (m.contour && m.pand_id) return;
+  var k = KLEUREN[m.categorie] || '#888';
+  var popup = maakPopup(m);
+  if (m.categorie === 'luchthaven') {
+    // Diamantsymbool via rotated rectangle
+    var icon = L.divIcon({
+      className: '',
+      html: '<div style="width:14px;height:14px;background:' + k + ';transform:rotate(45deg);border:2px solid #7a2e00;opacity:0.9"></div>',
+      iconSize: [14, 14], iconAnchor: [7, 7]
+    });
+    L.marker([m.lat, m.lon], {icon: icon}).addTo(map).bindPopup(popup);
+  } else {
+    L.circleMarker([m.lat, m.lon], {
+      radius: m.categorie === 'overig' ? 5 : 7,
+      color: k, fillColor: k,
+      fillOpacity: m.categorie === 'overig' ? 0.35 : 0.75,
+      weight: 1.5
+    }).addTo(map).bindPopup(popup);
+  }
+});
+
+POLYGONEN.forEach(function(p) {
+  if (!p.rings || !p.rings.length) return;
+  var k, label;
+  if (p.type === 'n2000') {
+    k     = p.in_straal ? '#006400' : '#228b22';
+    label = '<b>' + esc(p.naam) + '</b><br>Natura 2000 — ' +
+            (p.in_straal ? 'puntlocatie binnen gebied' : 'nabij puntlocatie');
+  } else if (p.type === 'nnn') {
+    k     = p.in_straal ? '#3cb33c' : '#66cd66';
+    label = '<b>' + esc(p.naam) + '</b><br>Natuurnetwerk Nederland — ' +
+            (p.in_straal ? 'puntlocatie binnen gebied' : 'nabij puntlocatie');
+  } else {
+    k     = p.in_straal ? '#b8860b' : '#ffd700';
+    label = '<b>' + esc(p.naam) + '</b><br>Begraafplaats — ' +
+            (p.in_straal ? 'wettelijk relevant' : 'buiten toetsingsafstand');
+  }
+  p.rings.forEach(function(ring) {
+    var ll = ring.map(function(c) { return [c[1], c[0]]; });
+    var fo = (p.type === 'n2000') ? (p.in_straal ? 0.35 : 0.20)
+           : (p.type === 'nnn')   ? (p.in_straal ? 0.32 : 0.22)
+           : (p.in_straal ? 0.22 : 0.12);
+    L.polygon(ll, {color:k, fillColor:k, fillOpacity:fo, weight:1.5})
+      .addTo(map)
+      .bindPopup(label);
+  });
+});
+
+var legend = L.control({position: 'bottomright'});
+legend.onAdd = function() {
+  var d = L.DomUtil.create('div', 'legend');
+  d.innerHTML =
+    '<h4>Legenda</h4>'
+    + '<span class="leg-sq" style="background:rgba(220,53,69,.55);border:1px solid #dc3545"></span>Wettelijk relevant (gevelcontour)<br>'
+    + '<span class="leg-sq" style="background:rgba(230,126,34,.55);border:1px solid #e67e22"></span>Margeband (gevelcontour)<br>'
+    + '<span class="leg-dot" style="background:#800080"></span>Aandachtslocatie<br>'
+    + '<div style="display:inline-block;width:12px;height:12px;background:#d25a00;transform:rotate(45deg);margin-right:6px;vertical-align:middle;border:1px solid #7a2e00"></div>Luchthaven (signalering)<br>'
+    + '<span class="leg-sq" style="background:rgba(160,160,160,.35);border:1px solid #bbb"></span>Overig (gevelcontour)<br>'
+    + '<span class="leg-sq" style="background:rgba(184,134,11,.20);border:1px solid #b8860b"></span>Begraafplaats (beschermd)<br>'
+    + '<span class="leg-sq" style="background:rgba(255,215,0,.20);border:1px solid #ffd700"></span>Begraafplaats (buiten)<br>'
+    + '<span class="leg-sq" style="background:rgba(0,100,0,.35);border:1px solid #006400"></span>Natura 2000-gebied<br>'
+    + '<span class="leg-sq" style="background:rgba(60,179,60,.32);border:1px solid #3cb33c"></span>Natuurnetwerk Nederland<br>'
+    + '<span class="leg-ln" style="background:' + KLEUR_TOETSING + '"></span>' + TOETSING_LABEL + '<br>'
+    + '<span class="leg-ln" style="background:' + KLEUR_AANDACHT + '"></span>Aandachtsgebied<br>'
+    + '<span style="color:#c80000;font-weight:bold;font-size:15px;margin-right:6px">+</span>Stijg- en landingsplaats<br>'
+    + '<span style="color:#777;font-size:10px">Workflowversie: ' + WORKFLOW_VERSIE + '</span>';
+  return d;
+};
+legend.addTo(map);
+</script>
+</body>
+</html>

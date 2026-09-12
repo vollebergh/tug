@@ -1,0 +1,35 @@
+# TUG-ontheffingen — pipeline-dependencies
+# Python 3.12 (ondergrens 3.11 door pandas/numpy/pyproj; PySide6 vereist <3.15)
+#
+# Exacte pins (==), geen >=. De pipeline produceert documenten met een juridische
+# functie: dezelfde aanvraag moet op elke machine dezelfde afstanden en dezelfde
+# classificatie opleveren. Een minor release van shapely, pyproj of geopandas kan
+# een randgeval anders afhandelen, en bij een signaleringsgrens van 500 m is het
+# verschil tussen 499 en 501 m het verschil tussen wel en niet melden.
+#
+# Bijwerken is dus een bewuste handeling, niet iets wat vanzelf gebeurt: pas de
+# versie hier aan en reken daarna een bekende aanvraag opnieuw door om te zien of
+# de output gelijk blijft. Let daarbij vooral op requests (TLS) en pillow
+# (image-parsers), de twee waar beveiligingslekken het meest voorkomen.
+
+# GUI
+PySide6==6.11.2
+
+# Tabellen en registers
+pandas==3.0.3
+numpy==2.4.6
+odfpy==1.4.1          # pandas-engine voor .ods (ILT-luchtvaartuigregister)
+
+# Geo
+geopandas==1.1.3
+shapely==2.1.2
+pyproj==3.7.2
+pyogrio==0.12.1       # geo-IO-engine onder geopandas (GML, GPKG)
+
+# Bronnen ophalen en parsen
+requests==2.34.2
+lxml==6.1.0
+
+# Output
+reportlab==4.5.1      # PDF
+pillow==12.2.0        # luchtfoto's en kaartafbeeldingen

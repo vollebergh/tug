@@ -6,6 +6,7 @@ Begraafplaatsen en maneges worden opgespoord via de PDOK Locatieserver (BRT-data
 luchthavens via de WFS van GeoPortaal Overijssel.
 """
 
+import logging
 import requests
 from shapely.geometry import Point
 from shapely.geometry.base import BaseGeometry
@@ -13,7 +14,7 @@ from shapely.ops import unary_union
 
 from tug_config import (
     PDOK_LOCATION_API,
-    MARGE_M, MANEGE_SIGNAAL_MARGE, BEGRAAFPLAATS_ZOEK_MARGE, MANEGE_ZOEKTERMEN,
+    MANEGE_SIGNAAL_MARGE, BEGRAAFPLAATS_ZOEK_MARGE, MANEGE_ZOEKTERMEN,
     LUCHTHAVEN_WFS, LUCHTHAVEN_WFS_LAYER, LUCHTHAVEN_GRENS_M, LUCHTHAVEN_SIGNAAL_M,
     BRT_TERREIN_VLK_URL, BRT_TERREIN_PAGE_SIZE, BRT_TERREIN_MAX_PAGES,
     BRT_DODENAKKER_ZOEK_MARGE,
@@ -24,6 +25,9 @@ from tug_geo import (
 )
 from tug_bronnen_geocode import reverse_geocode_adres_wpl, _pdok_location_haal_polygoon
 from tug_types import LogFn, SignaalResultaat
+
+
+_logger = logging.getLogger("tug.bronnen_brt")
 
 
 # ──────────────────────────────────────────────
@@ -165,7 +169,8 @@ def _haal_brt_dodenakkers(
                     timeout=30,
                 )
             if resp.status_code != 200:
-                log(f"  WAARSCHUWING: BRT terrein_vlak gaf status {resp.status_code} — overgeslagen.")
+                log(f"  WAARSCHUWING: BRT terrein_vlak gaf status "
+                    f"{resp.status_code} — overgeslagen.")
                 break
             data  = resp.json()
             feats = data.get("features", [])

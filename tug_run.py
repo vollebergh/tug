@@ -152,8 +152,10 @@ if __name__ == "__main__":
         _logger.error(
             "Gebruik: python tug_run.py aanvraag.json [meer.json ...] [--vanaf STAPNUMMER]"
         )
-        _logger.error("  aanvraag.json   Enkel object of array van objecten; meerdere bestanden toegestaan")
-        _logger.error("  --vanaf 05      Herstart vanaf stap 05 (slechts één aanvraag, state moet al bestaan)")
+        _logger.error("  aanvraag.json   Enkel object of array van objecten; "
+                      "meerdere bestanden toegestaan")
+        _logger.error("  --vanaf 05      Herstart vanaf stap 05 (slechts één aanvraag, "
+                      "state moet al bestaan)")
         sys.exit(1)
 
     # Uitvouwen: elk bestand kan een enkel object of een array bevatten
@@ -187,7 +189,7 @@ if __name__ == "__main__":
 
     # ── Eindsamenvatting (alleen bij batch) ──
     if totaal > 1:
-        _log(f"")
+        _log("")
         _log(f"{'=' * 60}")
         _log(f"Batchrun voltooid: {len(geslaagd)}/{totaal} geslaagd, {len(mislukt)} mislukt.")
         for lbl in geslaagd:

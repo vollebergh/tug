@@ -5,6 +5,7 @@ Bevat signaleringsfuncties voor Natura 2000 (nationaal, on-the-fly via PDOK WFS)
 en Natuurnetwerk Nederland (provinciaal, lokale GeoPackage-cache vanuit ATOM-feed).
 """
 
+import logging
 import json
 from datetime import datetime
 
@@ -31,6 +32,9 @@ except ImportError:
     _HAS_GEOPANDAS = False
 
 
+_logger = logging.getLogger("tug.bronnen_natuur")
+
+
 # ──────────────────────────────────────────────
 # Natura 2000 — PDOK WFS (RVO), on-the-fly
 # ──────────────────────────────────────────────
@@ -42,7 +46,7 @@ def _punten_binnen(geom_rd: BaseGeometry, punt_rd: BaseGeometry) -> list[int]:
 
 
 def signaleer_natura2000(
-    circle_rd: BaseGeometry, straal: float, log: LogFn,
+    circle_rd: BaseGeometry, log: LogFn,
     punten_rd: BaseGeometry | None = None,
 ) -> SignaalResultaat:
     """Query Natura 2000-gebieden via PDOK WFS (geen lokale cache, on-the-fly BBOX-query).
@@ -95,7 +99,8 @@ def signaleer_natura2000(
         try:
             geom_wgs = shapely_from_geojson_geom(geom_dict)
             geom_rd  = transform_geom_to_rd(geom_wgs)
-        except Exception:
+        except (ValueError, TypeError, KeyError) as fout:
+            _logger.warning(f"Natura 2000-gebied met onleesbare geometrie overgeslagen: {fout}")
             continue
         props     = feat.get("properties", {})
         naam      = (props.get("naam") or props.get("NAAM") or props.get("NAME")
@@ -144,22 +149,23 @@ def _nnn_gpkg_actueel():
             meta = json.loads(NNN_META.read_text(encoding="utf-8"))
             ts   = datetime.fromisoformat(meta.get("timestamp", ""))
             return (datetime.now() - ts).days < NNN_TTL_DAGEN
-        except Exception:
-            pass
+        except (OSError, ValueError, TypeError) as fout:
+            # Geen bruikbare meta: terugvallen op de bestandsdatum hieronder.
+            _logger.debug(f"NNN-meta onbruikbaar ({fout}); bestandsdatum gebruikt")
     leeftijd = (datetime.now() - datetime.fromtimestamp(NNN_GPKG.stat().st_mtime)).days
     return leeftijd < NNN_TTL_DAGEN
 
 
 def _nnn_download_gml(gml_pad, log):
     """Download NNN GML (~185 MB) met voortgangsindicator. Retourneert True bij succes."""
-    log(f"  NNN: GML downloaden van PDOK (~185 MB) ...")
+    log("  NNN: GML downloaden van PDOK (~185 MB) ...")
     try:
         resp  = requests.get(NNN_GML_URL, stream=True, timeout=300)
         resp.raise_for_status()
         totaal     = int(resp.headers.get("content-length", 0))
         ontvangen  = 0
         totaal_mb  = totaal / (1024 * 1024) if totaal else 0
-        with open(gml_pad, "wb") as fout:
+        with gml_pad.open("wb") as fout:
             for chunk in resp.iter_content(chunk_size=131072):
                 if chunk:
                     fout.write(chunk)
@@ -181,26 +187,6 @@ def _nnn_download_gml(gml_pad, log):
         return False
 
 
-def _nnn_detecteer_naam_kolom(gdf, log):
-    """Detecteer de gebiedsnaamkolom in de ingelezen NNN GeoDataFrame."""
-    kandidaten = [
-        "naam", "name", "NAAM", "NAME",
-        "siteName", "SITENAAM", "localId", "localid",
-        "siteDesignation", "inspireid_localid",
-    ]
-    for k in kandidaten:
-        if k in gdf.columns:
-            log(f"  NNN: naamkolom gevonden: '{k}'")
-            return k
-    # Fallback: eerste tekst-kolom
-    for col in gdf.columns:
-        if col.lower() != "geometry" and str(gdf[col].dtype) == "object":
-            log(f"  NNN: naamkolom niet direct herkend, gebruik '{col}' als fallback.")
-            return col
-    log("  NNN WAARSCHUWING: geen naamkolom gevonden — gebieden worden genummerd.")
-    return None
-
-
 def _nnn_maak_gpkg(log):
     """Download NNN GML, converteer naar GeoPackage in EPSG:28992. True bij succes."""
     if not _HAS_GEOPANDAS:
@@ -216,8 +202,8 @@ def _nnn_maak_gpkg(log):
 
     # Laagnamen uitlezen (INSPIRE GML kan meerdere lagen bevatten)
     try:
-        import fiona
-        lagen = fiona.listlayers(str(gml_pad))
+        import pyogrio
+        lagen = [rij[0] for rij in pyogrio.list_layers(str(gml_pad))]
         log(f"  NNN GML: {len(lagen)} laag/lagen gevonden: {lagen}")
         laag = lagen[0] if lagen else None
     except Exception as e:
@@ -235,8 +221,6 @@ def _nnn_maak_gpkg(log):
         gml_pad.unlink(missing_ok=True)
         return False
 
-    naam_col = _nnn_detecteer_naam_kolom(gdf, log)
-
     log("  NNN: coördinaten omzetten naar RD New (EPSG:28992) ...")
     try:
         gdf_rd = gdf.to_crs("EPSG:28992")
@@ -245,13 +229,10 @@ def _nnn_maak_gpkg(log):
         gml_pad.unlink(missing_ok=True)
         return False
 
-    if naam_col:
-        gdf_out = gdf_rd[[naam_col, "geometry"]].copy()
-        gdf_out = gdf_out.rename(columns={naam_col: "naam"})
-    else:
-        gdf_out = gdf_rd[["geometry"]].copy()
-        gdf_out["naam"] = [f"NNN-gebied {i + 1}" for i in range(len(gdf_out))]
-    gdf_out["naam"] = gdf_out["naam"].fillna("NNN-gebied (naamloos)").astype(str)
+    # Alleen geometrie: de INSPIRE-bron levert geen gebiedsnamen, maar provinciale
+    # categorie-aanduidingen ("bestaande natuur"), en bij de helft van de gebieden
+    # niets. Die zijn voor de signalering niet van belang.
+    gdf_out = gdf_rd[["geometry"]].copy()
 
     log(f"  NNN: GeoPackage opslaan ({NNN_GPKG.name}) ...")
     try:
@@ -265,9 +246,12 @@ def _nnn_maak_gpkg(log):
 
     try:
         gml_pad.unlink()
+        # GDAL schrijft een .gfs-schemabestand naast de GML; een achtergebleven
+        # .gfs wordt bij een volgende run op een nieuwere GML opgedrongen.
+        gml_pad.with_suffix(".gfs").unlink(missing_ok=True)
         log("  NNN: tijdelijk GML-bestand verwijderd.")
-    except Exception:
-        pass
+    except OSError as fout:
+        log(f"  WAARSCHUWING: tijdelijk GML-bestand niet verwijderd ({fout}).")
 
     NNN_META.write_text(
         json.dumps(
@@ -280,7 +264,7 @@ def _nnn_maak_gpkg(log):
 
 
 def signaleer_nnn(
-    circle_rd: BaseGeometry, straal: float, log: LogFn,
+    circle_rd: BaseGeometry, log: LogFn,
     punten_rd: BaseGeometry | None = None,
 ) -> SignaalResultaat:
     """Laad NNN GeoPackage (download + verwerk indien nodig) en check intersectie.
@@ -309,8 +293,9 @@ def signaleer_nnn(
                 ts   = datetime.fromisoformat(meta["timestamp"])
                 meta_str = (f", {meta.get('n_gebieden','?')} gebieden, "
                             f"aangemaakt {ts.strftime('%Y-%m-%d')}")
-            except Exception:
-                pass
+            except (OSError, KeyError, ValueError) as fout:
+                # Alleen de toelichting ontbreekt dan; de cache zelf is bruikbaar.
+                _logger.debug(f"NNN-meta niet leesbaar: {fout}")
         log(f"  NNN: GeoPackage actueel ({NNN_GPKG.name}{meta_str}).")
 
     # Puntlocatie(s); bij meerdere geldt de dichtstbijzijnde (B03)
@@ -335,19 +320,19 @@ def signaleer_nnn(
         geom_rd = rij.geometry
         if geom_rd is None or geom_rd.is_empty:
             continue
-        naam      = str(rij.get("naam", "NNN-gebied"))
         afstand_p = punt_rd.distance(geom_rd)
         geom_wgs  = shapely_transform(lambda x, y: t_to_wgs.transform(x, y), geom_rd)
         rings     = _geom_rings_wgs84(geom_wgs)
         binnen    = _punten_binnen(geom_rd, punt_rd)
-        item      = {"naam": naam, "afstand_m": round(afstand_p), "poly_rings": rings,
-                     "punten_binnen": binnen}
+        item      = {"naam": "NNN-gebied", "afstand_m": round(afstand_p),
+                     "poly_rings": rings, "punten_binnen": binnen}
 
         if binnen:
-            log(f"  NNN TREFFER: puntlocatie {', '.join(map(str, binnen))} ligt BINNEN '{naam}'.")
+            log(f"  NNN TREFFER: puntlocatie {', '.join(map(str, binnen))} "
+                f"ligt BINNEN NNN-gebied.")
             in_straal.append(item)
         elif afstand_p <= NNN_SIGNAAL_MARGE:
-            log(f"  NNN nabij: puntlocatie op {afstand_p:.0f} m van '{naam}' "
+            log(f"  NNN nabij: puntlocatie op {afstand_p:.0f} m van NNN-gebied "
                 f"(< {NNN_SIGNAAL_MARGE} m).")
             in_signaal.append(item)
 

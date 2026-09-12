@@ -5,6 +5,9 @@ Bevat coördinaattransformaties (WGS84 ↔ RD New), cirkel- en geometrie-helpers
 en extract-helpers voor BAG-features. Geen project-specifieke domeinlogica.
 """
 
+import hashlib
+import json
+import re
 from datetime import datetime
 from typing import Any
 
@@ -13,8 +16,48 @@ from shapely.geometry import Point, Polygon, shape
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform as shapely_transform
 
-from tug_config import MAX_PUNT_AFSTAND_M, _MAANDEN_NL
+from tug_config import MAX_PUNT_AFSTAND_M, NAAM_SLUG_MAX, NL_BBOX, _MAANDEN_NL
 from tug_types import Feature
+
+
+# ──────────────────────────────────────────────
+# Namen en identiteit
+# ──────────────────────────────────────────────
+
+def naam_slug(naam: str | None) -> str:
+    """Bestandsnaamveilige variant van de dossieromschrijving.
+
+    Wordt gebruikt voor de tijdelijke aanvraag-JSON van de GUI én voor de namen
+    van de PNG-, PDF- en HTML-export, zodat invoer en uitvoer aan elkaar te
+    koppelen zijn. Eén implementatie, zodat die namen niet uiteen kunnen lopen.
+    """
+    slug = re.sub(r"[^\w\-]+", "_", (naam or "").strip(), flags=re.UNICODE)
+    return slug.strip("_")[:NAAM_SLUG_MAX]
+
+
+def feature_sleutel(feat: Feature) -> str:
+    """Stabiele identiteit van een feature, bruikbaar als sleutel in een set of dict.
+
+    Features worden tussen bronstap, classificatie en drie presentatievormen
+    doorgegeven. `id()` volstaat daarvoor niet: dat is alleen geldig zolang elke
+    lijst exact dezelfde objecten bevat en die objecten in leven blijven. Eén
+    kopie, deepcopy of JSON-ronde onderweg en alle lookups missen — stil, want
+    een missende sleutel levert geen fout op maar een ander oordeel.
+
+    De BAG-identificatie is de sleutel waar die bestaat; DUO-scholen dragen het
+    BAG-id van hun vestiging als `vbo_id`. Ontbreekt beide, dan wordt een sleutel
+    afgeleid uit naam en geometrie: ook dat blijft gelijk na kopiëren.
+    """
+    props = feat.get("properties") or {}
+    for veld in ("identificatie", "vbo_id", "id"):
+        waarde = str(props.get(veld) or "").strip()
+        if waarde:
+            return waarde
+    kern = json.dumps(
+        [props.get("naam", ""), props.get("adres", ""), feat.get("geometry")],
+        sort_keys=True, ensure_ascii=False,
+    )
+    return "afgeleid:" + hashlib.sha256(kern.encode("utf-8")).hexdigest()[:16]
 
 
 # ──────────────────────────────────────────────
@@ -67,7 +110,7 @@ def point_wgs84_to_rd(lon: float, lat: float) -> Point:
 def _geom_rings_wgs84(geom_wgs: BaseGeometry) -> list[list[tuple[float, float]]]:
     if geom_wgs.geom_type == "Polygon":
         return [list(geom_wgs.exterior.coords)]
-    elif geom_wgs.geom_type == "MultiPolygon":
+    if geom_wgs.geom_type == "MultiPolygon":
         return [list(p.exterior.coords) for p in geom_wgs.geoms]
     return []
 
@@ -75,6 +118,18 @@ def _geom_rings_wgs84(geom_wgs: BaseGeometry) -> list[list[tuple[float, float]]]
 # ──────────────────────────────────────────────
 # Puntlocaties (B03: één of meer per aanvraag)
 # ──────────────────────────────────────────────
+
+def in_nederland(lat: float, lon: float) -> bool:
+    """Ligt dit punt binnen de omhullende van Nederland?
+
+    Vangt de meest voorkomende invoerfout: lat en lon verwisseld. De GUI toetst
+    dit bij handmatige invoer, de validatiestap bij een aanvraag-JSON — beide
+    via deze ene functie, zodat het venster niet groen kan geven waar het rapport
+    een gebrek meldt.
+    """
+    lat_min, lat_max, lon_min, lon_max = NL_BBOX
+    return lat_min <= lat <= lat_max and lon_min <= lon <= lon_max
+
 
 def puntlocaties(aanvraag: dict[str, Any]) -> list[tuple[float, float]]:
     """Retourneer de puntlocaties van een aanvraag als lijst (lat, lon).
@@ -96,9 +151,11 @@ def puntlocaties(aanvraag: dict[str, Any]) -> list[tuple[float, float]]:
     for i, (la, lo) in enumerate(zip(lats, lons), 1):
         try:
             la, lo = float(la), float(lo)
-        except (TypeError, ValueError):
-            raise ValueError(f"puntlocatie {i}: geen geldige coördinaten ({la!r}, {lo!r})")
-        if not (50.0 <= la <= 54.0 and 3.0 <= lo <= 8.0):
+        except (TypeError, ValueError) as fout:
+            raise ValueError(
+                f"puntlocatie {i}: geen geldige coördinaten ({la!r}, {lo!r})"
+            ) from fout
+        if not in_nederland(la, lo):
             raise ValueError(f"puntlocatie {i}: ({la}, {lo}) ligt niet in Nederland "
                              f"(lat/lon verwisseld?)")
         punten.append((la, lo))

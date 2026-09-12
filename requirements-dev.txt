@@ -1,0 +1,13 @@
+# Gereedschap voor controle en onderhoud — niet nodig om de pipeline te draaien.
+#
+#     .venv/bin/python -m pip install -r requirements-dev.txt
+#
+# Pins zijn hier minder kritiek dan in requirements.txt: deze pakketten raken de
+# uitkomst van een aanvraag niet. Ze staan vast zodat een controle op twee
+# machines wel hetzelfde oordeel geeft.
+
+-r requirements.txt
+
+pytest==9.1.1      # eenheidstests op de beslisregels (test/test_eenheden.py)
+ruff==0.16.7       # stijl- en foutcontrole, configuratie in pyproject.toml
+bandit==1.9.4      # beveiligingsscan (P1-P6)

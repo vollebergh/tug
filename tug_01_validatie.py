@@ -1,11 +1,11 @@
 """
 tug_01_validatie.py -- Stap 2 TUG-ontheffingen workflow
-Versie: 1.0.0  |  2026-05-15
+Versie: zie git (workflowversie = korte commit-hash, zie tug_config.VERSION)
 
 Volledigheidscheck van de aanvraag:
   - Controleert aanwezigheid van verplichte velden
   - Normaliseert datum_vlucht naar een lijst (str → [str])
-  - Controleert of datum_ondertekening niet meer dan 4 weken vóór
+  - Controleert of datum_ondertekening minimaal MIN_INDIENTERMIJN_DAGEN vóór
     de vroegste vluchtdatum ligt
 
 Invoer : tug_state.json  (aanvraag)
@@ -18,7 +18,7 @@ import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from tug_config import VERSION
+from tug_config import MIN_INDIENTERMIJN_DAGEN, VERSION
 from tug_geo import puntlocaties
 from tug_logging import LogAccumulator, setup_logging
 
@@ -30,8 +30,6 @@ VERPLICHTE_VELDEN = [
     "datum_ondertekening",
     "tijdstip_ondertekening",
 ]
-
-MAX_VOORUIT_WEKEN = 4  # ondertekening mag maximaal 4 weken vóór vroegste vlucht liggen
 
 
 # ──────────────────────────────────────────────
@@ -69,12 +67,16 @@ def _normaliseer_datum_vlucht(aanvraag):
     return waarde, None
 
 
-def _controleer_4_weken(datum_ondertekening: date, vluchtdata: list[date]):
-    """
-    Controleert of datum_ondertekening minimaal 28 dagen vóór de vroegste
-    vluchtdatum ligt. Een kortere termijn levert een waarschuwing op.
+def _controleer_indientermijn(
+    datum_ondertekening: date, vluchtdata: list[date],
+) -> tuple[bool, str]:
+    """Toetst de indientermijn: is er genoeg tijd tussen ondertekening en vlucht?
 
-    Geeft (geslaagd: bool, melding: str) terug.
+    De aanvraag moet minimaal MIN_INDIENTERMIJN_DAGEN vóór de vroegste
+    vluchtdatum zijn ondertekend. Een kortere termijn is geen technische fout
+    maar een gebrek: de pipeline gaat door en het rapport meldt het.
+
+    Geeft (voldoet: bool, melding: str) terug.
     """
     vroegste = min(vluchtdata)
     verschil = vroegste - datum_ondertekening
@@ -85,17 +87,18 @@ def _controleer_4_weken(datum_ondertekening: date, vluchtdata: list[date]):
             f"({vroegste}). Een aanvraag dient voor de vluchtdatum te zijn ondertekend."
         )
 
-    if verschil < timedelta(days=MAX_VOORUIT_WEKEN * 7):
+    if verschil < timedelta(days=MIN_INDIENTERMIJN_DAGEN):
         return False, (
             f"datum_ondertekening ({datum_ondertekening}) ligt minder dan "
-            f"{MAX_VOORUIT_WEKEN * 7} dagen vóór de vroegste vluchtdatum ({vroegste}): "
+            f"{MIN_INDIENTERMIJN_DAGEN} dagen vóór de vroegste vluchtdatum ({vroegste}): "
             f"verschil is {verschil.days} dag(en). De aanvraag dient minimaal "
-            f"{MAX_VOORUIT_WEKEN * 7} dagen vóór de eerste vluchtdatum te zijn ondertekend."
+            f"{MIN_INDIENTERMIJN_DAGEN} dagen vóór de eerste vluchtdatum te zijn ondertekend."
         )
 
     return True, (
         f"datum_ondertekening ({datum_ondertekening}) is {verschil.days} dag(en) vóór de "
-        f"vroegste vluchtdatum ({vroegste}) — voldoet aan de {MAX_VOORUIT_WEKEN * 7}-dageneis."
+        f"vroegste vluchtdatum ({vroegste}) — voldoet aan de "
+        f"{MIN_INDIENTERMIJN_DAGEN}-dageneis."
     )
 
 
@@ -142,13 +145,14 @@ def run(state_pad: str | Path) -> None:
     if datum_vlucht_ontbreekt:
         melding = (
             "datum_vlucht is niet ingevuld — vluchtdatum onbekend. "
-            "Aanvraag wordt verwerkt; vergunningverlener dient de vluchtdatum handmatig aan te vullen."
+            "Aanvraag wordt verwerkt; vergunningverlener dient de vluchtdatum\n"
+            "handmatig aan te vullen."
         )
         waarschuw.append(melding)
-        log(f"\n  ✗ ONBEKENDE VLUCHTDATUM — datum_vlucht is null of ontbreekt.")
+        log("\n  ✗ ONBEKENDE VLUCHTDATUM — datum_vlucht is null of ontbreekt.")
         log(f"  ✗ {melding}")
     else:
-        log(f"  ✓ datum_vlucht")
+        log("  ✓ datum_vlucht")
 
     # ── 2. Normalisatie datum_vlucht ──────────
     log("\nStap 2b: Normalisatie datum_vlucht ...")
@@ -192,17 +196,20 @@ def run(state_pad: str | Path) -> None:
         else:
             log(f"  ✓ datum_ondertekening: {datum_ondertekening}")
 
-    # ── 5. 4-weken-regel ─────────────────────
-    vierw_ok = None
-    vierw_melding = None
+    # ── 5. Indientermijn ─────────────────────
+    termijn_ok = None
+    termijn_melding = None
     if datum_ondertekening and vluchtdata_parsed:
-        log(f"\nStap 2e: 4-weken-regel (max. {MAX_VOORUIT_WEKEN} weken voor vroegste vlucht) ...")
-        vierw_ok, vierw_melding = _controleer_4_weken(datum_ondertekening, vluchtdata_parsed)
-        if vierw_ok:
-            log(f"  ✓ {vierw_melding}")
+        log(f"\nStap 2e: indientermijn (minimaal {MIN_INDIENTERMIJN_DAGEN} dagen "
+            f"vóór de vroegste vlucht) ...")
+        termijn_ok, termijn_melding = _controleer_indientermijn(
+            datum_ondertekening, vluchtdata_parsed
+        )
+        if termijn_ok:
+            log(f"  ✓ {termijn_melding}")
         else:
-            waarschuw.append(vierw_melding)
-            log(f"  ✗ {vierw_melding}")
+            waarschuw.append(termijn_melding)
+            log(f"  ✗ {termijn_melding}")
 
     # ── 6. Luchtvaartuigen-structuur ──────────
     lv_lijst = aanvraag.get("luchtvaartuigen")
@@ -249,18 +256,19 @@ def run(state_pad: str | Path) -> None:
         "waarschuwingen":         waarschuw,
         "ontbrekende_velden":     ontbrekende_velden,
         "datum_vlucht_ontbreekt": datum_vlucht_ontbreekt,
-        "4_weken_ok":             vierw_ok,
-        "4_weken_melding":        vierw_melding,
+        "indientermijn_ok":       termijn_ok,
+        "indientermijn_melding":  termijn_melding,
         "log_regels":             log.lines,
     }
 
     state.setdefault("logboek", []).append({
         "stap":     "01_validatie",
-        "tijdstip": __import__("datetime").datetime.now().isoformat(),
+        "tijdstip": datetime.now().isoformat(),
         "niveau":   "waarschuwing" if waarschuw else "info",
         "bericht":  (
             "Validatie geslaagd." if not waarschuw
-            else f"Validatie geslaagd met {len(waarschuw)} waarschuwing(en): {'; '.join(waarschuw[:2])}"
+            else (f"Validatie geslaagd met {len(waarschuw)} waarschuwing(en): "
+                  f"{'; '.join(waarschuw[:2])}")
         ),
     })
 

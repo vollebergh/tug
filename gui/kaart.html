@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Puntlocaties</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H"
+      crossorigin="anonymous"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH"
+        crossorigin="anonymous"></script>
+<script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+<style>
+  :root{
+    --paneel:#1b222c; --rand:#333f4f; --tekst:#e6ebf2; --zwak:#93a1b3;
+    --accent:#4b93ff; --accent-zacht:rgba(75,147,255,.18);
+  }
+  html,body{margin:0;padding:0;height:100%;background:#0f131a;
+            font-family:"Inter","Ubuntu","Segoe UI",system-ui,sans-serif;}
+  #kaart{position:absolute;inset:0;}
+  .leaflet-container{background:#0f131a;font-family:inherit;}
+
+  /* ── Zwevende bedieningselementen ───────────────────────── */
+  .paneel{
+    background:rgba(27,34,44,.94); color:var(--tekst);
+    border:1px solid var(--rand); border-radius:10px;
+    box-shadow:0 6px 22px rgba(0,0,0,.45);
+    backdrop-filter:blur(8px);
+  }
+  .schakelaar{display:flex;padding:4px;gap:4px;}
+  .schakelaar button{
+    all:unset; cursor:pointer; padding:7px 15px; border-radius:7px;
+    font-size:12.5px; font-weight:600; letter-spacing:.2px; color:var(--zwak);
+    transition:background .14s,color .14s;
+  }
+  .schakelaar button:hover{color:var(--tekst);background:rgba(255,255,255,.06);}
+  .schakelaar button.actief{background:var(--accent);color:#fff;}
+
+  .hint{
+    padding:7px 13px;font-size:12px;color:var(--zwak);
+    display:flex;align-items:center;gap:8px;
+  }
+  .hint b{color:var(--tekst);font-weight:600;}
+  .hint .stip{width:7px;height:7px;border-radius:50%;background:var(--accent);
+              box-shadow:0 0 0 4px var(--accent-zacht);flex:none;}
+
+  .uitlezing{
+    padding:6px 12px;font-size:11.5px;color:var(--zwak);
+    font-variant-numeric:tabular-nums;letter-spacing:.2px;
+    min-width:150px;text-align:center;
+  }
+  .uitlezing b{color:var(--tekst);font-weight:600;}
+
+  /* ── Pins ───────────────────────────────────────────────── */
+  .pin{position:relative;width:30px;height:40px;cursor:pointer;
+       filter:drop-shadow(0 3px 5px rgba(0,0,0,.55));transition:transform .12s;}
+  .pin:hover{transform:translateY(-2px) scale(1.06);}
+  .pin svg{display:block;}
+  .pin .nr{
+    position:absolute;top:5px;left:0;width:30px;text-align:center;
+    font-size:13px;font-weight:700;color:#fff;pointer-events:none;
+  }
+  .pin-tip{font-size:12px;}
+  .leaflet-tooltip.tip{
+    background:rgba(27,34,44,.96);border:1px solid var(--rand);color:var(--tekst);
+    border-radius:7px;box-shadow:0 4px 14px rgba(0,0,0,.45);font-size:11.5px;
+    font-variant-numeric:tabular-nums;padding:5px 9px;
+  }
+  .leaflet-tooltip.tip::before{display:none;}
+
+  .leaflet-control-attribution{
+    background:rgba(15,19,26,.72)!important;color:#7d8a9c!important;font-size:10.5px!important;
+  }
+  .leaflet-control-attribution a{color:#9fb2c9!important;}
+  .leaflet-control-scale-line{
+    background:rgba(27,34,44,.9);border:1px solid var(--rand);border-top:none;
+    color:var(--tekst);font-size:11px;
+  }
+  .leaflet-bar a{background:#1b222c;color:var(--tekst);border-bottom-color:var(--rand);}
+  .leaflet-bar a:hover{background:#26303d;color:#fff;}
+</style>
+</head>
+<body>
+<div id="kaart"></div>
+<script>
+// CONFIG wordt door tug_gui.py geïnjecteerd (bron: tug_config.KAART_ACHTERGRONDEN).
+var CONFIG = __CONFIG__;
+
+var kaart = L.map('kaart', {zoomControl:true, attributionControl:true})
+             .setView([CONFIG.start_lat, CONFIG.start_lon], CONFIG.start_zoom);
+
+var lagen = {};
+Object.keys(CONFIG.achtergronden).forEach(function(sleutel){
+  var a = CONFIG.achtergronden[sleutel];
+  lagen[sleutel] = L.tileLayer(a.url, {
+    attribution: a.bron, maxNativeZoom: 19, maxZoom: 21
+  });
+});
+var actieveLaag = null;
+function zetAchtergrond(sleutel){
+  if (actieveLaag) kaart.removeLayer(actieveLaag);
+  actieveLaag = lagen[sleutel];
+  actieveLaag.addTo(kaart);
+  document.querySelectorAll('.schakelaar button').forEach(function(b){
+    b.classList.toggle('actief', b.dataset.laag === sleutel);
+  });
+}
+
+L.control.scale({imperial:false, position:'bottomleft'}).addTo(kaart);
+
+// ── Achtergrondschakelaar ─────────────────────────────────
+var Schakelaar = L.Control.extend({
+  options:{position:'topright'},
+  onAdd:function(){
+    var d = L.DomUtil.create('div', 'paneel schakelaar');
+    Object.keys(CONFIG.achtergronden).forEach(function(sleutel){
+      var b = L.DomUtil.create('button', '', d);
+      b.textContent = CONFIG.achtergronden[sleutel].titel;
+      b.dataset.laag = sleutel;
+      L.DomEvent.on(b, 'click', function(e){ L.DomEvent.stop(e); zetAchtergrond(sleutel); });
+    });
+    L.DomEvent.disableClickPropagation(d);
+    return d;
+  }
+});
+kaart.addControl(new Schakelaar());
+
+// ── Gebruikshint ──────────────────────────────────────────
+var Hint = L.Control.extend({
+  options:{position:'topleft'},
+  onAdd:function(){
+    var d = L.DomUtil.create('div', 'paneel hint');
+    d.innerHTML = '<span class="stip"></span>'
+                + '<span><b>Klik op de kaart</b> om een puntlocatie te plaatsen · '
+                + '<b>klik op een pin</b> om te verwijderen</span>';
+    L.DomEvent.disableClickPropagation(d);
+    return d;
+  }
+});
+kaart.addControl(new Hint());
+
+// ── Coördinaatuitlezing ───────────────────────────────────
+var uitlezing;
+var Uitlezing = L.Control.extend({
+  options:{position:'bottomright'},
+  onAdd:function(){
+    uitlezing = L.DomUtil.create('div', 'paneel uitlezing');
+    uitlezing.textContent = 'beweeg over de kaart';
+    return uitlezing;
+  }
+});
+kaart.addControl(new Uitlezing());
+kaart.on('mousemove', function(e){
+  if (uitlezing) uitlezing.innerHTML =
+    '<b>' + e.latlng.lat.toFixed(6) + '</b>, <b>' + e.latlng.lng.toFixed(6) + '</b>';
+});
+
+// ── Pins ──────────────────────────────────────────────────
+var pinLaag  = L.layerGroup().addTo(kaart);
+var maxLaag  = L.layerGroup().addTo(kaart);
+
+function pinIcoon(nummer){
+  return L.divIcon({
+    className:'', iconSize:[30,40], iconAnchor:[15,39], tooltipAnchor:[0,-34],
+    html:'<div class="pin">'
+       + '<svg width="30" height="40" viewBox="0 0 30 40">'
+       + '<path d="M15 39C15 39 28 24.5 28 14.5A13 13 0 0 0 2 14.5C2 24.5 15 39 15 39Z" '
+       + 'fill="#4b93ff" stroke="#ffffff" stroke-width="2.2"/></svg>'
+       + '<div class="nr">' + nummer + '</div></div>'
+  });
+}
+
+function tekenPins(punten){
+  pinLaag.clearLayers();
+  maxLaag.clearLayers();
+  punten.forEach(function(p, i){
+    var m = L.marker([p.lat, p.lon], {icon:pinIcoon(i+1), riseOnHover:true}).addTo(pinLaag);
+    m.bindTooltip(
+      '<b>Punt ' + (i+1) + '</b><br>' + p.lat.toFixed(6) + ', ' + p.lon.toFixed(6)
+      + '<br>RD ' + Math.round(p.x) + ' / ' + Math.round(p.y)
+      + '<br><span style="color:#93a1b3">klik om te verwijderen</span>',
+      {className:'tip', direction:'top', offset:[0,0]}
+    );
+    m.on('click', function(e){ L.DomEvent.stop(e); if (window.brug) window.brug.verwijderPunt(p.id); });
+  });
+  // Maximale onderlinge afstand tussen puntlocaties (tug_config.MAX_PUNT_AFSTAND_M)
+  if (punten.length >= 1){
+    L.circle([punten[0].lat, punten[0].lon], {
+      radius: CONFIG.max_afstand_m, color:'#4b93ff', weight:1.2,
+      dashArray:'5 6', fill:false, interactive:false
+    }).addTo(maxLaag);
+  }
+}
+
+kaart.on('click', function(e){
+  if (window.brug) window.brug.voegPuntToe(e.latlng.lat, e.latlng.lng);
+});
+
+// ── Brug naar Python ──────────────────────────────────────
+new QWebChannel(qt.webChannelTransport, function(channel){
+  window.brug = channel.objects.brug;
+  window.brug.pinsGezet.connect(function(json){ tekenPins(JSON.parse(json)); });
+  window.brug.focusGezet.connect(function(lat, lon){
+    kaart.flyTo([lat, lon], Math.max(kaart.getZoom(), 16), {duration:.6});
+  });
+  window.brug.gereed();
+});
+
+zetAchtergrond(CONFIG.standaard_achtergrond);
+</script>
+</body>
+</html>

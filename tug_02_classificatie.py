@@ -1,11 +1,12 @@
 """
 tug_02_classificatie.py -- Stap 3 TUG-ontheffingen workflow
-Versie: 1.0.0  |  2026-05-01
+Versie: zie git (workflowversie = korte commit-hash, zie tug_config.VERSION)
 
 Stap 3a: PH-code → Luchtvaartregister ILT → ICAO-code
 Stap 3b: ICAO-code → NLR-tabel → Appendix Categorie + Afstandsnorm
-Stap 3c: PM-categorieën (013/015/016/017) → interactieve invoer vergunningverlener (standaard 500 m)
-Stap 3d: Meerdere luchtvaartuigen → norm_toepassing = maximum
+Stap 3c: PM-categorieën (013/015/016/017) → geen norm; rode signalering in het rapport
+Stap 3d: Meerdere luchtvaartuigen → norm_toepassing = maximum over de luchtvaartuigen
+         waarvoor wel een norm herleidbaar is
 
 Invoer : tug_state.json  (aanvraag.luchtvaartuigen)
 Uitvoer: tug_state.json  (sectie classificatie gevuld)
@@ -18,6 +19,7 @@ import io
 import json
 import logging
 import re
+from urllib.parse import urlparse
 import sys
 import zipfile
 from datetime import datetime, timedelta
@@ -158,6 +160,9 @@ NLR_TYPEN = {
 }
 
 
+_logger = logging.getLogger("tug.02_classificatie")
+
+
 # ──────────────────────────────────────────────
 # Luchtvaartregister — meta / hash-hulpfuncties
 # ──────────────────────────────────────────────
@@ -167,7 +172,7 @@ def _lees_meta():
         try:
             return json.loads(REGISTER_META_PAD.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as e:
-            logging.getLogger("tug.02_classificatie").warning(
+            _logger.warning(
                 f"  WAARSCHUWING: meta-bestand {REGISTER_META_PAD.name} onleesbaar "
                 f"({e.__class__.__name__}: {e}) — wordt genegeerd; "
                 f"register wordt opnieuw gedownload."
@@ -217,8 +222,7 @@ def _zoek_register_url(log):
             href = m.group(1)
             url  = href if href.startswith("http") else "https://www.ilent.nl" + href
             # Domeincheck: weiger URL's die niet van ilent.nl komen
-            from urllib.parse import urlparse as _urlparse
-            hostname = _urlparse(url).hostname or ""
+            hostname = urlparse(url).hostname or ""
             if not (hostname == "www.ilent.nl" or hostname.endswith(".ilent.nl")):
                 log(f"  WAARSCHUWING: ILT-URL verwijst naar onverwacht domein "
                     f"({hostname!r}) — overgeslagen.")
@@ -238,7 +242,8 @@ def _zoek_register_url(log):
             if r.status_code == 200:
                 log(f"  Register-URL via datumfallback: {url}")
                 return url
-        except Exception:
+        except requests.RequestException as fout:
+            _logger.debug(f"Datumfallback {datum}: niet bereikbaar ({fout})")
             continue
 
     log("  FOUT: Geen geldige register-URL gevonden.")
@@ -261,12 +266,14 @@ def _download_register(log, force=False):
         not force
         and REGISTER_ODS_PAD.exists()
         and meta.get("download_datum")
-        and (datetime.now() - datetime.fromisoformat(meta["download_datum"])).days < REGISTER_TTL_DAGEN
+        and (datetime.now() - datetime.fromisoformat(meta["download_datum"])).days
+            < REGISTER_TTL_DAGEN
     )
 
     if binnen_ttl:
         ouderdom = (datetime.now() - datetime.fromisoformat(meta["download_datum"])).days
-        log(f"  Register: lokaal bestand gebruikt ({REGISTER_ODS_PAD.name}, {ouderdom} dag(en) oud).")
+        log(f"  Register: lokaal bestand gebruikt ({REGISTER_ODS_PAD.name}, "
+            f"{ouderdom} dag(en) oud).")
         df = pd.read_excel(REGISTER_ODS_PAD, engine="odf", header=0, dtype=str)
         return df, meta
 
@@ -286,7 +293,8 @@ def _download_register(log, force=False):
         resp.raise_for_status()
     except Exception as e:
         if REGISTER_ODS_PAD.exists():
-            log(f"  WAARSCHUWING: Download mislukt ({e}) — lokaal bestand als noodoplossing gebruikt.")
+            log(f"  WAARSCHUWING: Download mislukt ({e}) — lokaal bestand als "
+                f"noodoplossing gebruikt.")
             df = pd.read_excel(REGISTER_ODS_PAD, engine="odf", header=0, dtype=str)
             return df, meta
         raise
@@ -324,9 +332,11 @@ def _vind_kolommen(df, log):
     icao_kolom = next((c for c in df.columns if isinstance(c, str) and "ICAO" in c), None)
 
     if not reg_kolom:
-        log(f"  FOUT: Kolom 'Registration' niet gevonden. Beschikbare kolommen: {list(df.columns[:10])}")
+        log(f"  FOUT: Kolom 'Registration' niet gevonden. "
+            f"Beschikbare kolommen: {list(df.columns[:10])}")
     if not icao_kolom:
-        log(f"  FOUT: Kolom met 'ICAO' niet gevonden. Beschikbare kolommen: {list(df.columns[:10])}")
+        log(f"  FOUT: Kolom met 'ICAO' niet gevonden. "
+            f"Beschikbare kolommen: {list(df.columns[:10])}")
 
     return reg_kolom, icao_kolom
 
@@ -352,57 +362,6 @@ def _zoek_icao_in_register(ph_code, df, log):
 
 
 # ──────────────────────────────────────────────
-# Interactieve invoer vergunningverlener
-# ──────────────────────────────────────────────
-
-def _vraag_handmatige_norm(reden, standaard_m=None):
-    """
-    Vraag de vergunningverlener om een afstandsnorm in te voeren.
-    standaard_m: standaardwaarde die wordt gebruikt bij ENTER of in batch-modus.
-    Retourneert een positief geheel getal.
-
-    In batch-modus (geen TTY / EOFError): standaard_m wordt automatisch toegepast.
-    """
-    import sys as _sys
-    niet_interactief = not _sys.stdin.isatty()
-
-    print()
-    print(f"  {'─' * 55}")
-    print(f"  ⚠  Handmatige invoer vereist")
-    print(f"  Reden: {reden}")
-
-    if niet_interactief and standaard_m is not None:
-        print(f"  Batch-modus: standaardwaarde {standaard_m} m automatisch aangenomen.")
-        print(f"  {'─' * 55}")
-        return standaard_m
-
-    if standaard_m is not None:
-        print(f"  Druk op ENTER om de standaardwaarde ({standaard_m} m) te gebruiken.")
-    print(f"  {'─' * 55}")
-
-    while True:
-        prompt = f"  Afstandsnorm (m){f' [{standaard_m}]' if standaard_m else ''}: "
-        try:
-            invoer = input(prompt).strip()
-        except EOFError:
-            if standaard_m is not None:
-                print(f"  → Batch-modus: standaardwaarde {standaard_m} m aangenomen.")
-                return standaard_m
-            raise
-        if not invoer and standaard_m is not None:
-            print(f"  → Standaardwaarde {standaard_m} m aangenomen.")
-            return standaard_m
-        try:
-            norm = int(invoer)
-            if norm > 0:
-                print(f"  → Ingevoerde norm: {norm} m.")
-                return norm
-        except ValueError:
-            pass
-        print("  Ongeldige invoer — voer een positief geheel getal in.")
-
-
-# ──────────────────────────────────────────────
 # Classificatie per luchtvaartuig
 # ──────────────────────────────────────────────
 
@@ -422,21 +381,16 @@ def _classificeer_luchtvaartuig(lv, df, log):
     if icao:
         log(f"  {ph_code}: ICAO-code gevonden: {icao}")
     else:
-        log(f"  {ph_code}: niet gevonden in register.")
-        norm_m = _vraag_handmatige_norm(
-            f"{ph_code} niet gevonden in ILT luchtvaartregister "
-            f"(registratie mogelijk in ander EU-land of onbekend)",
-            standaard_m=500,
-        )
         log(
             f"  ✗ {ph_code}: niet gevonden in ILT-register — "
-            f"zorgvuldigheidshalve {norm_m} m aangehouden."
+            f"geen afstandsnorm bepaald; luchtvaartuig buiten de toetsing gelaten."
         )
         signalen.append(
-            f"✗ {ph_code} niet gevonden in ILT luchtvaartregister "
-            f"(registratie mogelijk in ander EU-land of onbekend). "
-            f"Zorgvuldigheidshalve wordt een afstandsnorm van {norm_m} m aangehouden. "
-            f"Definitieve norm vereist controle door vergunningverlener."
+            f"✗ Het luchtvaartuig met kenmerk {ph_code} is niet gevonden in het ILT "
+            f"luchtvaartuigregister (registratie mogelijk in een ander land of onbekend). "
+            f"Er is voor dit luchtvaartuig geen afstandsnorm bepaald en het is buiten de "
+            f"toetsing gelaten. De vergunningverlener bepaalt of dit luchtvaartuig in de "
+            f"ontheffing wordt opgenomen."
         )
         return {
             "registratie":       ph_code,
@@ -444,8 +398,8 @@ def _classificeer_luchtvaartuig(lv, df, log):
             "icao_code":         None,
             "appendix_categorie": None,
             "vliegtuigtypen_nlr": [],
-            "norm_m":            norm_m,
-            "norm_bron":         "handmatig_niet_gevonden",
+            "norm_m":            None,
+            "norm_bron":         "niet_in_register",
             "signalen":          signalen,
         }
 
@@ -472,23 +426,21 @@ def _classificeer_luchtvaartuig(lv, df, log):
     categorie, norm_m = NLR_TABEL[icao_upper]
     typen = NLR_TYPEN.get(icao_upper, [])
 
-    # Stap 3c: PM-categorie → handmatige invoer (standaard 500 m)
+    # Stap 3c: PM-categorie → geen norm; luchtvaartuig blijft buiten de toetsing
     if norm_m is None:
         log(
-            f"  {ph_code}: ICAO {icao_upper} → Appendix Categorie {categorie} "
-            f"(PM — norm niet vastgesteld in NLR-tabel)."
-        )
-        norm_m = _vraag_handmatige_norm(
-            f"Appendix Categorie {categorie} heeft geen vastgestelde afstandsnorm "
-            f"(PM). Beleidsregel adviseert grootste bekende norm.",
-            standaard_m=500,
+            f"  ✗ {ph_code}: ICAO {icao_upper} → Appendix Categorie {categorie} "
+            f"(PM — norm niet vastgesteld in NLR-tabel); "
+            f"geen afstandsnorm bepaald, luchtvaartuig buiten de toetsing gelaten."
         )
         signalen.append(
-            f"Appendix Categorie {categorie} heeft geen vastgestelde norm (PM). "
-            f"Norm {norm_m} m bepaald door vergunningverlener. "
-            f"Definitieve norm vereist beoordeling geluidsrapport."
+            f"✗ Voor het luchtvaartuig met kenmerk {ph_code} (ICAO {icao_upper}) is geen "
+            f"afstandsnorm herleidbaar: Appendix Categorie {categorie} heeft in de "
+            f"NLR-indelingslijst geen vastgestelde norm (PM). Dit luchtvaartuig is buiten "
+            f"de toetsing gelaten. De vergunningverlener bepaalt de norm op basis van het "
+            f"geluidsrapport, of houdt dit luchtvaartuig buiten de ontheffing."
         )
-        norm_bron = "pm_handmatig"
+        norm_bron = "pm_geen_norm"
     else:
         log(
             f"  {ph_code}: ICAO {icao_upper} → Appendix Categorie {categorie} "
@@ -520,14 +472,12 @@ def run(state_pad: str | Path) -> None:
     aanvraag  = state["aanvraag"]
 
     setup_logging()
-    _root_logger = logging.getLogger("tug.02_classificatie")
 
     luchtvaartuigen = aanvraag.get("luchtvaartuigen", [])
     if not luchtvaartuigen:
-        _root_logger.error("FOUT: aanvraag bevat geen luchtvaartuigen.")
+        _logger.error("FOUT: aanvraag bevat geen luchtvaartuigen.")
         sys.exit(1)
 
-    now = datetime.now()
     log = LogAccumulator("tug.02_classificatie")
 
     log(f"{'=' * 60}")
@@ -564,10 +514,15 @@ def run(state_pad: str | Path) -> None:
 
         resultaten.append(_classificeer_luchtvaartuig(lv, df, log))
 
-    # Stap 3d: norm_toepassing = maximum over alle luchtvaartuigen
+    # Stap 3d: norm_toepassing = maximum over de luchtvaartuigen met een herleidbare norm
+    zonder_norm = [r["registratie"] for r in resultaten if r["norm_m"] is None]
     normen = [r["norm_m"] for r in resultaten if r["norm_m"] is not None]
     if not normen:
-        log("\nFOUT: Geen geldige afstandsnorm bepaald voor enig luchtvaartuig.")
+        log(
+            "\nFOUT: Voor geen enkel opgegeven luchtvaartuig is een afstandsnorm "
+            f"herleidbaar ({', '.join(zonder_norm)}). "
+            "De ruimtelijke toetsing kan niet worden uitgevoerd."
+        )
         state_pad.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         sys.exit(1)
 
@@ -576,6 +531,11 @@ def run(state_pad: str | Path) -> None:
 
     log(f"\nStap 3d: norm_toepassing = {norm_toepassing} m "
         f"(maatgevend luchtvaartuig: {', '.join(maatgevend)})")
+    if zonder_norm:
+        log(
+            f"  ✗ Buiten de toetsing gelaten (geen herleidbare norm): "
+            f"{', '.join(zonder_norm)}"
+        )
 
     # Alle signalen samenvoegen voor logboek
     alle_signalen = [s for r in resultaten for s in r["signalen"]]
@@ -591,6 +551,7 @@ def run(state_pad: str | Path) -> None:
     state["classificatie"] = {
         "luchtvaartuigen":   resultaten,
         "norm_toepassing":   norm_toepassing,
+        "zonder_norm":       zonder_norm,
         "register_bestand":  REGISTER_ODS_PAD.name,
         "register_datum":    meta.get("download_datum", ""),
         "log_regels":        log.lines,
@@ -603,12 +564,13 @@ def run(state_pad: str | Path) -> None:
         "bericht":  (
             f"Classificatie voltooid: {len(resultaten)} luchtvaartuig(en), "
             f"norm_toepassing={norm_toepassing} m."
+            + (f" Zonder herleidbare norm: {', '.join(zonder_norm)}." if zonder_norm else "")
             + (f" {len(alle_signalen)} signalering(en)." if alle_signalen else "")
         ),
     })
 
     state_pad.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
-    logging.getLogger("tug.02_classificatie").info(f"State geschreven naar {state_pad}")
+    _logger.info(f"State geschreven naar {state_pad}")
 
 
 # ──────────────────────────────────────────────
@@ -618,7 +580,7 @@ def run(state_pad: str | Path) -> None:
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         setup_logging()
-        logging.getLogger("tug.02_classificatie").error(
+        _logger.error(
             "Gebruik: python tug_02_classificatie.py tug_state.json"
         )
         sys.exit(1)

@@ -1,0 +1,473 @@
+{
+  "omgeving": {
+    "python": "3.12.13",
+    "pakketten": {
+      "pandas": "3.0.3",
+      "numpy": "2.4.6",
+      "geopandas": "1.1.3",
+      "shapely": "2.1.2",
+      "pyproj": "3.7.2",
+      "pyogrio": "0.12.1",
+      "odfpy": "1.4.1",
+      "lxml": "6.1.0",
+      "reportlab": "4.5.1",
+      "pillow": "12.2.0",
+      "requests": "2.34.2",
+      "PROJ": "9.5.1",
+      "GDAL": "3.11.4"
+    }
+  },
+  "metingen": {
+    "transformaties": {
+      "punt_1_rd": [
+        136785.118,
+        455864.295
+      ],
+      "punt_2_rd": [
+        233769.855,
+        582063.583
+      ],
+      "punt_3_rd": [
+        160737.371,
+        383615.763
+      ],
+      "sluitfout_max_m": 0.000544
+    },
+    "geometrie": {
+      "cirkel_500m_aantal_punten": 65,
+      "cirkel_500m_oppervlak_m2": 784137,
+      "cirkel_500m_omtrek_m": 3140.331,
+      "cirkel_bbox_breedte_m": 1018.723,
+      "cirkel_bbox_hoogte_m": 981.024,
+      "vierkant_rd_zijden_m": [
+        682.781,
+        1112.685,
+        682.628,
+        1112.684
+      ],
+      "ringen_aantal": 1,
+      "ringen_punten": 5,
+      "ringen_leeg_bij_punt": true,
+      "afstanden_punt_polygoon_m": {
+        "nabij": 200.0,
+        "omvat": 0.0,
+        "ver": 1300.0
+      },
+      "punt_binnen_omvat": true,
+      "punt_binnen_nabij": false
+    },
+    "geopackage_io": {
+      "lagen": [
+        "gebieden"
+      ],
+      "aantal_features": 3,
+      "crs": "EPSG:28992",
+      "namen_terug": [
+        "nabij",
+        "omvat",
+        "ver"
+      ],
+      "oppervlakken_m2": {
+        "nabij": 40000,
+        "omvat": 250000,
+        "ver": 160000
+      },
+      "afstanden_m": {
+        "nabij": 200.0,
+        "omvat": 0.0,
+        "ver": 1300.0
+      },
+      "bbox_500m_namen": [
+        "nabij",
+        "omvat"
+      ]
+    },
+    "puntlocaties": {
+      "geldig_twee_punten": {
+        "ok": true,
+        "aantal": 2
+      },
+      "geldig_enkel_getal": {
+        "ok": true,
+        "aantal": 1
+      },
+      "te_ver_uit_elkaar": {
+        "ok": false,
+        "fout": "puntlocatie 1 en 2 liggen 11126 m uit elkaar; maximaal 100 m toegestaan"
+      },
+      "buiten_nederland": {
+        "ok": false,
+        "fout": "puntlocatie 1: (5.1214201, 52.0907374) ligt niet in Nederland (lat/lon verwisseld?)"
+      },
+      "lengte_mismatch": {
+        "ok": false,
+        "fout": "coord_lat (2) en coord_lon (1) bevatten niet evenveel waarden"
+      },
+      "lege_lijst": {
+        "ok": false,
+        "fout": "coord_lat/coord_lon mogen geen lege lijst zijn"
+      },
+      "geen_getal": {
+        "ok": false,
+        "fout": "puntlocatie 1: geen geldige coördinaten ('abc', 5.12)"
+      }
+    },
+    "datumlogica": {
+      "ruim_op_tijd": {
+        "ok": true,
+        "melding": "datum_ondertekening (2025-09-04) is 30 dag(en) vóór de vroegste vluchtdatum (2025-10-04) — voldoet aan de 28-dageneis."
+      },
+      "precies_28_dagen": {
+        "ok": true,
+        "melding": "datum_ondertekening (2025-09-06) is 28 dag(en) vóór de vroegste vluchtdatum (2025-10-04) — voldoet aan de 28-dageneis."
+      },
+      "een_dag_te_kort": {
+        "ok": false,
+        "melding": "datum_ondertekening (2025-09-07) ligt minder dan 28 dagen vóór de vroegste vluchtdatum (2025-10-04): verschil is 27 dag(en). De aanvraag dient minimaal 28 dagen vóór de eerste vluchtdatum te zijn ondertekend."
+      },
+      "na_de_vlucht": {
+        "ok": false,
+        "melding": "datum_ondertekening (2025-10-05) ligt ná de vroegste vluchtdatum (2025-10-04). Een aanvraag dient voor de vluchtdatum te zijn ondertekend."
+      },
+      "vroegste_van_meer": {
+        "ok": true,
+        "melding": "datum_ondertekening (2025-09-04) is 30 dag(en) vóór de vroegste vluchtdatum (2025-10-04) — voldoet aan de 28-dageneis."
+      },
+      "normalisatie_string": [
+        [
+          "2025-10-04"
+        ],
+        null
+      ],
+      "normalisatie_lijst": [
+        [
+          "2025-10-04"
+        ],
+        null
+      ],
+      "normalisatie_leeg": [
+        null,
+        "'datum_vlucht' mag geen lege lijst zijn"
+      ],
+      "normalisatie_getal": [
+        null,
+        "'datum_vlucht' moet een datum-string of een lijst van datums zijn, niet 'int'"
+      ],
+      "parse_geldig": [
+        "2025-10-04",
+        "None"
+      ],
+      "parse_ongeldig": [
+        "None",
+        "'veld' heeft geen geldige YYYY-MM-DD datum: '04-10-2025'"
+      ]
+    },
+    "normtabel": {
+      "aantal_icao_codes": 61,
+      "volledige_tabel": {
+        "A109": [
+          "015",
+          null
+        ],
+        "A119": [
+          "010",
+          250
+        ],
+        "A139": [
+          "012",
+          350
+        ],
+        "A169": [
+          "016",
+          null
+        ],
+        "A189": [
+          "014",
+          500
+        ],
+        "ALO2": [
+          "010",
+          250
+        ],
+        "ALO3": [
+          "010",
+          250
+        ],
+        "AS32": [
+          "014",
+          500
+        ],
+        "AS3B": [
+          "014",
+          500
+        ],
+        "AS50": [
+          "010",
+          250
+        ],
+        "AS55": [
+          "010",
+          250
+        ],
+        "AS65": [
+          "016",
+          null
+        ],
+        "B06": [
+          "010",
+          250
+        ],
+        "B06T": [
+          "010",
+          250
+        ],
+        "B105": [
+          "010",
+          250
+        ],
+        "B212": [
+          "012",
+          350
+        ],
+        "B214": [
+          "012",
+          350
+        ],
+        "B222": [
+          "015",
+          null
+        ],
+        "B407": [
+          "010",
+          250
+        ],
+        "B412": [
+          "012",
+          350
+        ],
+        "B430": [
+          "016",
+          null
+        ],
+        "B47G": [
+          "010",
+          250
+        ],
+        "BK17": [
+          "015",
+          null
+        ],
+        "BSTP": [
+          "014",
+          500
+        ],
+        "DRAG": [
+          "011",
+          150
+        ],
+        "E35X": [
+          "013",
+          null
+        ],
+        "EC20": [
+          "010",
+          250
+        ],
+        "EC30": [
+          "010",
+          250
+        ],
+        "EC35": [
+          "015",
+          null
+        ],
+        "EC45": [
+          "015",
+          null
+        ],
+        "EC55": [
+          "016",
+          null
+        ],
+        "EH10": [
+          "014",
+          500
+        ],
+        "EN28": [
+          "011",
+          150
+        ],
+        "EN48": [
+          "010",
+          250
+        ],
+        "EXPL": [
+          "015",
+          null
+        ],
+        "FREL": [
+          "014",
+          500
+        ],
+        "G2CA": [
+          "011",
+          150
+        ],
+        "GAZL": [
+          "010",
+          250
+        ],
+        "H269": [
+          "011",
+          150
+        ],
+        "H47": [
+          "014",
+          500
+        ],
+        "H500": [
+          "010",
+          250
+        ],
+        "H53": [
+          "014",
+          500
+        ],
+        "H60": [
+          "014",
+          500
+        ],
+        "H64": [
+          "014",
+          500
+        ],
+        "LYNX": [
+          "012",
+          350
+        ],
+        "MD52": [
+          "010",
+          250
+        ],
+        "MD60": [
+          "010",
+          250
+        ],
+        "MI2": [
+          "015",
+          null
+        ],
+        "MI26": [
+          "014",
+          500
+        ],
+        "MI8": [
+          "014",
+          500
+        ],
+        "NH90": [
+          "017",
+          null
+        ],
+        "PUMA": [
+          "014",
+          500
+        ],
+        "R22": [
+          "011",
+          150
+        ],
+        "R44": [
+          "011",
+          150
+        ],
+        "R66": [
+          "010",
+          250
+        ],
+        "S330": [
+          "010",
+          250
+        ],
+        "S360": [
+          "015",
+          null
+        ],
+        "S61": [
+          "014",
+          500
+        ],
+        "S65C": [
+          "016",
+          null
+        ],
+        "S76": [
+          "012",
+          350
+        ],
+        "UH1": [
+          "016",
+          null
+        ]
+      }
+    },
+    "config": {
+      "toetsing_label_160": "Toetsingsafstand TUG (150 m + 10 m = 160 m)",
+      "toetsing_label_510": "Toetsingsafstand TUG (500 m + 10 m = 510 m)",
+      "toetsing_toeslag_m": 10,
+      "marge_m": 150,
+      "max_punt_afstand_m": 100,
+      "n2000_marge_m": 500,
+      "nnn_marge_m": 500
+    },
+    "register_mechanisme": {
+      "bestand_leesbaar": true,
+      "heeft_rijen": true,
+      "registratiekolom_gevonden": true,
+      "icaokolom_gevonden": true,
+      "kolommen_zijn_tekst": true,
+      "opzoeking_geeft_resultaat": true,
+      "opzoeking_formaat_ok": true,
+      "lege_icao_geeft_none": true,
+      "onbekende_registratie_geeft_none": true
+    },
+    "classificatie_zonder_norm": {
+      "bekend": {
+        "norm_m": 150,
+        "norm_bron": "nlr_tabel",
+        "aantal_signalen": 0,
+        "signaal_rood": true
+      },
+      "pm_categorie": {
+        "norm_m": null,
+        "norm_bron": "pm_geen_norm",
+        "aantal_signalen": 1,
+        "signaal_rood": true
+      },
+      "onbekend": {
+        "norm_m": null,
+        "norm_bron": "niet_in_register",
+        "aantal_signalen": 1,
+        "signaal_rood": true
+      }
+    },
+    "signalering_structuur": {
+      "sleutels": [
+        "in_signaal",
+        "in_straal"
+      ],
+      "beide_zijn_lijst": true,
+      "itemsleutels": [
+        "afstand_m",
+        "naam",
+        "poly_rings",
+        "punten_binnen"
+      ],
+      "labels_vast": true,
+      "afstanden_hele_meters": true,
+      "afstanden_binnen_marge": true,
+      "ringen_aanwezig": true,
+      "binnen_heeft_afstand_nul": true
+    }
+  }
+}
