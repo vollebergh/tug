@@ -9,6 +9,15 @@ tug_state.json
 tmp/
 aanvragen.json
 
+# ── Uitkomst beveiligingscontrole (lokaal) ───
+.beveiligingscontrole.json
+.beveiligingscontrole-sbom.cdx.json
+
+# ── Gereedschapscaches ────────────────────────
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
 # ── Registerbestanden (ILT, LRK) ─────────────
 *.ods
 *.csv

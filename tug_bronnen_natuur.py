@@ -3,25 +3,34 @@ tug_bronnen_natuur.py -- Natuur-beschermingsgebieden (TUG-ontheffingen)
 
 Bevat signaleringsfuncties voor Natura 2000 (nationaal, on-the-fly via PDOK WFS)
 en Natuurnetwerk Nederland (provinciaal, lokale GeoPackage-cache vanuit ATOM-feed).
+
+Natura 2000 breekt de toetsing af als de WFS niet reageert: zonder die bron is
+"de puntlocatie ligt niet in een Natura 2000-gebied" geen uitspraak maar een gok.
+NNN blijft zichtbaar: lukt het verversen van de cache niet, dan wordt de oude
+GeoPackage tot NNN_NOODTERUGVAL_MAX_DAGEN gebruikt met een rode melding, en
+daarboven geldt NNN als niet getoetst.
 """
 
-import logging
 import json
+import logging
 from datetime import datetime
 
-import requests
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform as shapely_transform
 
+from tug_bronstatus import Bronregister
 from tug_config import (
     GEO_DIR,
+    MAX_BYTES_N2000, MAX_BYTES_NNN,
     N2000_WFS, N2000_WFS_LAYER, N2000_SIGNAAL_MARGE,
-    NNN_GML_URL, NNN_GPKG, NNN_META, NNN_TTL_DAGEN, NNN_SIGNAAL_MARGE,
+    NNN_GML_URL, NNN_GPKG, NNN_META, NNN_NOODTERUGVAL_MAX_DAGEN, NNN_TTL_DAGEN,
+    NNN_SIGNAAL_MARGE,
 )
 from tug_geo import (
     circle_bbox_wgs84, make_transformer,
     shapely_from_geojson_geom, transform_geom_to_rd, _geom_rings_wgs84,
 )
+from tug_http import BronFout, download_naar_bestand, haal_json
 from tug_types import LogFn, SignaalResultaat
 
 try:
@@ -47,7 +56,7 @@ def _punten_binnen(geom_rd: BaseGeometry, punt_rd: BaseGeometry) -> list[int]:
 
 def signaleer_natura2000(
     circle_rd: BaseGeometry, log: LogFn,
-    punten_rd: BaseGeometry | None = None,
+    punten_rd: BaseGeometry | None = None, *, bronnen: Bronregister,
 ) -> SignaalResultaat:
     """Query Natura 2000-gebieden via PDOK WFS (geen lokale cache, on-the-fly BBOX-query).
 
@@ -78,14 +87,12 @@ def signaleer_natura2000(
         "BBOX":         bbox_str,
     }
     try:
-        resp = requests.get(N2000_WFS, params=params, timeout=30)
-        if resp.status_code != 200:
-            log(f"  WAARSCHUWING: N2000 WFS gaf status {resp.status_code} — overgeslagen.")
-            return {"in_straal": [], "in_signaal": []}
-        kandidaten = resp.json().get("features", [])
-    except Exception as e:
-        log(f"  WAARSCHUWING: N2000 WFS mislukt: {e}")
-        return {"in_straal": [], "in_signaal": []}
+        data = haal_json(N2000_WFS, params=params, timeout=30, max_bytes=MAX_BYTES_N2000)
+    except BronFout as fout:
+        log(f"  FOUT: Natura 2000 WFS mislukt: {fout}")
+        bronnen.mislukt("natura2000", str(fout))
+        raise
+    kandidaten = data.get("features", [])
 
     log(f"  N2000: {len(kandidaten)} kandidaat/kandidaten in bbox.")
 
@@ -133,6 +140,7 @@ def signaleer_natura2000(
 
     log(f"  N2000: puntlocatie binnen {len(in_straal)} gebied(en) | "
         f"{len(in_signaal)} nabij (< {N2000_SIGNAAL_MARGE} m).")
+    bronnen.geraadpleegd("natura2000")
     return {"in_straal": in_straal, "in_signaal": in_signaal}
 
 
@@ -140,118 +148,71 @@ def signaleer_natura2000(
 # NNN — ATOM-download + lokale GeoPackage-cache
 # ──────────────────────────────────────────────
 
-def _nnn_gpkg_actueel():
-    """True als de GeoPackage bestaat én jonger is dan NNN_TTL_DAGEN."""
+def _nnn_ouderdom_dagen() -> int | None:
+    """Ouderdom van de GeoPackage in dagen (uit de meta, anders de bestandsdatum)."""
     if not NNN_GPKG.exists():
-        return False
+        return None
     if NNN_META.exists():
         try:
             meta = json.loads(NNN_META.read_text(encoding="utf-8"))
-            ts   = datetime.fromisoformat(meta.get("timestamp", ""))
-            return (datetime.now() - ts).days < NNN_TTL_DAGEN
+            return (datetime.now() - datetime.fromisoformat(meta.get("timestamp", ""))).days
         except (OSError, ValueError, TypeError) as fout:
             # Geen bruikbare meta: terugvallen op de bestandsdatum hieronder.
             _logger.debug(f"NNN-meta onbruikbaar ({fout}); bestandsdatum gebruikt")
-    leeftijd = (datetime.now() - datetime.fromtimestamp(NNN_GPKG.stat().st_mtime)).days
-    return leeftijd < NNN_TTL_DAGEN
+    return (datetime.now() - datetime.fromtimestamp(NNN_GPKG.stat().st_mtime)).days
 
 
-def _nnn_download_gml(gml_pad, log):
-    """Download NNN GML (~185 MB) met voortgangsindicator. Retourneert True bij succes."""
-    log("  NNN: GML downloaden van PDOK (~185 MB) ...")
-    try:
-        resp  = requests.get(NNN_GML_URL, stream=True, timeout=300)
-        resp.raise_for_status()
-        totaal     = int(resp.headers.get("content-length", 0))
-        ontvangen  = 0
-        totaal_mb  = totaal / (1024 * 1024) if totaal else 0
-        with gml_pad.open("wb") as fout:
-            for chunk in resp.iter_content(chunk_size=131072):
-                if chunk:
-                    fout.write(chunk)
-                    ontvangen += len(chunk)
-                    mb = ontvangen / (1024 * 1024)
-                    if totaal:
-                        pct = ontvangen / totaal * 100
-                        print(f"\r  NNN downloaden: {mb:.1f} MB / {totaal_mb:.1f} MB "
-                              f"({pct:.0f}%)   ", end="", flush=True)
-                    else:
-                        print(f"\r  NNN downloaden: {mb:.1f} MB ontvangen   ",
-                              end="", flush=True)
-        print()
-        log(f"  NNN: GML opgeslagen ({ontvangen / (1024 * 1024):.1f} MB).")
-        return True
-    except Exception as e:
-        print()
-        log(f"  FOUT: NNN GML downloaden mislukt: {e}")
-        return False
-
-
-def _nnn_maak_gpkg(log):
-    """Download NNN GML, converteer naar GeoPackage in EPSG:28992. True bij succes."""
+def _nnn_maak_gpkg(log: LogFn) -> None:
+    """Download NNN GML, converteer naar GeoPackage in EPSG:28992. Gooit BronFout."""
     if not _HAS_GEOPANDAS:
-        log("  FOUT: geopandas niet geïnstalleerd — NNN-verwerking overgeslagen. "
-            "Installeer via: pip install geopandas")
-        return False
+        raise BronFout("geopandas is niet geïnstalleerd")
 
     GEO_DIR.mkdir(parents=True, exist_ok=True)
     gml_pad = GEO_DIR / "_nnn_tmp.gml"
 
-    if not _nnn_download_gml(gml_pad, log):
-        return False
+    log("  NNN: GML downloaden van PDOK (~185 MB) ...")
+    ontvangen = download_naar_bestand(
+        NNN_GML_URL, gml_pad, max_bytes=MAX_BYTES_NNN, timeout=(30, 300),
+        label="NNN downloaden",
+    )
+    log(f"  NNN: GML opgeslagen ({ontvangen / (1024 * 1024):.1f} MB).")
 
-    # Laagnamen uitlezen (INSPIRE GML kan meerdere lagen bevatten)
     try:
+        # Laagnamen uitlezen (INSPIRE GML kan meerdere lagen bevatten)
         import pyogrio
         lagen = [rij[0] for rij in pyogrio.list_layers(str(gml_pad))]
         log(f"  NNN GML: {len(lagen)} laag/lagen gevonden: {lagen}")
         laag = lagen[0] if lagen else None
-    except Exception as e:
-        log(f"  NNN: lagen uitlezen mislukt ({e}) — eerste laag wordt gebruikt.")
-        laag = None
 
-    log("  NNN: GML inlezen met geopandas (INSPIRE GML, kan 1–3 minuten duren) ...")
-    try:
+        log("  NNN: GML inlezen met geopandas (INSPIRE GML, kan 1–3 minuten duren) ...")
         kwargs = {"layer": laag} if laag else {}
         gdf = gpd.read_file(str(gml_pad), **kwargs)
         log(f"  NNN: {len(gdf)} gebieden ingelezen | CRS = {gdf.crs}.")
-        log(f"  NNN: beschikbare kolommen: {list(gdf.columns)}")
-    except Exception as e:
-        log(f"  FOUT: NNN GML lezen mislukt: {e}")
-        gml_pad.unlink(missing_ok=True)
-        return False
+        if gdf.empty:
+            raise BronFout("de NNN-GML bevat geen gebieden")
 
-    log("  NNN: coördinaten omzetten naar RD New (EPSG:28992) ...")
-    try:
+        log("  NNN: coördinaten omzetten naar RD New (EPSG:28992) ...")
         gdf_rd = gdf.to_crs("EPSG:28992")
-    except Exception as e:
-        log(f"  FOUT: CRS-conversie EPSG:3035 → EPSG:28992 mislukt: {e}")
-        gml_pad.unlink(missing_ok=True)
-        return False
 
-    # Alleen geometrie: de INSPIRE-bron levert geen gebiedsnamen, maar provinciale
-    # categorie-aanduidingen ("bestaande natuur"), en bij de helft van de gebieden
-    # niets. Die zijn voor de signalering niet van belang.
-    gdf_out = gdf_rd[["geometry"]].copy()
+        # Alleen geometrie: de INSPIRE-bron levert geen gebiedsnamen, maar provinciale
+        # categorie-aanduidingen ("bestaande natuur"), en bij de helft van de gebieden
+        # niets. Die zijn voor de signalering niet van belang.
+        gdf_out = gdf_rd[["geometry"]].copy()
 
-    log(f"  NNN: GeoPackage opslaan ({NNN_GPKG.name}) ...")
-    try:
-        gdf_out.to_file(str(NNN_GPKG), driver="GPKG", layer="nnn")
+        log(f"  NNN: GeoPackage opslaan ({NNN_GPKG.name}) ...")
+        tijdelijk = NNN_GPKG.with_name(NNN_GPKG.name + ".part")
+        tijdelijk.unlink(missing_ok=True)
+        gdf_out.to_file(str(tijdelijk), driver="GPKG", layer="nnn")
+        tijdelijk.replace(NNN_GPKG)
         kb = NNN_GPKG.stat().st_size // 1024
         log(f"  NNN: GeoPackage opgeslagen ({kb} KB, {len(gdf_out)} gebieden).")
-    except Exception as e:
-        log(f"  FOUT: NNN GeoPackage opslaan mislukt: {e}")
+    except (OSError, RuntimeError, ValueError, KeyError) as fout:
+        raise BronFout(f"NNN-GML niet te verwerken ({fout.__class__.__name__}: {fout})") from fout
+    finally:
         gml_pad.unlink(missing_ok=True)
-        return False
-
-    try:
-        gml_pad.unlink()
         # GDAL schrijft een .gfs-schemabestand naast de GML; een achtergebleven
         # .gfs wordt bij een volgende run op een nieuwere GML opgedrongen.
         gml_pad.with_suffix(".gfs").unlink(missing_ok=True)
-        log("  NNN: tijdelijk GML-bestand verwijderd.")
-    except OSError as fout:
-        log(f"  WAARSCHUWING: tijdelijk GML-bestand niet verwijderd ({fout}).")
 
     NNN_META.write_text(
         json.dumps(
@@ -260,12 +221,36 @@ def _nnn_maak_gpkg(log):
         ),
         encoding="utf-8",
     )
+
+
+def _nnn_cache_gereed(log: LogFn, bronnen: Bronregister) -> bool:
+    """Zorg voor een bruikbare GeoPackage en meld de cachestatus. False = niet toetsbaar."""
+    ouderdom = _nnn_ouderdom_dagen()
+    if ouderdom is not None and ouderdom < NNN_TTL_DAGEN:
+        log(f"  NNN: GeoPackage actueel ({NNN_GPKG.name}, {ouderdom} dag(en) oud).")
+        bronnen.cache("nnn", ouderdom)
+        return True
+
+    log(f"  NNN: GeoPackage ontbreekt of ouder dan {NNN_TTL_DAGEN} dagen — bijwerken ...")
+    try:
+        _nnn_maak_gpkg(log)
+    except BronFout as fout:
+        if ouderdom is not None and ouderdom <= NNN_NOODTERUGVAL_MAX_DAGEN:
+            log(f"  FOUT: NNN bijwerken mislukt ({fout}) — verouderde GeoPackage van "
+                f"{ouderdom} dagen gebruikt.")
+            bronnen.verouderd("nnn", ouderdom, f"verversen mislukt: {fout}")
+            return True
+        log(f"  FOUT: NNN bijwerken mislukt ({fout}) — geen bruikbare GeoPackage; "
+            f"NNN niet getoetst.")
+        bronnen.mislukt("nnn", str(fout))
+        return False
+    bronnen.geraadpleegd("nnn", "GeoPackage opnieuw opgebouwd")
     return True
 
 
 def signaleer_nnn(
     circle_rd: BaseGeometry, log: LogFn,
-    punten_rd: BaseGeometry | None = None,
+    punten_rd: BaseGeometry | None = None, *, bronnen: Bronregister,
 ) -> SignaalResultaat:
     """Laad NNN GeoPackage (download + verwerk indien nodig) en check intersectie.
 
@@ -275,28 +260,14 @@ def signaleer_nnn(
                    maar raakt toetsingsstraal niet aan
     """
     if not _HAS_GEOPANDAS:
-        log("  NNN: geopandas niet beschikbaar — overgeslagen. "
-            "Installeer via: pip install geopandas")
+        log("  FOUT: geopandas niet beschikbaar — NNN niet getoetst. "
+            "Installeer de omgeving opnieuw met install.py.")
+        bronnen.mislukt("nnn", "geopandas is niet geïnstalleerd")
         return {"in_straal": [], "in_signaal": []}
 
     log("  NNN: cache-status controleren ...")
-    if not _nnn_gpkg_actueel():
-        log(f"  NNN: GeoPackage ontbreekt of ouder dan {NNN_TTL_DAGEN} dagen — bijwerken ...")
-        if not _nnn_maak_gpkg(log):
-            log("  NNN: aanmaken mislukt — NNN-signalering overgeslagen.")
-            return {"in_straal": [], "in_signaal": []}
-    else:
-        meta_str = ""
-        if NNN_META.exists():
-            try:
-                meta = json.loads(NNN_META.read_text(encoding="utf-8"))
-                ts   = datetime.fromisoformat(meta["timestamp"])
-                meta_str = (f", {meta.get('n_gebieden','?')} gebieden, "
-                            f"aangemaakt {ts.strftime('%Y-%m-%d')}")
-            except (OSError, KeyError, ValueError) as fout:
-                # Alleen de toelichting ontbreekt dan; de cache zelf is bruikbaar.
-                _logger.debug(f"NNN-meta niet leesbaar: {fout}")
-        log(f"  NNN: GeoPackage actueel ({NNN_GPKG.name}{meta_str}).")
+    if not _nnn_cache_gereed(log, bronnen):
+        return {"in_straal": [], "in_signaal": []}
 
     # Puntlocatie(s); bij meerdere geldt de dichtstbijzijnde (B03)
     punt_rd    = punten_rd if punten_rd is not None else circle_rd.centroid
@@ -309,8 +280,9 @@ def signaleer_nnn(
     try:
         gdf = gpd.read_file(str(NNN_GPKG), layer="nnn", bbox=(minx, miny, maxx, maxy))
         log(f"  NNN: {len(gdf)} kandidaat/kandidaten in bbox.")
-    except Exception as e:
-        log(f"  FOUT: NNN GeoPackage lezen mislukt: {e}")
+    except (OSError, RuntimeError, ValueError) as fout:
+        log(f"  FOUT: NNN GeoPackage lezen mislukt: {fout}")
+        bronnen.mislukt("nnn", f"GeoPackage niet leesbaar: {fout}")
         return {"in_straal": [], "in_signaal": []}
 
     in_straal  = []

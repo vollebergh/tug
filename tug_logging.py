@@ -50,6 +50,38 @@ def setup_logging(level: int = logging.INFO) -> None:
     root.setLevel(level)
 
 
+class Voortgang:
+    """Voortgangsteller op één terminalregel, buiten het logboek om.
+
+    Schrijft alleen als stdout een terminal is. In een pijp (de grafische schil)
+    of een omgeleid runlog zou elke stand anders aan de vorige vastplakken tot
+    één regel van tienduizenden tekens; daar blijft het stil en volstaat de
+    logregel die de stap na afloop schrijft.
+
+        with Voortgang() as voortgang:
+            for i, deel in enumerate(delen, 1):
+                voortgang(f"  downloaden: {i}/{len(delen)}")
+    """
+
+    def __init__(self) -> None:
+        self.actief      = sys.stdout.isatty()
+        self._geschreven = False
+
+    def __call__(self, tekst: str) -> None:
+        if self.actief:
+            sys.stdout.write(f"\r{tekst}   ")
+            sys.stdout.flush()
+            self._geschreven = True
+
+    def __enter__(self) -> "Voortgang":
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        if self._geschreven:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+
+
 class LogAccumulator:
     """Callable die berichten doorstuurt naar `logging` én accumuleert.
 

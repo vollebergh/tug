@@ -4,30 +4,106 @@ tug_bronnen_brt.py -- PDOK Location API + Overijssel WFS-bronnen
 Bevat signaleringsfuncties voor begraafplaatsen, maneges en luchthavens.
 Begraafplaatsen en maneges worden opgespoord via de PDOK Locatieserver (BRT-dataset);
 luchthavens via de WFS van GeoPortaal Overijssel.
+
+Elke functie meldt in het bronregister hoe de bevraging is afgelopen. Een
+mislukte zoekterm of polygoon laat de rest van de detectie doorlopen, maar de
+bron staat dan als niet volledig geraadpleegd in het rapport. De luchthavens zijn
+de uitzondering: zonder die bron is het verbod binnen 1.000 m niet te toetsen en
+breekt de toetsing af.
 """
 
 import logging
-import requests
+
 from shapely.geometry import Point
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import unary_union
 
+from tug_bronnen_geocode import pdok_location_haal_polygoon, reverse_geocode_adres_wpl
+from tug_bronstatus import Bronregister
 from tug_config import (
-    PDOK_LOCATION_API,
-    MANEGE_SIGNAAL_MARGE, BEGRAAFPLAATS_ZOEK_MARGE, MANEGE_ZOEKTERMEN,
-    LUCHTHAVEN_WFS, LUCHTHAVEN_WFS_LAYER, LUCHTHAVEN_GRENS_M, LUCHTHAVEN_SIGNAAL_M,
-    BRT_TERREIN_VLK_URL, BRT_TERREIN_PAGE_SIZE, BRT_TERREIN_MAX_PAGES,
+    BEGRAAFPLAATS_ZOEK_MARGE,
     BRT_DODENAKKER_ZOEK_MARGE,
+    BRT_TERREIN_MAX_PAGES,
+    BRT_TERREIN_PAGE_SIZE,
+    BRT_TERREIN_VLK_URL,
+    LUCHTHAVEN_GRENS_M,
+    LUCHTHAVEN_SIGNAAL_M,
+    LUCHTHAVEN_WFS,
+    LUCHTHAVEN_WFS_LAYER,
+    MANEGE_SIGNAAL_MARGE,
+    MANEGE_ZOEKTERMEN,
+    MAX_BYTES_API,
+    PDOK_LOCATION_API,
 )
 from tug_geo import (
-    circle_bbox_wgs84, make_transformer,
-    shapely_from_geojson_geom, transform_geom_to_rd, _geom_rings_wgs84,
+    _geom_rings_wgs84,
+    circle_bbox_wgs84,
+    make_transformer,
+    shapely_from_geojson_geom,
+    transform_geom_to_rd,
 )
-from tug_bronnen_geocode import reverse_geocode_adres_wpl, _pdok_location_haal_polygoon
+from tug_http import BronFout, haal_json
 from tug_types import LogFn, SignaalResultaat
 
-
 _logger = logging.getLogger("tug.bronnen_brt")
+
+# De `next`-link van de BRT OGC API mag alleen naar PDOK zelf verwijzen.
+_BRT_HOSTS = ("api.pdok.nl",)
+
+
+class _Storingen:
+    """Telt wat er binnen één detectie misging, voor één samenvattende melding."""
+
+    def __init__(self, n_zoektermen: int):
+        self.n_zoektermen = n_zoektermen
+        self.zoektermen: list[str] = []
+        self.geometrieen = 0
+        self.overig: list[str] = []
+
+    def meld(self, bronnen: Bronregister, sleutel: str) -> None:
+        delen = []
+        if self.zoektermen:
+            delen.append(f"{len(self.zoektermen)} van {self.n_zoektermen} zoektermen niet "
+                         f"bevraagd ({', '.join(self.zoektermen)})")
+        if self.geometrieen:
+            delen.append(f"geometrie van {self.geometrieen} kandidaat/kandidaten niet opgehaald")
+        delen += self.overig
+        if delen:
+            bronnen.mislukt(sleutel, "; ".join(delen))
+        else:
+            bronnen.geraadpleegd(sleutel)
+
+
+def _location_api_kandidaten(
+    zoekterm: str, collectie: str, bbox_str: str, log: LogFn, storingen: _Storingen,
+) -> list[dict]:
+    """Kandidaten voor één zoekterm; een mislukte bevraging wordt geteld en levert []."""
+    params = {"q": zoekterm, f"{collectie}[version]": "1", "bbox": bbox_str, "limit": 50}
+    try:
+        data = haal_json(PDOK_LOCATION_API, params=params, timeout=15, max_bytes=MAX_BYTES_API)
+    except BronFout as fout:
+        log(f"  FOUT: PDOK Location API mislukt voor '{zoekterm}': {fout}")
+        storingen.zoektermen.append(zoekterm)
+        return []
+    kandidaten = data.get("features", [])
+    log(f"  Zoekterm '{zoekterm}': {len(kandidaten)} kandidaten in bbox.")
+    return kandidaten
+
+
+def _polygoon_van(feat: dict, log: LogFn, storingen: _Storingen) -> dict | None:
+    """Geometrie achter een Location API-treffer, of None (een storing wordt geteld)."""
+    hrefs = feat.get("properties", {}).get("href", [])
+    if not hrefs:
+        return None
+    href = hrefs[0] if isinstance(hrefs, list) else hrefs
+    try:
+        poly_feat = pdok_location_haal_polygoon(href)
+    except BronFout as fout:
+        naam = feat.get("properties", {}).get("display_name", "?")
+        log(f"  FOUT: geometrie van '{naam}' niet opgehaald: {fout}")
+        storingen.geometrieen += 1
+        return None
+    return poly_feat.get("geometry") or None
 
 
 # ──────────────────────────────────────────────
@@ -36,7 +112,7 @@ _logger = logging.getLogger("tug.bronnen_brt")
 
 def signaleer_begraafplaatsen(
     circle_rd: BaseGeometry, straal: float, log: LogFn,
-    punten_rd: BaseGeometry | None = None
+    punten_rd: BaseGeometry | None = None, *, bronnen: Bronregister,
 ) -> SignaalResultaat:
     # Afstanden tot de dichtstbijzijnde puntlocatie (B03)
     centrum = punten_rd if punten_rd is not None else circle_rd.centroid
@@ -53,40 +129,22 @@ def signaleer_begraafplaatsen(
     gevonden_ids = set()
     definitief = []
     buiten_straal = []
+    zoektermen = ("begraafplaats", "erebegraafplaats")
+    storingen = _Storingen(len(zoektermen))
 
-    for zoekterm in ("begraafplaats", "erebegraafplaats"):
+    for zoekterm in zoektermen:
         # Begraafplaatsen staan in de collectie functioneel_gebied (niet gebouw)
-        params = {"q": zoekterm, "functioneel_gebied[version]": "1", "bbox": bbox_str, "limit": 50}
-        try:
-            resp = requests.get(PDOK_LOCATION_API, params=params, timeout=15)
-            if resp.status_code != 200:
-                log(f"  WAARSCHUWING: PDOK Location API gaf status {resp.status_code} "
-                    f"voor '{zoekterm}' — overgeslagen.")
-                continue
-            kandidaten = resp.json().get("features", [])
-        except Exception as e:
-            log(f"  WAARSCHUWING: PDOK Location API mislukt voor '{zoekterm}': {e}")
-            continue
-
-        log(f"  Zoekterm '{zoekterm}': {len(kandidaten)} kandidaten in bbox.")
-
+        kandidaten = _location_api_kandidaten(
+            zoekterm, "functioneel_gebied", bbox_str, log, storingen,
+        )
         for feat in kandidaten:
             feat_id = feat.get("id", "")
             if feat_id in gevonden_ids:
                 continue
             gevonden_ids.add(feat_id)
 
-            props = feat.get("properties", {})
-            naam  = props.get("display_name", "Onbekende begraafplaats")
-            hrefs = props.get("href", [])
-            if not hrefs:
-                continue
-            href = hrefs[0] if isinstance(hrefs, list) else hrefs
-
-            poly_feat = _pdok_location_haal_polygoon(href, log)
-            if not poly_feat:
-                continue
-            geom_dict = poly_feat.get("geometry")
+            naam      = feat.get("properties", {}).get("display_name", "Onbekende begraafplaats")
+            geom_dict = _polygoon_van(feat, log, storingen)
             if not geom_dict:
                 continue
 
@@ -106,7 +164,8 @@ def signaleer_begraafplaatsen(
             }
 
             if circle_rd.intersects(geom_rd):
-                item["adres"], item["pc_wpl"] = reverse_geocode_adres_wpl(lat_c, lon_c, log)
+                item["adres"], item["pc_wpl"] = reverse_geocode_adres_wpl(
+                    lat_c, lon_c, log, bronnen=bronnen)
                 log(f"  Treffer: '{naam}' — polygoon snijdt toetsingsafstand "
                     f"{straal:.0f} m (centroid op {afstand:.0f} m).")
                 definitief.append(item)
@@ -118,9 +177,9 @@ def signaleer_begraafplaatsen(
     log(f"\n  {len(definitief)} begraafplaats(en) snijden toetsingsafstand | "
         f"{len(buiten_straal)} in bbox maar buiten straal.")
 
-    # ── Fallback: BRT top10nl terrein_vlak (typelandgebruik = 'dodenakker') ──
+    # ── Aanvulling: BRT top10nl terrein_vlak (typelandgebruik = 'dodenakker') ──
     brt_definitief, brt_buiten = _haal_brt_dodenakkers(
-        circle_rd, straal, centrum, t_to_wgs, gevonden_ids, log,
+        circle_rd, straal, centrum, t_to_wgs, gevonden_ids, log, bronnen, storingen,
     )
     definitief    += brt_definitief
     buiten_straal += brt_buiten
@@ -131,6 +190,7 @@ def signaleer_begraafplaatsen(
 
     log(f"\n  Totaal: {len(definitief)} begraafplaats(en) snijden toetsingsafstand | "
         f"{len(buiten_straal)} in bbox maar buiten straal.")
+    storingen.meld(bronnen, "begraafplaatsen")
     return {"definitief": definitief, "buiten_straal": buiten_straal}
 
 
@@ -139,7 +199,8 @@ def signaleer_begraafplaatsen(
 # ──────────────────────────────────────────────
 
 def _haal_brt_dodenakkers(
-    circle_rd, straal, centrum, t_to_wgs, gevonden_ids, log,
+    circle_rd, straal, centrum, t_to_wgs, gevonden_ids, log, bronnen: Bronregister,
+    storingen: _Storingen,
 ):
     """Haalt begraafplaatsen op via BRT top10nl OGC API (terrein_vlak, typelandgebruik=dodenakker).
 
@@ -157,35 +218,41 @@ def _haal_brt_dodenakkers(
     alle_features = []
     next_url: str | None = None
     pagina = 0
+    nog_meer = False
 
     while pagina < BRT_TERREIN_MAX_PAGES:
         try:
             if next_url:
-                resp = requests.get(next_url, timeout=30)
+                data = haal_json(next_url, timeout=30, max_bytes=MAX_BYTES_API,
+                                 toegestane_hosts=_BRT_HOSTS)
             else:
-                resp = requests.get(
+                data = haal_json(
                     BRT_TERREIN_VLK_URL,
                     params={"f": "json", "bbox": bbox_str, "limit": BRT_TERREIN_PAGE_SIZE},
-                    timeout=30,
+                    timeout=30, max_bytes=MAX_BYTES_API, toegestane_hosts=_BRT_HOSTS,
                 )
-            if resp.status_code != 200:
-                log(f"  WAARSCHUWING: BRT terrein_vlak gaf status "
-                    f"{resp.status_code} — overgeslagen.")
-                break
-            data  = resp.json()
-            feats = data.get("features", [])
-            alle_features.extend(feats)
-            next_lnk = next(
-                (lnk.get("href") for lnk in data.get("links", []) if lnk.get("rel") == "next"),
-                None,
-            )
-            if not next_lnk or len(feats) < BRT_TERREIN_PAGE_SIZE:
-                break
-            next_url = next_lnk
-            pagina  += 1
-        except Exception as e:
-            log(f"  WAARSCHUWING: BRT terrein_vlak ophalen mislukt: {e}")
+        except BronFout as fout:
+            log(f"  FOUT: BRT terrein_vlak (pagina {pagina + 1}) niet opgehaald: {fout}")
+            storingen.overig.append(f"BRT-dodenakkers vanaf pagina {pagina + 1} niet opgehaald")
+            nog_meer = False
             break
+        feats = data.get("features", [])
+        alle_features.extend(feats)
+        next_lnk = next(
+            (lnk.get("href") for lnk in data.get("links", []) if lnk.get("rel") == "next"),
+            None,
+        )
+        if not next_lnk or len(feats) < BRT_TERREIN_PAGE_SIZE:
+            nog_meer = False
+            break
+        next_url = next_lnk
+        pagina  += 1
+        nog_meer = True
+
+    if nog_meer:
+        log(f"  FOUT: BRT terrein_vlak heeft meer dan {BRT_TERREIN_MAX_PAGES} pagina's; "
+            f"niet alle vlakken zijn opgehaald.")
+        storingen.overig.append(f"BRT-dodenakkers: meer dan {BRT_TERREIN_MAX_PAGES} pagina's")
 
     dodenakkers_raw = [
         f for f in alle_features
@@ -233,7 +300,8 @@ def _haal_brt_dodenakkers(
         }
 
         if circle_rd.intersects(geom_rd):
-            item["adres"], item["pc_wpl"] = reverse_geocode_adres_wpl(lat_c, lon_c, log)
+            item["adres"], item["pc_wpl"] = reverse_geocode_adres_wpl(
+                lat_c, lon_c, log, bronnen=bronnen)
             if not cluster_naam:
                 item["naam"] = (f"Begraafplaats, {item['pc_wpl']}"
                                 if item["pc_wpl"] else "Begraafplaats (BRT)")
@@ -309,7 +377,7 @@ def _cluster_dodenakker_geoms(
 
 def haal_maneges_pdok(
     circle_rd: BaseGeometry, straal: float, log: LogFn,
-    punten_rd: BaseGeometry | None = None
+    punten_rd: BaseGeometry | None = None, *, bronnen: Bronregister,
 ) -> SignaalResultaat:
     # Afstanden tot de dichtstbijzijnde puntlocatie (B03)
     centrum = punten_rd if punten_rd is not None else circle_rd.centroid
@@ -326,39 +394,18 @@ def haal_maneges_pdok(
     gevonden_ids = set()
     in_straal = []
     buiten_straal = []
+    storingen = _Storingen(len(MANEGE_ZOEKTERMEN))
 
     for zoekterm in MANEGE_ZOEKTERMEN:
-        params = {"q": zoekterm, "gebouw[version]": "1", "bbox": bbox_str, "limit": 50}
-        try:
-            resp = requests.get(PDOK_LOCATION_API, params=params, timeout=15)
-            if resp.status_code != 200:
-                log(f"  WAARSCHUWING: PDOK Location API gaf status {resp.status_code} "
-                    f"voor '{zoekterm}' — overgeslagen.")
-                continue
-            kandidaten = resp.json().get("features", [])
-        except Exception as e:
-            log(f"  WAARSCHUWING: PDOK Location API mislukt voor '{zoekterm}': {e}")
-            continue
-
-        log(f"  Zoekterm '{zoekterm}': {len(kandidaten)} kandidaten in bbox.")
-
+        kandidaten = _location_api_kandidaten(zoekterm, "gebouw", bbox_str, log, storingen)
         for feat in kandidaten:
             feat_id = feat.get("id", "")
             if feat_id in gevonden_ids:
                 continue
             gevonden_ids.add(feat_id)
 
-            props = feat.get("properties", {})
-            naam  = props.get("display_name", "Onbekende manege")
-            hrefs = props.get("href", [])
-            if not hrefs:
-                continue
-            href = hrefs[0] if isinstance(hrefs, list) else hrefs
-
-            poly_feat = _pdok_location_haal_polygoon(href, log)
-            if not poly_feat:
-                continue
-            geom_dict = poly_feat.get("geometry")
+            naam      = feat.get("properties", {}).get("display_name", "Onbekende manege")
+            geom_dict = _polygoon_van(feat, log, storingen)
             if not geom_dict:
                 continue
 
@@ -375,7 +422,8 @@ def haal_maneges_pdok(
             }
 
             if signaal_cirkel.intersects(geom_rd):
-                item["adres"], item["pc_wpl"] = reverse_geocode_adres_wpl(lat_c, lon_c, log)
+                item["adres"], item["pc_wpl"] = reverse_geocode_adres_wpl(
+                    lat_c, lon_c, log, bronnen=bronnen)
                 log(f"  Treffer ('{zoekterm}'): '{naam}' — polygoon snijdt aandachtsgebied "
                     f"(centroid op {afstand:.0f} m).")
                 in_straal.append(item)
@@ -386,6 +434,7 @@ def haal_maneges_pdok(
 
     log(f"  {len(in_straal)} manege(s) binnen aandachtsgebied | "
         f"{len(buiten_straal)} buiten aandachtsgebied.")
+    storingen.meld(bronnen, "maneges")
     return {"in_straal": in_straal, "buiten_straal": buiten_straal}
 
 
@@ -395,6 +444,7 @@ def haal_maneges_pdok(
 
 def signaleer_luchthavens(
     circle_rd: BaseGeometry, log: LogFn, punten_rd: BaseGeometry | None = None,
+    *, bronnen: Bronregister,
 ) -> SignaalResultaat:
     """Haalt luchthavenpuntlocaties op via GeoPortaal Overijssel WFS (on-the-fly, geen cache).
 
@@ -403,6 +453,10 @@ def signaleer_luchthavens(
                    → puntlocatie NIET toegestaan
       in_signaal — aanvraaglocatie op 1.000–2.000 m van luchthaven
                    → signalering
+
+    De laag bevat alle luchthavens van de provincie. Een mislukte bevraging, en
+    ook een antwoord zonder één enkele luchthaven, breekt de toetsing af: het
+    verbod binnen 1.000 m is dan niet getoetst.
     """
     punt_rd  = punten_rd if punten_rd is not None else circle_rd.centroid
     t_to_rd  = make_transformer("EPSG:4326", "EPSG:28992")
@@ -417,15 +471,17 @@ def signaleer_luchthavens(
         "SRSNAME":      "EPSG:4326",
     }
     try:
-        resp = requests.get(LUCHTHAVEN_WFS, params=params, timeout=30)
-        resp.raise_for_status()
-        fc = resp.json()
-    except Exception as e:
-        log(f"  FOUT: Luchthavens WFS ophalen mislukt: {e}")
-        return {"in_straal": [], "in_signaal": []}
+        fc = haal_json(LUCHTHAVEN_WFS, params=params, timeout=30, max_bytes=MAX_BYTES_API)
+    except BronFout as fout:
+        log(f"  FOUT: Luchthavens WFS ophalen mislukt: {fout}")
+        bronnen.mislukt("luchthavens", str(fout))
+        raise
 
     features = fc.get("features", [])
     log(f"  Luchthavens: {len(features)} locaties ontvangen.")
+    if not features:
+        log("  FOUT: de luchthavenlaag bevat geen enkele locatie — laag leeg of gewijzigd.")
+        bronnen.mislukt("luchthavens", "de WFS-laag gaf nul luchthavens terug")
 
     in_straal  = []
     in_signaal = []
@@ -475,4 +531,5 @@ def signaleer_luchthavens(
 
     log(f"  Luchthavens: {len(in_straal)} binnen {LUCHTHAVEN_GRENS_M} m | "
         f"{len(in_signaal)} binnen {LUCHTHAVEN_SIGNAAL_M} m.")
+    bronnen.geraadpleegd("luchthavens")
     return {"in_straal": in_straal, "in_signaal": in_signaal}

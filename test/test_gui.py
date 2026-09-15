@@ -19,7 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 pytest.importorskip("PySide6", reason="PySide6 niet geïnstalleerd")
 
-from PySide6.QtCore import QDate  # noqa: E402
+from PySide6.QtCore import QDate, QUrl  # noqa: E402
+from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import tug_gui as gui  # noqa: E402
@@ -32,6 +33,12 @@ LAT, LON = 52.46126, 6.496964
 @pytest.fixture(scope="module")
 def app():
     return QApplication.instance() or QApplication([])
+
+
+@pytest.fixture(autouse=True)
+def eigen_tmp(tmp_path, monkeypatch):
+    """De schil leegt tmp/ bij het starten en sluiten; niet de echte projectmap."""
+    monkeypatch.setattr(gui, "TMP_DIR", tmp_path / "tmp")
 
 
 @pytest.fixture
@@ -145,3 +152,46 @@ class TestAanvraag:
         aanvraag = venster.aanvraag()
         assert aanvraag["vlucht_udp"] is False
         assert aanvraag["vlucht_start"] and aanvraag["vlucht_einde"]
+
+
+class TestKaartBeveiliging:
+    """S-05: de ingebedde kaart laadt niets van buiten en navigeert nergens heen."""
+
+    def test_geen_uitzonderingen_voor_lokale_inhoud(self, venster):
+        instellingen = venster.kaart.web.settings()
+        assert not instellingen.testAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls)
+        assert not instellingen.testAttribute(
+            QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls)
+
+    def test_kaartpagina_bevat_leaflet_zelf(self):
+        html = gui.kaart_html({"titel": "</script><!--"})
+        assert "unpkg" not in html and "L.map(" in html
+        assert "__LEAFLET" not in html and "__CONFIG__" not in html
+        assert "</script><!--" not in html
+
+    def test_navigatie_na_laden_gaat_naar_de_systeembrowser(self, app, monkeypatch):
+        geopend = []
+        monkeypatch.setattr(gui.QDesktopServices, "openUrl",
+                            lambda url: geopend.append(url.toString()))
+        klik = QWebEnginePage.NavigationType.NavigationTypeLinkClicked
+        pagina = gui.KaartPagina()
+        assert pagina.acceptNavigationRequest(QUrl(gui.KAART_BASIS_URL), klik, True)
+        pagina.geladen = True
+        assert not pagina.acceptNavigationRequest(QUrl("https://leafletjs.com/"), klik, True)
+        assert not pagina.acceptNavigationRequest(QUrl("file:///etc/passwd"), klik, True)
+        assert geopend == ["https://leafletjs.com/"]
+
+
+class TestOpruimen:
+    """S-06: tijdelijke invoer blijft niet staan, ook niet na een harde afsluiting."""
+
+    def test_tmp_wordt_bij_het_starten_geleegd(self, app):
+        gui.TMP_DIR.mkdir(parents=True)
+        (gui.TMP_DIR / "achtergebleven.json").write_text("{}")
+        v = gui.Hoofdvenster()
+        v.close()
+        assert not list(gui.TMP_DIR.iterdir())
+
+    def test_dossierveld_vraagt_geen_persoonsnamen(self, venster):
+        assert "geen persoonsnamen" in venster.gegevens.veld_naam.placeholderText()

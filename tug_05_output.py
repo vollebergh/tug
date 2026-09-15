@@ -7,6 +7,12 @@ Leest tug_state.json (sectie ruimtelijk) en genereert:
     omgeving, elk als luchtfoto en topografisch)
   - Interactieve HTML-kaart
 
+Of een conclusie getrokken mag worden, leest dit rapport uit de bronstatus in de
+state (tug_bronstatus), niet uit het aantal treffers. Is een toetsingsrelevante
+bron niet volledig geraadpleegd, dan staat dat in rood bovenaan het rapport, in
+de betreffende paragraaf (zonder conclusie), boven de adressenlijst en als
+banner op de HTML-kaart.
+
 Gebruik: python tug_05_output.py tug_state.json
 """
 
@@ -32,8 +38,12 @@ from tug_config import (
     MANEGE_ZOEKTERMEN,
     _PDF_MARGIN_MM, _PDF_PAGE_W_MM, _PDF_PAGE_H_MM,
 )
-from tug_geo import naam_slug
+from tug_bronstatus import (
+    BRONNEN, CACHE, MISLUKT, beschrijf, is_volledig, onvolledige_toetsing, uitkomsten_uit_state,
+)
+from tug_geo import json_voor_script, naam_slug
 from tug_logging import LogAccumulator, setup_logging
+from tug_opslag import schrijf_state
 
 _logger = logging.getLogger("tug.05_output")
 
@@ -163,6 +173,8 @@ class _ProcesLogBuilder:
         self.straal     = self.ruimtelijk.get("straal", 0)
         self.datum_l    = self.ruimtelijk.get("datum_leesbaar", "")
         self.rlog       = self.ruimtelijk.get("log_regels", [])
+        self.bronstatus = {u["sleutel"]: u for u in uitkomsten_uit_state(state)}
+        self.onvolledig = onvolledige_toetsing(state)
 
         self.signaal_straal = self.straal + MANEGE_SIGNAAL_MARGE
         self._y             = 0.0
@@ -253,6 +265,33 @@ class _ProcesLogBuilder:
                 rood = "TREFFER" in rs or "CONFLICT" in rs or "✗" in rs
                 self.regel(rs, rood=rood, ind=8)
 
+    # ── Bronstatus ───────────────────────────
+
+    def niet_getoetst(self, sleutel):
+        """True als de bron niet is geraadpleegd — of als dat niet is vastgelegd."""
+        uitkomst = self.bronstatus.get(sleutel)
+        return uitkomst is None or uitkomst.get("status") == MISLUKT
+
+    def bronregels(self, *sleutels):
+        """Per bron: grijs bij een lokale kopie, rood als zij niet volledig is geraadpleegd."""
+        for sleutel in sleutels:
+            uitkomst = self.bronstatus.get(sleutel)
+            if uitkomst is None:
+                self.regel(f"⚠ {BRONNEN[sleutel].label}: geen bronstatus vastgelegd — "
+                           f"niet aantoonbaar geraadpleegd.", rood=True)
+            elif not is_volledig(uitkomst):
+                self.regel(f"⚠ {beschrijf(uitkomst)}", rood=True)
+            elif uitkomst.get("status") == CACHE:
+                self.regel(f"Bronstatus: {beschrijf(uitkomst)}")
+
+    def geen_conclusie(self, onderwerp):
+        self.regel(
+            f"Geen conclusie: {onderwerp} is niet (volledig) getoetst omdat de bron niet "
+            f"volledig is geraadpleegd. Dat hier niets wordt gemeld, betekent niet dat er "
+            f"niets is.",
+            rood=True,
+        )
+
     # ── Paragrafen ───────────────────────────
 
     def _h0_opening(self):
@@ -269,6 +308,29 @@ class _ProcesLogBuilder:
             f"{model_zin}",
             kleur=self.KLEUR_MUT,
         )
+        self.lege()
+        if self.onvolledig:
+            self.kop("⚠ Onvolledige toetsing", rood=True)
+            self.regel(
+                "De volgende bronnen zijn niet (volledig) geraadpleegd. Voor wat zij hadden "
+                "moeten opleveren trekt dit rapport geen conclusie; de vergunningverlener "
+                "beoordeelt of de aanvraag opnieuw moet worden doorgerekend.",
+                rood=True, ind=8,
+            )
+            for uitkomst in self.onvolledig:
+                self.regel(f"• {beschrijf(uitkomst)}", rood=True, ind=12)
+        elif self.bronstatus:
+            self.regel("Alle bronnen die de toetsing bepalen zijn geraadpleegd; per paragraaf "
+                       "staat of een lokale kopie is gebruikt.")
+        else:
+            self.kop("⚠ Bronstatus ontbreekt", rood=True)
+            self.regel("Deze state bevat geen bronstatus; niet vast te stellen of alle "
+                       "bronnen zijn geraadpleegd.", rood=True, ind=8)
+        weergave = [u for u in uitkomsten_uit_state(self.state)
+                    if not u.get("toetsingsrelevant", True) and not is_volledig(u)]
+        for uitkomst in weergave:
+            self.schrijf(f"Weergave (geen invloed op de toetsing): {beschrijf(uitkomst)}",
+                         kleur=self.KLEUR_MUT)
 
     def _h1_input(self):
         self.kop("1. Inputparameters aanvraag")
@@ -344,6 +406,7 @@ class _ProcesLogBuilder:
             "pm_geen_norm":           "PM-categorie, geen norm vastgesteld in NLR-tabel",
             "fallback_150m":          "niet in NLR-tabel, beleidsregel 150 m toegepast",
             "niet_in_register":       "niet gevonden in ILT luchtvaartregister",
+            "geen_registratie":       "registratiekenmerk ontbreekt in de aanvraag",
         }
         zonder_norm = []
         for lv in lv_resultaten:
@@ -372,7 +435,12 @@ class _ProcesLogBuilder:
         if zonder_norm:
             self.kop("⚠ Luchtvaartuig zonder herleidbare afstandsnorm", rood=True)
             for kenmerk, bron, icao, cat in zonder_norm:
-                if bron == "niet_in_register":
+                if bron == "geen_registratie":
+                    reden = (
+                        "Bij een van de opgegeven luchtvaartuigen ontbreekt het "
+                        "registratiekenmerk; er is geen register te raadplegen."
+                    )
+                elif bron == "niet_in_register":
                     reden = (
                         f"Het luchtvaartuig met kenmerk {kenmerk} is niet gevonden in het "
                         f"ILT luchtvaartuigregister (registratie mogelijk in een ander land "
@@ -413,7 +481,9 @@ class _ProcesLogBuilder:
                     f"gedownload op {reg_d.strftime('%d-%m-%Y')}."
                 )
             except (ValueError, TypeError):
-                pass
+                self.regel(f"ILT-register: {self.classif.get('register_bestand', '—')}, "
+                           f"downloaddatum onleesbaar ({reg_datum!r}).")
+        self.bronregels("ilt_register")
 
     def _h3_gps_rd(self):
         self.kop("3. GPS/RD-omzetting en toetsingsafstanden")
@@ -464,6 +534,10 @@ class _ProcesLogBuilder:
             f"puntlocatie liggen (nabij)."
         )
         self.lege()
+        self.bronregels("natura2000")
+        if self.niet_getoetst("natura2000"):
+            self.geen_conclusie("Natura 2000")
+            return
         if n2000_in:
             self.regel(
                 f"TREFFER — puntlocatie ligt binnen {len(n2000_in)} Natura 2000-gebied(en):",
@@ -501,12 +575,10 @@ class _ProcesLogBuilder:
             "de NNN-cache dit niet signaleert, wordt de NNN-treffer automatisch aangenomen."
         )
         self.lege()
-        nnn_cache = next(
-            (r.strip() for r in self.rlog if "GeoPackage" in r and "NNN" in r and "actueel" in r),
-            None,
-        )
-        if nnn_cache:
-            self.regel(f"Cachestatus: {nnn_cache}")
+        self.bronregels("nnn")
+        if self.niet_getoetst("nnn"):
+            self.geen_conclusie("het Natuurnetwerk Nederland")
+            return
         if nnn_in:
             self.regel(
                 f"TREFFER — puntlocatie ligt binnen {len(nnn_in)} NNN-gebied(en):", rood=True
@@ -527,6 +599,8 @@ class _ProcesLogBuilder:
 
     def _h6_bag(self):
         self.kop("6. Inventarisatie verblijfsobjecten (BAG WFS v2.0)")
+        self.bronregels("bag_verblijfsobjecten", "bag_gevelcheck", "adresaanvulling",
+                        "gevelcontouren")
 
         self.subkop("Stap 1 — Bounding box en BAG-query")
         self.schrijf(
@@ -594,6 +668,9 @@ class _ProcesLogBuilder:
             f"snijdt of overlapt de polygoon de toetsingsafstand ({self.straal:.0f} m), "
             f"dan is de begraafplaats wettelijk relevant."
         )
+        self.bronregels("begraafplaatsen")
+        if self.niet_getoetst("begraafplaatsen"):
+            self.geen_conclusie("de aanwezigheid van begraafplaatsen")
         self.logregels(["Stap 7"], stop_markers=["Stap 8"])
 
     def _h8_kdv(self):
@@ -606,6 +683,9 @@ class _ProcesLogBuilder:
             "De koppeling maakt gebruik van de BAG-eigenschappen identificatie "
             "en pandidentificatie."
         )
+        self.bronregels("lrk")
+        if self.niet_getoetst("lrk"):
+            self.geen_conclusie("de aanwezigheid van kinderopvanglocaties")
         self.logregels(["Stap 8", "LRK CSV", "KDV"], stop_markers=["Stap 9"])
 
     def _h9_scholen(self):
@@ -627,6 +707,9 @@ class _ProcesLogBuilder:
             "De GeoJSON-bestanden worden lokaal gecachet en gehasht (SHA-256 van de inhoud); "
             "bij een gewijzigde hash wordt het bestand opnieuw gedownload en verwerkt."
         )
+        self.bronregels("duo")
+        if self.niet_getoetst("duo"):
+            self.geen_conclusie("de aanwezigheid van scholen")
         scholen_in    = self.ruimtelijk.get("scholen_in_straal", [])
         scholen_marge = self.ruimtelijk.get("scholen_in_marge", [])
         if scholen_in or scholen_marge:
@@ -643,6 +726,9 @@ class _ProcesLogBuilder:
             f"(aandachtsgebied). Gevonden locaties worden getoetst op de toetsingsafstand "
             f"({self.straal:.0f} m) en het aandachtsgebied ({self.signaal_straal:.0f} m)."
         )
+        self.bronregels("maneges")
+        if self.niet_getoetst("maneges"):
+            self.geen_conclusie("de aanwezigheid van maneges")
         self.logregels(["Stap 10:"], stop_markers=["Stap 10b"])
 
     def _h11_luchthavens(self):
@@ -656,6 +742,9 @@ class _ProcesLogBuilder:
             f"NIET TOEGESTAAN. Luchthavens op {LUCHTHAVEN_GRENS_M}–{LUCHTHAVEN_SIGNAAL_M} m "
             f"worden als signalering opgenomen."
         )
+        self.bronregels("luchthavens")
+        if self.niet_getoetst("luchthavens"):
+            self.geen_conclusie("de afstand tot luchthavens")
         self.logregels(["Stap 10b", "Luchthaven"], stop_markers=["Stap 11"])
 
     def _h12_synthese(self):
@@ -688,6 +777,14 @@ class _ProcesLogBuilder:
         self.regel(f"Margeband (alleen op kaart, niet in adressenlijst):  {marge_n}")
         self.regel(f"Aandachtslocaties (maneges, luchthavens):           {aandacht_n}")
         self.regel(f"Overig (weergave op kaart):                         {overig_n}")
+        if self.onvolledig:
+            self.lege()
+            self.regel(
+                "Toetsing onvolledig — niet (volledig) geraadpleegd: "
+                + "; ".join(u.get("label", u.get("sleutel", "?")) for u in self.onvolledig)
+                + ". Zie het rode blok bovenaan dit rapport.",
+                rood=True,
+            )
 
     def render(self):
         self._kop_teken()
@@ -717,7 +814,8 @@ def _pdf_proceslog(c, state):
 # ──────────────────────────────────────────────
 
 def _pdf_adressen_pagina(c, datum_leesbaar, lat, lon, straal,
-                          wettelijk, aandacht, overig, n2000=None, punten=None):
+                          wettelijk, aandacht, overig, n2000=None, punten=None,
+                          onvolledig=None):
     from reportlab.lib.pagesizes import landscape as _landscape
 
     LS             = _landscape(A4)
@@ -818,6 +916,20 @@ def _pdf_adressen_pagina(c, datum_leesbaar, lat, lon, straal,
         set_y(y() - LINE_H)
 
     _ROOD = (0.80, 0.05, 0.05)
+
+    # Onvolledige toetsing — bovenaan, zodat de lijst niet als compleet wordt gelezen
+    if onvolledig:
+        check_pagina(LINE_H * 4)
+        c.setFont(FONT_BOLD, 9)
+        c.setFillColorRGB(*_ROOD)
+        c.drawString(x, y(), "⚠ Onvolledige toetsing — deze lijst is mogelijk niet compleet")
+        set_y(y() - LINE_H)
+        c.setFont(FONT, FS)
+        for uitkomst in onvolledig:
+            check_pagina()
+            c.drawString(x + 8, y(), afkap(f"• {beschrijf(uitkomst)}", CONTENT_W - 8))
+            set_y(y() - LINE_H)
+        set_y(y() - LINE_H)
 
     # N2000 — bovenaan, alleen als puntlocatie binnen gebied ligt
     n2000_in_straal = (n2000 or {}).get("n2000_in_straal", [])
@@ -936,7 +1048,8 @@ def genereer_pdf(state, log):
         "nnn_in_signaal":   ruimtelijk.get("nnn_in_signaal", []),
     }
     _pdf_adressen_pagina(c, datum_leesbaar, lat, lon, straal, wettelijk, aandacht, overig,
-                         n2000=signaleringen, punten=ruimtelijk.get("punten"))
+                         n2000=signaleringen, punten=ruimtelijk.get("punten"),
+                         onvolledig=onvolledige_toetsing(state))
 
     c.setPageSize(A4)
     x0_pt = _PDF_MARGIN_MM * mm
@@ -977,21 +1090,27 @@ def genereer_html(state, log):
     html_titel     = (f"TUG-ontheffingen — Kaart ({html_escape(naam)})" if naam
                       else "TUG-ontheffingen — Kaart")
 
-    data_js = (
-        f"var CENTER_LAT={lat};\n"
-        f"var CENTER_LON={lon};\n"
-        f"var STRAAL={straal};\n"
-        f"var TOETSING_LABEL={json.dumps(toetsing_label(straal))};\n"
-        f"var SIGNAAL_STRAAL={signaal_straal};\n"
-        f"var PUNTEN={json.dumps(ruimtelijk.get('punten') or [[lat, lon]])};\n"
-        f"var TOETSING_RINGS={json.dumps(ruimtelijk.get('toetsing_rings', []))};\n"
-        f"var SIGNAAL_RINGS={json.dumps(ruimtelijk.get('signaal_rings', []))};\n"
-        f"var WORKFLOW_VERSIE={json.dumps(VERSION)};\n"
-        f"var MANEGE_SIGNAAL_MARGE={MANEGE_SIGNAAL_MARGE};\n"
-        f"var DATUM='{datum_leesbaar}';\n"
-        f"var MARKERS={json.dumps(markers, ensure_ascii=False).replace('</', r'<\/')};\n"
-        f"var POLYGONEN={json.dumps(polygonen, ensure_ascii=False).replace('</', r'<\/')};\n"
-    )
+    # Alles wat in het scriptblok komt, gaat door json_voor_script: ook eigen
+    # waarden, zodat er één regel geldt en geen uitzondering onopgemerkt blijft.
+    waarden = {
+        "CENTER_LAT":           lat,
+        "CENTER_LON":           lon,
+        "STRAAL":               straal,
+        "TOETSING_LABEL":       toetsing_label(straal),
+        "SIGNAAL_STRAAL":       signaal_straal,
+        "PUNTEN":               ruimtelijk.get("punten") or [[lat, lon]],
+        "TOETSING_RINGS":       ruimtelijk.get("toetsing_rings", []),
+        "SIGNAAL_RINGS":        ruimtelijk.get("signaal_rings", []),
+        "WORKFLOW_VERSIE":      VERSION,
+        "MANEGE_SIGNAAL_MARGE": MANEGE_SIGNAAL_MARGE,
+        "DATUM":                datum_leesbaar,
+        "MARKERS":              markers,
+        "POLYGONEN":            polygonen,
+        "ONVOLLEDIG":           [u.get("label", u.get("sleutel", "?"))
+                                 for u in onvolledige_toetsing(state)],
+    }
+    data_js = "".join(f"var {naam}={json_voor_script(waarde)};\n"
+                      for naam, waarde in waarden.items())
 
     sjabloon = (GUI_DIR / "kaart_export.html").read_text(encoding="utf-8")
     html = (sjabloon
@@ -1046,7 +1165,7 @@ def run(state_pad: str | Path) -> None:
         "bericht":  "PDF en HTML-kaart gegenereerd.",
     })
 
-    state_pad.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    schrijf_state(state_pad, state)
     log("Verwerking voltooid.")
 
 

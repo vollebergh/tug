@@ -1,0 +1,28 @@
+# Controles vóór elke commit (installeren: .venv/bin/pre-commit install).
+#
+# Beide hooks gebruiken gereedschap dat al vastligt, in plaats van dat pre-commit
+# zelf ongecontroleerde versies ophaalt:
+# - ruff uit de projectomgeving (.venv, gehasht via requirements-dev.txt), met de
+#   regels uit pyproject.toml — inclusief de beveiligingsregels (S);
+# - gitleaks van het PATH (release-binary, checksum gecontroleerd bij installatie;
+#   zie README §19.5).
+#
+# De volledige controle — ook pip-audit, bandit en mypy — draait met
+# beveiligingscontrole.py; die hoort maandelijks en vóór een productierun.
+
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff (stijl en beveiligingsregels)
+        entry: .venv/bin/ruff check --force-exclude
+        language: unsupported
+        types: [python]
+        require_serial: true
+
+      - id: gitleaks
+        name: gitleaks (geheimen in de te committen wijzigingen)
+        entry: gitleaks git --pre-commit --staged --redact --no-banner --verbose .
+        language: unsupported
+        pass_filenames: false
+        always_run: true

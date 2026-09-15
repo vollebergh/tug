@@ -8,6 +8,7 @@ waarde die op twee plaatsen staat, loopt vroeg of laat uiteen.
 
 import subprocess
 from pathlib import Path
+from typing import Any
 
 # ──────────────────────────────────────────────
 # Versie- en paddefinities
@@ -22,12 +23,13 @@ def _workflow_versie() -> str:
     """
     root = Path(__file__).parent
     try:
-        commit = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"], cwd=root,
+        # git van het PATH met vaste argumenten; geen invoer van buiten.
+        commit = subprocess.run(  # noqa: S603
+            ["git", "rev-parse", "--short", "HEAD"], cwd=root,  # noqa: S607
             capture_output=True, text=True, check=True, timeout=10,
         ).stdout.strip()
-        wijzigingen = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=no"], cwd=root,
+        wijzigingen = subprocess.run(  # noqa: S603
+            ["git", "status", "--porcelain", "--untracked-files=no"], cwd=root,  # noqa: S607
             capture_output=True, text=True, check=True, timeout=10,
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError):
@@ -77,6 +79,48 @@ def toetsing_label(straal: float) -> str:
     """Kaartlabel voor de toetsingsafstand, met de Lden-afstand en de toeslag apart zichtbaar."""
     lden = straal - TOETSING_TOESLAG_M
     return f"Toetsingsafstand TUG ({lden:.0f} m + {TOETSING_TOESLAG_M} m = {straal:.0f} m)"
+
+
+# ──────────────────────────────────────────────
+# Externe bronnen — toegestane hosts en grenzen
+# ──────────────────────────────────────────────
+
+# Alle uitgaande aanroepen gaan via tug_http en alleen over https naar deze hosts
+# (of een subdomein ervan). Een verwijzing in een bronantwoord naar een andere host
+# wordt niet gevolgd, ook niet na een redirect.
+BRON_HOSTS = (
+    "service.pdok.nl",
+    "api.pdok.nl",
+    "geodata.nationaalgeoregister.nl",
+    "services.geodataoverijssel.nl",
+    "onderwijsdata.duo.nl",
+    "ilent.nl",
+    "www.landelijkregisterkinderopvang.nl",
+)
+
+# Maximale omvang per antwoord, ruim twee keer de gemeten omvang (september 2026).
+# Een bron die meer terugstuurt wordt afgebroken in plaats van ingelezen.
+MAX_BYTES_API       = 25 * 1024 * 1024    # WFS-pagina's en JSON-API's
+MAX_BYTES_N2000     = 50 * 1024 * 1024    # N2000-polygonen kunnen groot zijn
+MAX_BYTES_TEGEL     = 2 * 1024 * 1024     # kaarttegel (gemeten 20–300 KB)
+MAX_BYTES_ILT       = 10 * 1024 * 1024    # luchtvaartuigregister (1,3 MB)
+MAX_BYTES_LRK       = 30 * 1024 * 1024    # LRK-export (12 MB)
+MAX_BYTES_DUO       = 10 * 1024 * 1024    # grootste DUO-dump (2,3 MB)
+MAX_BYTES_NNN       = 400 * 1024 * 1024   # NNN-GML (185 MB)
+
+# Noodterugval: kan een verlopen cache niet worden ververst, dan wordt de oude
+# versie nog tot deze ouderdom gebruikt — met een rode melding in het rapport en
+# exitcode 2. Daarboven geldt de bron als niet geraadpleegd.
+ILT_NOODTERUGVAL_MAX_DAGEN = 90
+LRK_NOODTERUGVAL_MAX_DAGEN = 30
+DUO_NOODTERUGVAL_MAX_DAGEN = 365
+NNN_NOODTERUGVAL_MAX_DAGEN = 365
+
+# Uitkomst van de laatste beveiligingscontrole (beveiligingscontrole.py). De
+# pipeline waarschuwt bij de start als die ontbreekt, bevindingen heeft of ouder
+# is dan BEVEILIGINGSCONTROLE_MAX_DAGEN.
+BEVEILIGINGSCONTROLE_PAD      = _ROOT / ".beveiligingscontrole.json"
+BEVEILIGINGSCONTROLE_MAX_DAGEN = 31
 
 
 # ──────────────────────────────────────────────
@@ -180,7 +224,7 @@ SCHOLEN_META           = GEO_DIR / "duo_scholen.meta.json"
 
 # Achtergrondkaarten (PDOK, open data, geen API-key). Satelliet is primair (B04);
 # topografisch is aanvulling, met extra contrast bij het renderen (B05).
-KAART_ACHTERGRONDEN = {
+KAART_ACHTERGRONDEN: dict[str, dict[str, Any]] = {
     "satelliet": {
         "titel": "luchtfoto",
         "url": "https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg",

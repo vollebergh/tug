@@ -19,22 +19,23 @@ import io
 import json
 import logging
 import re
-from urllib.parse import urlparse
 import sys
 import zipfile
 from datetime import datetime, timedelta
 from pathlib import Path
+from urllib.parse import urljoin
 
 import pandas as pd
-import requests
 
+from tug_bronstatus import Bronregister, ToetsingAfgebroken
+from tug_config import ILT_NOODTERUGVAL_MAX_DAGEN, MAX_BYTES_ILT, VERSION
+from tug_http import BronFout, bestaat, haal, veilige_bron_url
 from tug_logging import LogAccumulator, setup_logging
+from tug_opslag import schrijf_state
 
 # ──────────────────────────────────────────────
 # Configuratie
 # ──────────────────────────────────────────────
-
-from tug_config import VERSION
 
 GEO_DIR           = Path(__file__).parent / "geo"
 REGISTER_ODS_PAD  = GEO_DIR / "luchtvaartuigregister_ilt.ods"
@@ -188,17 +189,31 @@ def _schrijf_meta(meta):
 _ODS_MAX_BYTES = 50 * 1024 * 1024  # 50 MB uitgecomprimeerd (zip-bom beveiliging)
 
 
+_ILT_HOSTS = ("ilent.nl",)
+
+
 def _ods_data_hash(ods_bytes):
-    """SHA-256 van content.xml in het ODS ZIP-archief (negeer metadata)."""
-    with zipfile.ZipFile(io.BytesIO(ods_bytes)) as z:
-        totaal = sum(i.file_size for i in z.infolist())
-        if totaal > _ODS_MAX_BYTES:
-            raise ValueError(
-                f"ODS-archief te groot na uitpakken ({totaal:,} bytes > "
-                f"{_ODS_MAX_BYTES:,}) — mogelijk zip-bom."
-            )
-        content_xml = z.read("content.xml")
+    """SHA-256 van content.xml in het ODS ZIP-archief (negeer metadata). Gooit BronFout."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(ods_bytes)) as z:
+            totaal = sum(i.file_size for i in z.infolist())
+            if totaal > _ODS_MAX_BYTES:
+                raise BronFout(
+                    f"ODS-archief te groot na uitpakken ({totaal:,} bytes > "
+                    f"{_ODS_MAX_BYTES:,}) — mogelijk zip-bom."
+                )
+            content_xml = z.read("content.xml")
+    except (zipfile.BadZipFile, KeyError) as fout:
+        raise BronFout(f"gedownload register is geen geldig ODS-bestand ({fout})") from fout
     return hashlib.sha256(content_xml).hexdigest()
+
+
+def _ouderdom_register(meta) -> int:
+    """Dagen sinds de laatste geslaagde download (meta), anders sinds de bestandsdatum."""
+    try:
+        return (datetime.now() - datetime.fromisoformat(meta["download_datum"])).days
+    except (KeyError, TypeError, ValueError):
+        return (datetime.now() - datetime.fromtimestamp(REGISTER_ODS_PAD.stat().st_mtime)).days
 
 
 # ──────────────────────────────────────────────
@@ -212,45 +227,54 @@ def _zoek_register_url(log):
     """
     log(f"  Register-URL opzoeken via {ILT_PAGINA_URL} ...")
     try:
-        resp = requests.get(ILT_PAGINA_URL, timeout=15)
-        resp.raise_for_status()
+        pagina = haal(ILT_PAGINA_URL, timeout=15, max_bytes=MAX_BYTES_ILT,
+                      toegestane_hosts=_ILT_HOSTS).decode("utf-8", errors="replace")
         m = re.search(
             r'href="([^"]*luchtvaartuigregister-ilt-datas2-[^"]*\.ods)"',
-            resp.text,
+            pagina,
         )
         if m:
-            href = m.group(1)
-            url  = href if href.startswith("http") else "https://www.ilent.nl" + href
-            # Domeincheck: weiger URL's die niet van ilent.nl komen
-            hostname = urlparse(url).hostname or ""
-            if not (hostname == "www.ilent.nl" or hostname.endswith(".ilent.nl")):
-                log(f"  WAARSCHUWING: ILT-URL verwijst naar onverwacht domein "
-                    f"({hostname!r}) — overgeslagen.")
-            else:
-                log(f"  Register-URL gevonden: {url}")
-                return url
+            # De link komt uit een webpagina: alleen https en alleen *.ilent.nl
+            url = veilige_bron_url(urljoin(ILT_PAGINA_URL, m.group(1)), _ILT_HOSTS)
+            log(f"  Register-URL gevonden: {url}")
+            return url
         log("  WAARSCHUWING: Register-URL niet gevonden in paginabron, datumfallback proberen ...")
-    except Exception as e:
-        log(f"  WAARSCHUWING: ILT-pagina niet bereikbaar ({e}), datumfallback proberen ...")
+    except BronFout as fout:
+        log(f"  WAARSCHUWING: register-URL niet bruikbaar ({fout}), datumfallback proberen ...")
 
     # Datumfallback: zoek bestand gepubliceerd in de afgelopen 14 dagen
     for dagen_terug in range(0, 15):
         datum = (datetime.now() - timedelta(days=dagen_terug)).strftime("%Y-%m-%d")
         url   = ILT_URL_BASIS.format(datum=datum)
-        try:
-            r = requests.head(url, timeout=10, allow_redirects=True)
-            if r.status_code == 200:
-                log(f"  Register-URL via datumfallback: {url}")
-                return url
-        except requests.RequestException as fout:
-            _logger.debug(f"Datumfallback {datum}: niet bereikbaar ({fout})")
-            continue
+        if bestaat(url, timeout=10, toegestane_hosts=_ILT_HOSTS):
+            log(f"  Register-URL via datumfallback: {url}")
+            return url
+        _logger.debug(f"Datumfallback {datum}: geen bestand")
 
     log("  FOUT: Geen geldige register-URL gevonden.")
     return None
 
 
-def _download_register(log, force=False):
+def _noodterugval_register(log, meta, fout, force, bronnen: Bronregister):
+    """Lokaal register gebruiken nu verversen mislukte — of afbreken als dat niet kan."""
+    if not REGISTER_ODS_PAD.exists():
+        log(f"  FOUT: register niet te downloaden ({fout}) en geen lokaal bestand.")
+        bronnen.mislukt("ilt_register", f"niet te downloaden en geen lokaal bestand: {fout}")
+    ouderdom = _ouderdom_register(meta)
+    if ouderdom > ILT_NOODTERUGVAL_MAX_DAGEN:
+        log(f"  FOUT: register niet te verversen ({fout}); lokaal bestand is {ouderdom} dagen "
+            f"oud (grens {ILT_NOODTERUGVAL_MAX_DAGEN}).")
+        bronnen.mislukt("ilt_register", f"verversen mislukt en lokaal bestand {ouderdom} "
+                                        f"dagen oud: {fout}")
+    reden = ("verversen na een niet-gevonden registratie mislukt" if force
+             else "verversen na verlopen bewaartermijn mislukt")
+    log(f"  FOUT: {reden} ({fout}) — lokaal bestand van {ouderdom} dag(en) gebruikt.")
+    bronnen.verouderd("ilt_register", ouderdom, f"{reden}: {fout}")
+    df = pd.read_excel(REGISTER_ODS_PAD, engine="odf", header=0, dtype=str)
+    return df, meta
+
+
+def _download_register(log, force=False, *, bronnen: Bronregister):
     """
     Laad het luchtvaartregister als pandas DataFrame.
     Cachelogica:
@@ -258,49 +282,32 @@ def _download_register(log, force=False):
       - TTL verlopen of force=True → scrape URL, download, vergelijk hash.
         - Hash ongewijzigd → update download_datum, hergebruik lokaal bestand.
         - Hash gewijzigd of geen lokaal bestand → sla nieuw bestand op.
-    Retourneert (DataFrame, meta_dict).
+      - Verversen mislukt → noodterugval op het lokale bestand tot
+        ILT_NOODTERUGVAL_MAX_DAGEN (gemeld als verouderd), daarboven afbreken.
+    Retourneert (DataFrame, meta_dict). Gooit ToetsingAfgebroken als er geen
+    bruikbaar register is.
     """
     meta = _lees_meta()
 
-    binnen_ttl = (
-        not force
-        and REGISTER_ODS_PAD.exists()
-        and meta.get("download_datum")
-        and (datetime.now() - datetime.fromisoformat(meta["download_datum"])).days
-            < REGISTER_TTL_DAGEN
-    )
-
-    if binnen_ttl:
-        ouderdom = (datetime.now() - datetime.fromisoformat(meta["download_datum"])).days
-        log(f"  Register: lokaal bestand gebruikt ({REGISTER_ODS_PAD.name}, "
-            f"{ouderdom} dag(en) oud).")
-        df = pd.read_excel(REGISTER_ODS_PAD, engine="odf", header=0, dtype=str)
-        return df, meta
+    if not force and REGISTER_ODS_PAD.exists():
+        ouderdom = _ouderdom_register(meta)
+        if ouderdom < REGISTER_TTL_DAGEN:
+            log(f"  Register: lokaal bestand gebruikt ({REGISTER_ODS_PAD.name}, "
+                f"{ouderdom} dag(en) oud).")
+            bronnen.cache("ilt_register", ouderdom)
+            df = pd.read_excel(REGISTER_ODS_PAD, engine="odf", header=0, dtype=str)
+            return df, meta
 
     url = _zoek_register_url(log)
     if not url:
-        if REGISTER_ODS_PAD.exists():
-            log("  WAARSCHUWING: Geen URL gevonden — lokaal bestand als noodoplossing gebruikt.")
-            df = pd.read_excel(REGISTER_ODS_PAD, engine="odf", header=0, dtype=str)
-            return df, meta
-        raise RuntimeError(
-            "Luchtvaartregister niet beschikbaar: geen URL gevonden en geen lokaal bestand."
-        )
+        return _noodterugval_register(log, meta, "geen download-URL gevonden", force, bronnen)
 
     log(f"  Register: downloaden van {url} ...")
     try:
-        resp = requests.get(url, timeout=60)
-        resp.raise_for_status()
-    except Exception as e:
-        if REGISTER_ODS_PAD.exists():
-            log(f"  WAARSCHUWING: Download mislukt ({e}) — lokaal bestand als "
-                f"noodoplossing gebruikt.")
-            df = pd.read_excel(REGISTER_ODS_PAD, engine="odf", header=0, dtype=str)
-            return df, meta
-        raise
-
-    nieuwe_bytes = resp.content
-    nieuwe_hash  = _ods_data_hash(nieuwe_bytes)
+        nieuwe_bytes = haal(url, timeout=60, max_bytes=MAX_BYTES_ILT, toegestane_hosts=_ILT_HOSTS)
+        nieuwe_hash  = _ods_data_hash(nieuwe_bytes)
+    except BronFout as fout:
+        return _noodterugval_register(log, meta, fout, force, bronnen)
 
     if REGISTER_ODS_PAD.exists() and nieuwe_hash == meta.get("data_hash", ""):
         log("  Register: hash ongewijzigd — lokaal bestand hergebruikt, TTL verlengd.")
@@ -316,6 +323,7 @@ def _download_register(log, force=False):
 
     df = pd.read_excel(REGISTER_ODS_PAD, engine="odf", header=0, dtype=str)
     log(f"  Register: {len(df)} rijen geladen.")
+    bronnen.geraadpleegd("ilt_register")
     return df, meta
 
 
@@ -365,6 +373,12 @@ def _zoek_icao_in_register(ph_code, df, log):
 # Classificatie per luchtvaartuig
 # ──────────────────────────────────────────────
 
+def _registratie_van(lv) -> str:
+    """Het genormaliseerde registratiekenmerk, of "" als het ontbreekt."""
+    waarde = lv.get("registratie") if isinstance(lv, dict) else None
+    return waarde.strip().upper() if isinstance(waarde, str) else ""
+
+
 def _classificeer_luchtvaartuig(lv, df, log):
     """
     Classificeer één luchtvaartuig volledig (3a → 3b → 3c).
@@ -372,8 +386,27 @@ def _classificeer_luchtvaartuig(lv, df, log):
     df: register-DataFrame (al geladen)
     Retourneert classificatie-dict.
     """
-    ph_code = lv["registratie"].strip().upper()
+    ph_code = _registratie_van(lv)
     signalen = []
+
+    if not ph_code:
+        log("  ✗ Luchtvaartuig zonder registratiekenmerk — geen afstandsnorm bepaald; "
+            "buiten de toetsing gelaten.")
+        signalen.append(
+            "✗ Bij een van de opgegeven luchtvaartuigen ontbreekt het registratiekenmerk. "
+            "Er is voor dit luchtvaartuig geen afstandsnorm bepaald en het is buiten de "
+            "toetsing gelaten. De aanvraag dient te worden aangevuld."
+        )
+        return {
+            "registratie":       "(geen kenmerk)",
+            "type_aanvraag":     lv.get("type", "") if isinstance(lv, dict) else "",
+            "icao_code":         None,
+            "appendix_categorie": None,
+            "vliegtuigtypen_nlr": [],
+            "norm_m":            None,
+            "norm_bron":         "geen_registratie",
+            "signalen":          signalen,
+        }
 
     # Stap 3a: PH-code → ICAO-code
     icao = _zoek_icao_in_register(ph_code, df, log)
@@ -488,15 +521,24 @@ def run(state_pad: str | Path) -> None:
 
     # Stap 3a: register laden (eerste poging binnen TTL)
     log("\nStap 3a: Luchtvaartregister laden ...")
-    df, meta = _download_register(log, force=False)
+    bronnen = Bronregister()
+    try:
+        df, meta = _download_register(log, force=False, bronnen=bronnen)
+    except ToetsingAfgebroken as fout:
+        log(f"\nFOUT: toetsing afgebroken — {fout}")
+        sys.exit(1)
 
     # Classificeer elk luchtvaartuig; herdownload register bij eerste cache-miss
     register_ververst = False
     resultaten = []
 
     for lv in luchtvaartuigen:
-        ph_code = lv["registratie"].strip().upper()
-        log(f"\n  Verwerken: {ph_code} (type: {lv.get('type', 'onbekend')})")
+        ph_code = _registratie_van(lv)
+        lv_type = lv.get("type", "onbekend") if isinstance(lv, dict) else "onbekend"
+        log(f"\n  Verwerken: {ph_code or '(geen kenmerk)'} (type: {lv_type})")
+        if not ph_code:
+            resultaten.append(_classificeer_luchtvaartuig(lv, df, log))
+            continue
 
         # Snelle pre-check: staat ph_code in het al geladen register?
         reg_kolom, _ = _vind_kolommen(df, log)
@@ -509,7 +551,11 @@ def run(state_pad: str | Path) -> None:
 
         if not in_register and not register_ververst:
             log(f"  {ph_code}: niet in lokaal register — register verversen ...")
-            df, meta = _download_register(log, force=True)
+            try:
+                df, meta = _download_register(log, force=True, bronnen=bronnen)
+            except ToetsingAfgebroken as fout:
+                log(f"\nFOUT: toetsing afgebroken — {fout}")
+                sys.exit(1)
             register_ververst = True
 
         resultaten.append(_classificeer_luchtvaartuig(lv, df, log))
@@ -523,7 +569,7 @@ def run(state_pad: str | Path) -> None:
             f"herleidbaar ({', '.join(zonder_norm)}). "
             "De ruimtelijke toetsing kan niet worden uitgevoerd."
         )
-        state_pad.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        schrijf_state(state_pad, state)
         sys.exit(1)
 
     norm_toepassing = max(normen)
@@ -554,6 +600,7 @@ def run(state_pad: str | Path) -> None:
         "zonder_norm":       zonder_norm,
         "register_bestand":  REGISTER_ODS_PAD.name,
         "register_datum":    meta.get("download_datum", ""),
+        "bronstatus":        bronnen.naar_state(),
         "log_regels":        log.lines,
     }
 
@@ -569,7 +616,7 @@ def run(state_pad: str | Path) -> None:
         ),
     })
 
-    state_pad.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    schrijf_state(state_pad, state)
     _logger.info(f"State geschreven naar {state_pad}")
 
 

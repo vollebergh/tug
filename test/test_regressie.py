@@ -454,8 +454,9 @@ def meet_signalering_structuur():
     punten = MultiPoint([Point(*t.transform(lon, lat))
                          for lat, lon in PUNTEN_AANVRAAG])
 
+    from tug_bronstatus import Bronregister
     res   = n.signaleer_nnn(punten.buffer(NNN_SIGNAAL_MARGE),
-                            lambda _: None, punten_rd=punten)
+                            lambda _: None, punten_rd=punten, bronnen=Bronregister())
     items = res["in_straal"] + res["in_signaal"]
 
     return {
@@ -504,7 +505,8 @@ def verzamel():
         print(f"  meten: {naam} ...", flush=True)
         try:
             resultaat[naam] = functie()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — een meting mag de andere niet stoppen;
+            # de fout wordt als meting vastgelegd en blokkeert herijken.
             resultaat[naam] = {"_fout": f"{type(e).__name__}: {e}"}
             print(f"    FOUT in meting '{naam}': {type(e).__name__}: {e}")
             traceback.print_exc(limit=3)
@@ -563,23 +565,23 @@ def omgeving():
     """Vastleggen waarmee de referentie is gemaakt, zodat een verschil te plaatsen is."""
     import importlib.metadata as md
     pakketten = ["pandas", "numpy", "geopandas", "shapely", "pyproj",
-                 "pyogrio", "odfpy", "lxml", "reportlab", "pillow", "requests"]
+                 "pyogrio", "odfpy", "defusedxml", "reportlab", "pillow", "requests"]
     versies = {}
     for p in pakketten:
         try:
             versies[p] = md.version(p)
-        except Exception:
+        except md.PackageNotFoundError:
             versies[p] = "niet geïnstalleerd"
     try:
         import pyproj
         versies["PROJ"] = pyproj.proj_version_str
-    except Exception:
-        pass
+    except ImportError:
+        versies["PROJ"] = "niet geïnstalleerd"
     try:
         import pyogrio
         versies["GDAL"] = pyogrio.__gdal_version_string__
-    except Exception:
-        pass
+    except ImportError:
+        versies["GDAL"] = "niet geïnstalleerd"
     return {"python": ".".join(map(str, sys.version_info[:3])), "pakketten": versies}
 
 

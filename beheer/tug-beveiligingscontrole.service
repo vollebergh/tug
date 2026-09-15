@@ -1,0 +1,11 @@
+# Maandelijkse beveiligingscontrole van de TUG-ontheffingen-pipeline.
+# Installeren (systemd, per gebruiker): zie README §19.5.
+[Unit]
+Description=TUG-ontheffingen: beveiligingscontrole (pip-audit, lockfile, ruff, bandit, mypy, gitleaks)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/Claude/zakelijk/workflows/TUG-ontheffingen
+# gitleaks staat in ~/.local/bin
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/Claude/zakelijk/workflows/TUG-ontheffingen/.venv/bin/python beveiligingscontrole.py

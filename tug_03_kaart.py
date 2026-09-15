@@ -14,11 +14,12 @@ nog een kleur en een tekenvolgorde aan dat oordeel gehangen.
 import io as _io
 import math
 
-import requests
 from PIL import Image, ImageDraw, ImageEnhance, ImageFont
 
+from tug_bronstatus import Bronregister
 from tug_config import (
     KAART_ACHTERGRONDEN,
+    MAX_BYTES_TEGEL,
     MARGE_M,
     MANEGE_SIGNAAL_MARGE,
     LUCHTHAVEN_GRENS_M,
@@ -30,6 +31,12 @@ from tug_config import (
     _LOC_CY_FRAC,
 )
 from tug_geo import extract_lon_lat
+from tug_http import BronFout, haal
+
+# Een kaarttegel is PNG (BRT) of JPEG (luchtfoto). Andere formaten worden niet
+# geopend, zodat een gemanipuleerde tegel geen van de overige beeldparsers van
+# Pillow bereikt (EPS, JPEG 2000 e.a.).
+_TEGEL_FORMATEN = ["PNG", "JPEG"]
 
 
 # ──────────────────────────────────────────────
@@ -69,7 +76,8 @@ def _bereken_zoom(lat, straal_m, diameter_frac, map_h_px):
     return max(1, min(19, int(zoom_f)))
 
 
-def _haal_tiles(clon, clat, zoom, map_w, map_h, log, tile_url=_TILE_URL):
+def _haal_tiles(clon, clat, zoom, map_w, map_h, log, tile_url=_TILE_URL, *,
+               bronnen: Bronregister):
     cx, cy = _world_px(clon, clat, zoom)
     tl_x = cx - map_w / 2
     tl_y = cy - map_h / 2
@@ -81,6 +89,7 @@ def _haal_tiles(clon, clat, zoom, map_w, map_h, log, tile_url=_TILE_URL):
     canvas = Image.new("RGB", (map_w, map_h), (230, 230, 230))
     n_tiles = 2 ** zoom
     headers = {"User-Agent": "TUG-ontheffingen (Provincie Overijssel)"}
+    mislukt = 0
 
     for tx in range(tx_min, tx_max + 1):
         for ty in range(ty_min, ty_max + 1):
@@ -89,14 +98,18 @@ def _haal_tiles(clon, clat, zoom, map_w, map_h, log, tile_url=_TILE_URL):
                 tx_w += n_tiles
             url = tile_url.format(z=zoom, x=tx_w, y=ty)
             try:
-                resp = requests.get(url, headers=headers, timeout=15)
-                resp.raise_for_status()
+                inhoud = haal(url, headers=headers, timeout=15, max_bytes=MAX_BYTES_TEGEL)
                 # RGBA + masker: transparante delen (bv. BRT buiten Nederland) worden
                 # lichtgrijs i.p.v. zwart
-                tile = Image.open(_io.BytesIO(resp.content)).convert("RGBA")
+                tile = Image.open(_io.BytesIO(inhoud), formats=_TEGEL_FORMATEN).convert("RGBA")
                 canvas.paste(tile, (int(tx * _TILE_SIZE - tl_x), int(ty * _TILE_SIZE - tl_y)), tile)
-            except Exception as e:
+            except (BronFout, OSError, ValueError, Image.DecompressionBombError) as e:
+                mislukt += 1
                 log(f"  WAARSCHUWING: tile ({tx_w},{ty},z{zoom}) mislukt: {e}")
+    if mislukt:
+        bronnen.mislukt("kaarttegels", f"{mislukt} tegel(s) niet geladen (zoom {zoom})")
+    else:
+        bronnen.geraadpleegd("kaarttegels")
     return canvas
 
 
@@ -110,10 +123,10 @@ def _teken_legenda(img, straal):
     try:
         font      = ImageFont.truetype("arial.ttf", 17)
         font_bold = ImageFont.truetype("arialbd.ttf", 17)
-    except Exception:
+    except OSError:
         try:
             font = font_bold = ImageFont.truetype("DejaVuSans.ttf", 17)
-        except Exception:
+        except OSError:
             font = font_bold = ImageFont.load_default()
 
     LINE_H = 25
@@ -199,10 +212,10 @@ def _teken_cirkel_label(img, cx, cy, r, tekst, kleur_rgb):
         return img
     try:
         font = ImageFont.truetype("arial.ttf", 18)
-    except Exception:
+    except OSError:
         try:
             font = ImageFont.truetype("DejaVuSans.ttf", 18)
-        except Exception:
+        except OSError:
             font = ImageFont.load_default()
 
     dummy = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
@@ -225,7 +238,7 @@ def _teken_bronvermelding(img, tekst):
     """Kleine bronvermelding van de achtergrondkaart, linksonder (leesrichting na rotatie)."""
     try:
         font = ImageFont.truetype("DejaVuSans.ttf", 13)
-    except Exception:
+    except OSError:
         font = ImageFont.load_default()
     dummy = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
     bb = dummy.textbbox((0, 0), tekst, font=font)
@@ -240,7 +253,8 @@ def _teken_bronvermelding(img, tekst):
 def _render_kaart(clon, clat, zoom, map_w, map_h, straal,
                   bev, oordelen, toon_legenda, log,
                   achtergrond="satelliet",
-                  punten=None, toetsing_rings=None, signaal_rings=None):
+                  punten=None, toetsing_rings=None, signaal_rings=None, *,
+                  bronnen: Bronregister):
     """Render één kaartuitsnede.
 
     `bev` is het Bevindingen-record van de bronstap, `oordelen` het oordeel per
@@ -255,7 +269,8 @@ def _render_kaart(clon, clat, zoom, map_w, map_h, straal,
 
     log(f"    Achtergrondtiles ophalen (zoom {zoom}, {map_w}×{map_h} px) ...")
     bron = KAART_ACHTERGRONDEN[achtergrond]
-    img = _haal_tiles(clon_c, clat_c, zoom, map_w, map_h, log, tile_url=bron["url"])
+    img = _haal_tiles(clon_c, clat_c, zoom, map_w, map_h, log, tile_url=bron["url"],
+                      bronnen=bronnen)
     if bron["contrast"] != 1.0:
         img = ImageEnhance.Contrast(img).enhance(bron["contrast"])
     img = img.convert("RGBA")
@@ -279,7 +294,7 @@ def _render_kaart(clon, clat, zoom, map_w, map_h, straal,
         # Lichte randen: grijze panden vallen anders weg tegen de luchtfoto
         GRIJS = ((200, 200, 200, 110), (255, 255, 255, 230), GRIJS[2], GRIJS[3])
         LICHT = ((200, 200, 200, 50),  (235, 235, 235, 170), LICHT[2], LICHT[3])
-    pand_vlakken = {}
+    pand_vlakken: dict[str, tuple] = {}
 
     def _adres(feat, prio, stijl):
         contour, pid = feat.get("_contour"), feat.get("_pand_id")
@@ -289,7 +304,7 @@ def _render_kaart(clon, clat, zoom, map_w, map_h, straal,
             return
         try:
             lat_f, lon_f = extract_lon_lat(feat)
-        except Exception:
+        except (KeyError, IndexError, TypeError, ValueError):
             return
         px, py = ll2px(lon_f, lat_f)
         r = stijl[3]
@@ -366,7 +381,7 @@ def _render_kaart(clon, clat, zoom, map_w, map_h, straal,
     # Toetsings- en aandachtsgebied: omtrek van de vereniging van cirkels rond alle
     # puntlocaties (B03); bij één locatie is dat gewoon de cirkel.
     # Witte onderrand houdt lijnen en kruisen leesbaar op de luchtfoto.
-    label_anker = {}
+    label_anker: dict[str, tuple[float, float]] = {}
     for sleutel, rings, kleur in (("signaal", signaal_rings or [], (202, 111, 30, 240)),
                                   ("toetsing", toetsing_rings or [], (26, 82, 118, 255))):
         for ring in rings:

@@ -6,6 +6,12 @@ Bevat:
   aan BAG-verblijfsobjecten.
 - Scholen via DUO Open Onderwijsdata (5 datasets: PO/SO/VO/MBO/HO), geocodeerd via
   PDOK Locatieserver en lokaal gecachet als GeoJSON.
+
+Beide bronnen werken met een lokale kopie. Lukt het verversen niet, dan wordt de
+oude kopie nog tot de noodterugvalgrens gebruikt — gemeld als verouderd — en
+daarboven geldt de bron als niet geraadpleegd. Een half ververste kopie wordt
+nooit weggeschreven: het GeoJSON-bestand wordt pas vervangen als alle datasets
+van de groep volledig zijn opgehaald en gegeocodeerd.
 """
 
 import copy
@@ -14,77 +20,81 @@ import json
 import logging
 import re
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
-import requests
 from shapely.geometry.base import BaseGeometry
 
+from tug_bronnen_bag import dedupliceer_vbo, haal_verblijfsobjecten
+from tug_bronnen_geocode import vul_woonplaats_via_reverse_geocode
+from tug_bronstatus import Bronregister
 from tug_config import (
+    _DUO_OVERIG_GROEP,
+    _DUO_PO_GROEP,
+    DUO_DATASETS,
+    DUO_NOODTERUGVAL_MAX_DAGEN,
+    DUO_PROVINCIE,
+    DUO_TTL_DAGEN,
     GEO_DIR,
-    LRK_URL, LRK_CACHE_DAYS, LRK_HEADERS, KDV_BBOX_EXTRA,
+    KDV_BBOX_EXTRA,
     LOCATIESERVER_FREE,
-    DUO_PROVINCIE, DUO_TTL_DAGEN, DUO_DATASETS,
-    _DUO_PO_GROEP, _DUO_OVERIG_GROEP,
-    SCHOLEN_GEOJSON_PO, SCHOLEN_GEOJSON_OVERIG, SCHOLEN_META,
+    LRK_CACHE_DAYS,
+    LRK_HEADERS,
+    LRK_NOODTERUGVAL_MAX_DAGEN,
+    LRK_URL,
     MARGE_M,
+    MAX_BYTES_API,
+    MAX_BYTES_DUO,
+    MAX_BYTES_LRK,
+    SCHOLEN_GEOJSON_OVERIG,
+    SCHOLEN_GEOJSON_PO,
+    SCHOLEN_META,
 )
 from tug_geo import shapely_from_geojson_geom, transform_geom_to_rd
-from tug_bronnen_bag import haal_verblijfsobjecten, dedupliceer_vbo
-from tug_bronnen_geocode import vul_woonplaats_via_reverse_geocode
+from tug_http import BronFout, download_naar_bestand, haal, haal_json
+from tug_logging import Voortgang
+from tug_opslag import schrijf_prive
 from tug_types import LogFn
 
-
 _logger = logging.getLogger("tug.bronnen_onderwijs")
+
+
+def _ouderdom_bestand(pad: Path) -> int:
+    return (datetime.now() - datetime.fromtimestamp(pad.stat().st_mtime)).days
 
 
 # ──────────────────────────────────────────────
 # KDV — Landelijk Register Kinderopvang
 # ──────────────────────────────────────────────
 
-def _laad_lrk_csv(log):
+def _laad_lrk_csv(log: LogFn, bronnen: Bronregister) -> pd.DataFrame | None:
     lrk_pad = GEO_DIR / "lrk_kinderopvang.csv"
-    downloaden = True
-    if lrk_pad.exists():
-        leeftijd = (datetime.now() - datetime.fromtimestamp(lrk_pad.stat().st_mtime)).days
-        if leeftijd < LRK_CACHE_DAYS:
-            log(f"  LRK CSV: lokaal bestand gebruikt ({lrk_pad.name}, {leeftijd} dag(en) oud).")
-            downloaden = False
+    ouderdom = _ouderdom_bestand(lrk_pad) if lrk_pad.exists() else None
 
-    if downloaden:
+    if ouderdom is not None and ouderdom < LRK_CACHE_DAYS:
+        log(f"  LRK CSV: lokaal bestand gebruikt ({lrk_pad.name}, {ouderdom} dag(en) oud).")
+        bronnen.cache("lrk", ouderdom)
+    else:
         log(f"  LRK CSV: downloaden van {LRK_URL} ...")
-        # Download naar een tijdelijk bestand, zodat een afgebroken download
-        # de cache niet beschadigt
-        tmp_pad = lrk_pad.with_suffix(".csv.part")
+        GEO_DIR.mkdir(parents=True, exist_ok=True)
         try:
-            resp = requests.get(LRK_URL, headers=LRK_HEADERS, stream=True, timeout=120)
-            resp.raise_for_status()
-            totaal = int(resp.headers.get("content-length", 0))
-            ontvangen = 0
-            with tmp_pad.open("wb") as fout:
-                for chunk in resp.iter_content(chunk_size=65536):
-                    if chunk:
-                        fout.write(chunk)
-                        ontvangen += len(chunk)
-                        if totaal:
-                            print(f"\r  LRK downloaden: {ontvangen // 1024} KB / "
-                                  f"{totaal // 1024} KB "
-                                  f"({ontvangen / totaal * 100:.0f}%)   ",
-                                  end="", flush=True)
-                        else:
-                            print(f"\r  LRK downloaden: {ontvangen // 1024} KB ontvangen   ",
-                                  end="", flush=True)
-            print()
-            tmp_pad.replace(lrk_pad)
-            log(f"  LRK CSV opgeslagen: {lrk_pad.name} ({ontvangen // 1024} KB).")
-        except Exception as e:
-            print()
-            tmp_pad.unlink(missing_ok=True)
-            log(f"  FOUT: LRK CSV downloaden mislukt: {e}")
-            if not lrk_pad.exists():
+            ontvangen = download_naar_bestand(
+                LRK_URL, lrk_pad, headers=LRK_HEADERS, max_bytes=MAX_BYTES_LRK,
+                timeout=(30, 120), label="LRK downloaden",
+            )
+        except BronFout as fout:
+            if ouderdom is not None and ouderdom <= LRK_NOODTERUGVAL_MAX_DAGEN:
+                log(f"  FOUT: LRK CSV downloaden mislukt ({fout}) — verouderde lokale kopie "
+                    f"gebruikt ({ouderdom} dag(en) oud).")
+                bronnen.verouderd("lrk", ouderdom, f"verversen mislukt: {fout}")
+            else:
+                log(f"  FOUT: LRK CSV downloaden mislukt ({fout}) — geen bruikbare lokale "
+                    f"kopie; kinderopvang niet getoetst.")
+                bronnen.mislukt("lrk", str(fout))
                 return None
-            leeftijd = (datetime.now() - datetime.fromtimestamp(lrk_pad.stat().st_mtime)).days
-            log(f"  WAARSCHUWING: verouderde lokale LRK CSV als noodoplossing gebruikt "
-                f"({lrk_pad.name}, {leeftijd} dag(en) oud).")
+        else:
+            log(f"  LRK CSV opgeslagen: {lrk_pad.name} ({ontvangen // 1024} KB).")
+            bronnen.geraadpleegd("lrk")
 
     for sep in (";", ","):
         for enc in ("utf-8", "latin-1"):
@@ -99,14 +109,16 @@ def _laad_lrk_csv(log):
                 continue
 
     log("  FOUT: LRK CSV kon niet worden geparsed.")
+    bronnen.mislukt("lrk", "CSV niet te lezen")
     return None
 
 
-def haal_kdv_locaties(circle_rd: BaseGeometry, log: LogFn) -> dict[str, list]:
+def haal_kdv_locaties(
+    circle_rd: BaseGeometry, log: LogFn, *, bronnen: Bronregister,
+) -> dict[str, list]:
     circle_kdv_rd = circle_rd.buffer(KDV_BBOX_EXTRA)
-    df = _laad_lrk_csv(log)
+    df = _laad_lrk_csv(log, bronnen)
     if df is None:
-        log("  WAARSCHUWING: LRK CSV niet beschikbaar — KDV-detectie overgeslagen.")
         return {"in_straal": [], "in_marge": []}
 
     kolom_map = {k.lower().replace(" ", "_").replace("-", "_"): k for k in df.columns}
@@ -114,8 +126,9 @@ def haal_kdv_locaties(circle_rd: BaseGeometry, log: LogFn) -> dict[str, list]:
     bag_col  = kolom_map.get("bag_id")  or kolom_map.get("bagid")
 
     if not type_col or not bag_col:
-        log(f"  WAARSCHUWING: LRK-kolommen 'type_oko' / 'bag_id' niet gevonden. "
-            f"Beschikbare kolommen: {list(df.columns[:15])}")
+        log(f"  FOUT: LRK-kolommen 'type_oko' / 'bag_id' niet gevonden — kinderopvang niet "
+            f"getoetst. Beschikbare kolommen: {list(df.columns[:15])}")
+        bronnen.mislukt("lrk", "kolommen 'type_oko' / 'bag_id' niet gevonden")
         return {"in_straal": [], "in_marge": []}
 
     kdv_df = df[df[type_col].str.strip().str.upper() == "KDV"]
@@ -124,11 +137,14 @@ def haal_kdv_locaties(circle_rd: BaseGeometry, log: LogFn) -> dict[str, list]:
     log(f"  LRK: {len(kdv_bag_ids)} unieke BAG-IDs voor KDV-locaties.")
 
     if not kdv_bag_ids:
-        log("  WAARSCHUWING: Geen BAG-IDs gevonden voor KDV — matching overgeslagen.")
+        # Het landelijke register bevat duizenden KDV's; nul betekent een gewijzigd
+        # bestandsformaat, geen lege provincie.
+        log("  FOUT: geen BAG-IDs voor KDV in het LRK-bestand — kinderopvang niet getoetst.")
+        bronnen.mislukt("lrk", "geen KDV-locaties met BAG-id in het bestand")
         return {"in_straal": [], "in_marge": []}
 
     log(f"  BAG VBO's ophalen in bbox straal+{KDV_BBOX_EXTRA} m voor KDV-matching ...")
-    vbo_features = haal_verblijfsobjecten(circle_kdv_rd, log)
+    vbo_features = haal_verblijfsobjecten(circle_kdv_rd, log, bronnen=bronnen)
     vbo_features = dedupliceer_vbo(vbo_features, log)
     totaal = len(vbo_features)
     log(f"  BAG/LRK matching: {totaal} VBO's controleren op "
@@ -137,31 +153,28 @@ def haal_kdv_locaties(circle_rd: BaseGeometry, log: LogFn) -> dict[str, list]:
     in_straal = []
     in_marge  = []
 
-    for i, feat in enumerate(vbo_features, 1):
-        props   = feat.get("properties", {})
-        ident   = str(props.get("identificatie",   "")).strip()
-        p_ident = str(props.get("pandidentificatie", "")).strip()
-        if ident not in kdv_bag_ids and p_ident not in kdv_bag_ids:
-            continue
-        geom = feat.get("geometry")
-        if not geom:
-            continue
-        geom_rd = transform_geom_to_rd(shapely_from_geojson_geom(geom))
-        feat = copy.deepcopy(feat)
-        feat["properties"]["_kdv"] = True
-        if circle_rd.contains(geom_rd) or circle_rd.intersects(geom_rd):
-            in_straal.append(feat)
-        else:
-            in_marge.append(feat)
-        if totaal > 200 and i % 200 == 0:
-            print(f"\r  KDV matching: {i}/{totaal} VBO's gecontroleerd ...  ",
-                  end="", flush=True)
+    with Voortgang() as voortgang:
+        for i, feat in enumerate(vbo_features, 1):
+            if totaal > 200 and i % 200 == 0:
+                voortgang(f"  KDV matching: {i}/{totaal} VBO's gecontroleerd ...")
+            props   = feat.get("properties", {})
+            ident   = str(props.get("identificatie",   "")).strip()
+            p_ident = str(props.get("pandidentificatie", "")).strip()
+            if ident not in kdv_bag_ids and p_ident not in kdv_bag_ids:
+                continue
+            geom = feat.get("geometry")
+            if not geom:
+                continue
+            geom_rd = transform_geom_to_rd(shapely_from_geojson_geom(geom))
+            feat = copy.deepcopy(feat)
+            feat["properties"]["_kdv"] = True
+            if circle_rd.contains(geom_rd) or circle_rd.intersects(geom_rd):
+                in_straal.append(feat)
+            else:
+                in_marge.append(feat)
 
-    if totaal > 200:
-        print()
-
-    vul_woonplaats_via_reverse_geocode(in_straal, log)
-    vul_woonplaats_via_reverse_geocode(in_marge,  log)
+    vul_woonplaats_via_reverse_geocode(in_straal, log, bronnen=bronnen)
+    vul_woonplaats_via_reverse_geocode(in_marge, log, bronnen=bronnen)
     log(f"  KDV: {len(in_straal)} locatie(s) binnen straal | "
         f"{len(in_marge)} in margeband (+{KDV_BBOX_EXTRA} m).")
     return {"in_straal": in_straal, "in_marge": in_marge}
@@ -176,9 +189,7 @@ def _lees_scholen_meta():
         try:
             return json.loads(SCHOLEN_META.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError) as e:
-            logging.getLogger("tug.bronnen_onderwijs").warning(
-                "scholen-meta onleesbaar (%s) — wordt opnieuw aangemaakt.", e
-            )
+            _logger.warning("scholen-meta onleesbaar (%s) — wordt opnieuw aangemaakt.", e)
     return {}
 
 
@@ -186,44 +197,34 @@ def _schrijf_scholen_meta(meta):
     SCHOLEN_META.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def _duo_download_bytes(type_key, log):
+def _duo_download_bytes(type_key: str, log: LogFn) -> bytes:
+    """Download één DUO-dataset. Gooit BronFout."""
     resource_id = DUO_DATASETS[type_key]["resource_id"]
     url = f"https://onderwijsdata.duo.nl/datastore/dump/{resource_id}?format=json"
     log(f"    DUO {type_key}: downloaden van {resource_id} ...")
-    try:
-        resp = requests.get(url, timeout=180)
-        resp.raise_for_status()
-        return resp.content
-    except Exception as e:
-        log(f"    FOUT: DUO {type_key} downloaden mislukt: {e}")
-        return None
+    return haal(url, timeout=(30, 180), max_bytes=MAX_BYTES_DUO)
 
 
 def _geocodeer_adres(straat, huisnr, postcode):
+    """Geocodeer één schooladres. Een adres zonder treffer is een gewone uitkomst;
+    een onbereikbare Locatieserver (ook na één nieuwe poging) is een BronFout."""
     query = f"{straat} {huisnr}, {postcode}".strip(", ").strip()
+    params = {"q": query, "fq": "type:adres",
+              "fl": "id,adresseerbaarobject_id,centroide_ll", "rows": 1}
     try:
-        resp = requests.get(
-            LOCATIESERVER_FREE,
-            params={
-                "q": query, "fq": "type:adres",
-                "fl": "id,adresseerbaarobject_id,centroide_ll", "rows": 1,
-            },
-            timeout=15,
-        )
-        resp.raise_for_status()
-        docs = resp.json().get("response", {}).get("docs", [])
-        if not docs:
-            return None, None, None, "geen_resultaat"
-        doc = docs[0]
-        vbo_id    = doc.get("adresseerbaarobject_id", "")
-        centroide = doc.get("centroide_ll", "")
-        m = re.match(r"POINT\(\s*([0-9.]+)\s+([0-9.]+)\s*\)", centroide)
-        if not m:
-            return None, None, vbo_id or None, "fout"
-        return float(m.group(1)), float(m.group(2)), vbo_id, "ok"
-    except (requests.RequestException, ValueError, KeyError, IndexError) as fout:
-        _logger.debug(f"Geocodering mislukt voor {straat} {huisnr}, {postcode}: {fout}")
-        return None, None, None, "fout"
+        data = haal_json(LOCATIESERVER_FREE, params=params, timeout=15, max_bytes=MAX_BYTES_API)
+    except BronFout:
+        data = haal_json(LOCATIESERVER_FREE, params=params, timeout=15, max_bytes=MAX_BYTES_API)
+    docs = data.get("response", {}).get("docs", [])
+    if not docs:
+        return None, None, None, "geen_resultaat"
+    doc = docs[0]
+    vbo_id    = doc.get("adresseerbaarobject_id", "")
+    centroide = doc.get("centroide_ll", "")
+    m = re.match(r"POINT\(\s*([0-9.]+)\s+([0-9.]+)\s*\)", centroide)
+    if not m:
+        return None, None, vbo_id or None, "fout"
+    return float(m.group(1)), float(m.group(2)), vbo_id, "ok"
 
 
 def _maak_veldlezer(velden: list[str]):
@@ -244,43 +245,35 @@ def _maak_veldlezer(velden: list[str]):
     return veld
 
 
-def _geocodeer_groep(groep_keys, geojson_pad, log, meta, cached_bytes=None):
+def _geocodeer_dataset(type_key: str, raw: bytes, log: LogFn) -> tuple[list[dict], dict]:
+    """Zet één DUO-dataset om naar features. Gooit BronFout bij een onbruikbare dataset."""
+    naam_veld = DUO_DATASETS[type_key]["naam_veld"]
+    try:
+        data = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as fout:
+        raise BronFout(f"DUO {type_key}: dataset is geen geldige JSON") from fout
+    if not isinstance(data, dict):
+        raise BronFout(f"DUO {type_key}: onverwachte structuur")
+
+    velden  = [f["id"] for f in data.get("fields", []) if isinstance(f, dict) and "id" in f]
+    records = data.get("records", [])
+    log(f"    DUO {type_key}: {len(records)} records geladen.")
+    if velden:
+        log(f"    DUO {type_key}: velden (eerste 8): {velden[:8]}")
+
+    veld = _maak_veldlezer(velden)
+    rec_prov = [r for r in records if veld(r, "PROVINCIE").upper() == DUO_PROVINCIE.upper()]
+    log(f"    DUO {type_key}: {len(rec_prov)} vestigingen in {DUO_PROVINCIE}.")
+    if not rec_prov:
+        raise BronFout(f"DUO {type_key}: geen vestigingen in {DUO_PROVINCIE} — "
+                       f"bestandsformaat gewijzigd?")
+
     features = []
-    cb = cached_bytes or {}
-
-    for type_key in groep_keys:
-        ds        = DUO_DATASETS[type_key]
-        naam_veld = ds["naam_veld"]
-        raw = cb.get(type_key) or _duo_download_bytes(type_key, log)
-        if raw is None:
-            log(f"    DUO {type_key}: overgeslagen (download mislukt).")
-            continue
-
-        sha = hashlib.sha256(raw).hexdigest()
-        try:
-            data = json.loads(raw.decode("utf-8"))
-        except Exception as e:
-            log(f"    DUO {type_key}: JSON-parse mislukt: {e}")
-            continue
-
-        velden  = [f["id"] for f in data.get("fields", [])]
-        records = data.get("records", [])
-        log(f"    DUO {type_key}: {len(records)} records geladen.")
-        if velden:
-            log(f"    DUO {type_key}: velden (eerste 8): {velden[:8]}")
-
-        veld = _maak_veldlezer(velden)
-
-        rec_prov = [r for r in records if veld(r, "PROVINCIE").upper() == DUO_PROVINCIE.upper()]
-        log(f"    DUO {type_key}: {len(rec_prov)} vestigingen in {DUO_PROVINCIE}.")
-
-        fouten = 0
-        type_features_start = len(features)
-
+    fouten = 0
+    with Voortgang() as voortgang:
         for i, rec in enumerate(rec_prov, 1):
-            pct = i / len(rec_prov) * 100
-            print(f"\r    DUO {type_key}: {i}/{len(rec_prov)} ({pct:.0f}%) — "
-                  f"{fouten} fout(en)   ", end="", flush=True)
+            voortgang(f"    DUO {type_key}: {i}/{len(rec_prov)} "
+                      f"({i / len(rec_prov) * 100:.0f}%) — {fouten} fout(en)")
             naam       = veld(rec, naam_veld)
             straat     = veld(rec, "STRAATNAAM")
             huisnr     = veld(rec, "HUISNUMMER-TOEVOEGING")
@@ -305,85 +298,98 @@ def _geocodeer_groep(groep_keys, geojson_pad, log, meta, cached_bytes=None):
                 },
             })
 
-        if rec_prov:
-            print()
-
-        n_type = len(features) - type_features_start
-        log(f"    DUO {type_key}: {n_type} features geocodeerd; {fouten} fout(en).")
-        meta[type_key] = {
-            "hash": sha, "timestamp": datetime.now().isoformat(),
-            "totaal": len(rec_prov), "geocodeer_fouten": fouten,
-        }
-
-    geojson = {"type": "FeatureCollection", "features": features}
-    geojson_pad.write_text(json.dumps(geojson, ensure_ascii=False), encoding="utf-8")
-    log(f"    GeoJSON opgeslagen: {geojson_pad.name} ({len(features)} features).")
-    return features
+    log(f"    DUO {type_key}: {len(features)} features geocodeerd; {fouten} fout(en).")
+    meta = {"hash": hashlib.sha256(raw).hexdigest(), "timestamp": datetime.now().isoformat(),
+            "totaal": len(rec_prov), "geocodeer_fouten": fouten}
+    return features, meta
 
 
-def _verwerk_scholen_groep(groep_sleutel, groep_keys, geojson_pad, log):
-    meta = _lees_scholen_meta()
-    cached_bytes = {}
-    moet_vernieuwen = not geojson_pad.exists()
-
-    if not moet_vernieuwen:
-        for type_key in groep_keys:
-            type_meta = meta.get(type_key, {})
-            ts_str = type_meta.get("timestamp", "")
-            if not ts_str:
-                moet_vernieuwen = True
-                break
-            try:
-                ts = datetime.fromisoformat(ts_str)
-                ouderdom = (datetime.now() - ts).days
-                if ouderdom < DUO_TTL_DAGEN:
-                    continue
-                log(f"    DUO {type_key}: TTL verlopen ({ouderdom} dagen) → hash-check ...")
-                raw = _duo_download_bytes(type_key, log)
-                if raw is None:
-                    log(f"    DUO {type_key}: download mislukt, bestaande GeoJSON behouden.")
-                    continue
-                cached_bytes[type_key] = raw
-                sha = hashlib.sha256(raw).hexdigest()
-                if sha != type_meta.get("hash", ""):
-                    log(f"    DUO {type_key}: hash gewijzigd → {groep_sleutel} hergeocodeert.")
-                    moet_vernieuwen = True
-                    break
-                log(f"    DUO {type_key}: hash ongewijzigd. GeoJSON hergebruikt.")
-                meta[type_key]["timestamp"] = datetime.now().isoformat()
-                _schrijf_scholen_meta(meta)
-            except (OSError, ValueError, KeyError) as fout:
-                _logger.debug(f"DUO-meta onbruikbaar ({fout}); groep wordt hergeocodeerd")
-                moet_vernieuwen = True
-                break
-
-    if moet_vernieuwen:
-        log(f"  DUO {groep_sleutel}: GeoJSON aanmaken / vernieuwen ...")
-        GEO_DIR.mkdir(parents=True, exist_ok=True)
-        _geocodeer_groep(groep_keys, geojson_pad, log, meta, cached_bytes)
-        _schrijf_scholen_meta(meta)
-    else:
-        log(f"  DUO {groep_sleutel}: GeoJSON actueel, geen vernieuwing nodig.")
-
+def _groep_ouderdom(meta: dict, groep_keys: list[str], geojson_pad: Path) -> int | None:
+    """Ouderdom van de oudste dataset in de groep; zonder meta de bestandsdatum."""
     if not geojson_pad.exists():
-        log(f"  WAARSCHUWING: {geojson_pad.name} bestaat niet — "
-            f"schooldetectie voor {groep_sleutel} overgeslagen.")
-        return []
+        return None
+    leeftijden = []
+    for type_key in groep_keys:
+        try:
+            ts = datetime.fromisoformat(meta.get(type_key, {}).get("timestamp", ""))
+        except (ValueError, TypeError):
+            return _ouderdom_bestand(geojson_pad)
+        leeftijden.append((datetime.now() - ts).days)
+    return max(leeftijden)
+
+
+def _ververs_scholen_groep(groep_sleutel, groep_keys, geojson_pad, log, meta) -> None:
+    """Haal de groep opnieuw op; geocodeer alleen als een dataset is gewijzigd.
+
+    Gooit BronFout zodra één dataset niet volledig binnenkomt; het bestaande
+    GeoJSON-bestand blijft dan onaangeroerd.
+    """
+    ruw = {type_key: _duo_download_bytes(type_key, log) for type_key in groep_keys}
+    ongewijzigd = geojson_pad.exists() and all(
+        hashlib.sha256(ruw[k]).hexdigest() == meta.get(k, {}).get("hash") for k in groep_keys
+    )
+    if ongewijzigd:
+        log(f"  DUO {groep_sleutel}: datasets ongewijzigd — GeoJSON hergebruikt.")
+        for type_key in groep_keys:
+            meta[type_key]["timestamp"] = datetime.now().isoformat()
+        _schrijf_scholen_meta(meta)
+        return
+
+    log(f"  DUO {groep_sleutel}: GeoJSON aanmaken / vernieuwen ...")
+    features: list[dict] = []
+    nieuwe_meta = {}
+    for type_key in groep_keys:
+        type_features, nieuwe_meta[type_key] = _geocodeer_dataset(type_key, ruw[type_key], log)
+        features.extend(type_features)
+
+    GEO_DIR.mkdir(parents=True, exist_ok=True)
+    tijdelijk = geojson_pad.with_name(geojson_pad.name + ".part")
+    schrijf_prive(tijdelijk, json.dumps({"type": "FeatureCollection", "features": features},
+                                        ensure_ascii=False))
+    tijdelijk.replace(geojson_pad)
+    meta.update(nieuwe_meta)
+    _schrijf_scholen_meta(meta)
+    log(f"    GeoJSON opgeslagen: {geojson_pad.name} ({len(features)} features).")
+
+
+def _verwerk_scholen_groep(groep_sleutel, groep_keys, geojson_pad, log, bronnen: Bronregister):
+    meta = _lees_scholen_meta()
+    ouderdom = _groep_ouderdom(meta, groep_keys, geojson_pad)
+
+    if ouderdom is not None and ouderdom < DUO_TTL_DAGEN:
+        log(f"  DUO {groep_sleutel}: GeoJSON actueel ({ouderdom} dag(en) oud).")
+        bronnen.cache("duo", ouderdom)
+    else:
+        try:
+            _ververs_scholen_groep(groep_sleutel, groep_keys, geojson_pad, log, meta)
+        except BronFout as fout:
+            if ouderdom is not None and ouderdom <= DUO_NOODTERUGVAL_MAX_DAGEN:
+                log(f"  FOUT: DUO {groep_sleutel} verversen mislukt ({fout}) — verouderde "
+                    f"GeoJSON gebruikt ({ouderdom} dag(en) oud).")
+                bronnen.verouderd("duo", ouderdom, f"groep {groep_sleutel}: {fout}")
+            else:
+                log(f"  FOUT: DUO {groep_sleutel} verversen mislukt ({fout}) — geen bruikbare "
+                    f"lokale kopie; scholen ({groep_sleutel}) niet getoetst.")
+                bronnen.mislukt("duo", f"groep {groep_sleutel}: {fout}")
+                return []
+        else:
+            bronnen.geraadpleegd("duo")
 
     try:
         data = json.loads(geojson_pad.read_text(encoding="utf-8"))
         return data.get("features", [])
-    except Exception as e:
-        log(f"  FOUT: {geojson_pad.name} kon niet worden gelezen: {e}")
+    except (OSError, ValueError) as fout:
+        log(f"  FOUT: {geojson_pad.name} kon niet worden gelezen: {fout}")
+        bronnen.mislukt("duo", f"{geojson_pad.name} niet leesbaar")
         return []
 
 
-def _laad_scholen(log):
+def _laad_scholen(log, bronnen: Bronregister):
     log("  DUO PO-groep controleren ...")
-    po_features = _verwerk_scholen_groep("PO", _DUO_PO_GROEP, SCHOLEN_GEOJSON_PO, log)
+    po_features = _verwerk_scholen_groep("PO", _DUO_PO_GROEP, SCHOLEN_GEOJSON_PO, log, bronnen)
     log("  DUO overig-groep controleren ...")
     overig_features = _verwerk_scholen_groep(
-        "overig", _DUO_OVERIG_GROEP, SCHOLEN_GEOJSON_OVERIG, log
+        "overig", _DUO_OVERIG_GROEP, SCHOLEN_GEOJSON_OVERIG, log, bronnen,
     )
     totaal = len(po_features) + len(overig_features)
     log(f"  DUO scholen geladen: {len(po_features)} PO + "
@@ -391,8 +397,8 @@ def _laad_scholen(log):
     return po_features + overig_features
 
 
-def haal_scholen(circle_rd: BaseGeometry, log: LogFn) -> dict[str, list]:
-    alle_scholen = _laad_scholen(log)
+def haal_scholen(circle_rd: BaseGeometry, log: LogFn, *, bronnen: Bronregister) -> dict[str, list]:
+    alle_scholen = _laad_scholen(log, bronnen)
     circle_marge_rd = circle_rd.buffer(MARGE_M)
     in_straal = []
     in_marge  = []

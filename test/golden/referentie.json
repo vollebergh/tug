@@ -9,9 +9,9 @@
       "pyproj": "3.7.2",
       "pyogrio": "0.12.1",
       "odfpy": "1.4.1",
-      "lxml": "6.1.0",
+      "defusedxml": "0.7.1",
       "reportlab": "4.5.1",
-      "pillow": "12.2.0",
+      "pillow": "12.3.0",
       "requests": "2.34.2",
       "PROJ": "9.5.1",
       "GDAL": "3.11.4"

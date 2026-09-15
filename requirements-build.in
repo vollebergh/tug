@@ -1,0 +1,11 @@
+# Bouwgereedschap — bron voor requirements-build.txt.
+#
+# odfpy bestaat alleen als broncode-pakket (sdist) en moet bij installatie worden
+# gebouwd. pip zou daarvoor zelf setuptools ophalen, buiten de hashcontrole om.
+# install.py installeert daarom eerst dit bestand (met hashes) en bouwt odfpy
+# daarna met --no-build-isolation tegen deze setuptools.
+#
+#     uv pip compile --universal --python-version 3.12 --generate-hashes \
+#         requirements-build.in -o requirements-build.txt
+
+setuptools==84.0.0

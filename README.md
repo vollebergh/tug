@@ -185,7 +185,7 @@ blijven staan.
 | Registratiekenmerken luchtvaartuigen (PH-…) | Aanvraag | Proceslogboek, PDF | Idem |
 | Puntlocatie(s) (WGS84 en RD) | Aanvraag | Proceslogboek, PDF, kaarten; bbox-parameter in de bevragingen van externe bronnen | Idem |
 | Datum en tijdstip ondertekening | Aanvraag | Proceslogboek, termijncontrole | Idem |
-| Dossieromschrijving (`naam`) | Vrij invoerveld | Bestandsnamen van rapport en kaart, proceslogboek | Idem |
+| Dossieromschrijving (`naam`) | Vrij invoerveld — bedoeld voor een zaaknummer of plaats en datum, niet voor een naam van aanvrager of omwonende | Bestandsnamen van rapport en kaart, proceslogboek | Idem |
 | Adresgegevens in de omgeving: straat, huisnummer, postcode, woonplaats, gebruiksdoel, verblijfsobject- en pandidentificatie | BAG WFS (Kadaster) | Adressenlijst in het PDF, HTML-kaart | Idem |
 | Pandgeometrie (gevelcontour) | BAG WFS | Kaarten in PDF en HTML | Idem |
 | Kinderopvanglocaties (BAG-koppeling, type opvang) | LRK (open data) | Adressenlijst; volledige landelijke bronbestand in `geo/` | Cache 7 dagen |
@@ -212,8 +212,14 @@ product zelf: de aanvrager moet op precies die adressen om instemming vragen.
 
 Alle bevraagde bronnen zijn open data van Nederlandse overheidsorganisaties: PDOK/Kadaster, RVO,
 ILT, DUO en het Landelijk Register Kinderopvang, plus het GeoPortaal van de provincie Overijssel.
-Er zijn geen accounts, API-sleutels of commerciële diensten in gebruik, en er gaat geen verkeer naar
-partijen buiten deze verzameling.
+Er zijn geen accounts, API-sleutels of commerciële diensten in gebruik. De pipeline zelf legt alleen
+verbinding met deze bronnen: elke aanroep gaat over https naar een vaste lijst van hosts, en een
+verwijzing in een bronantwoord naar een andere host wordt niet gevolgd.
+
+Eén uitzondering buiten de pipeline om: de HTML-kaart haalt bij het openen in de browser de
+kaartbibliotheek Leaflet op bij `unpkg.com`, vastgepind op versie en inhoud (Subresource Integrity).
+Die dienst ziet daarbij het IP-adres van wie de kaart opent, geen aanvraaggegevens. De kaart in de
+grafische schil gebruikt een meegeleverde kopie en maakt die verbinding niet.
 
 Wat die bronnen te zien krijgen is per bevraging een **bounding box of coördinaat rond de
 aanvraaglocatie**, en bij begraafplaatsen en maneges een zoekterm. Gegevens over de aanvrager of de
@@ -223,8 +229,8 @@ aanvraag zelf verlaten de machine niet.
 
 | Wat | Waar | Wat ermee gebeurt |
 |---|---|---|
-| Tussentijdse procesdata | `tug_state.json` | Na elke aanvraag overschreven met `{}` — ook wanneer een stap afbreekt |
-| Invoerbestand van de grafische schil | `tmp/` | Geleegd na afloop van de run, ook na een afgebroken run |
+| Tussentijdse procesdata | `tug_state.json` | Na elke aanvraag overschreven met `{}` — na succes, na een afgebroken stap en ook als de run wordt onderbroken (Ctrl+C, beëindigd). Alleen leesbaar voor de eigen gebruiker |
+| Invoerbestand van de grafische schil | `tmp/` | Geleegd na afloop van elke run, bij het sluiten van de schil (een lopende run wordt dan eerst gestopt) en bij het opstarten. Alleen leesbaar voor de eigen gebruiker |
 | Rapport en kaart | `output/` | Blijven staan tot iemand ze verplaatst of verwijdert; de grafische schil verplaatst ze desgevraagd naar een gekozen map |
 | Bronbestanden | `geo/` | Blijven staan tot de bewaartermijn (TTL) verloopt en het bestand wordt vervangen |
 | Runlogboek | Terminalvenster | Wordt niet naar een bestand geschreven |
@@ -248,11 +254,15 @@ vergunningverlener in plaats van naar een impliciete aanname.
 | Manege in het aandachtsgebied | Signaleert de manege | Beoordeelt de feitelijke terreinsituatie |
 | Natura 2000 of NNN geraakt | Signaleert gebied en afstand | Beoordeelt of de vluchtomschrijving aanleiding geeft tot doorverwijzing naar een passende beoordeling |
 | Luchthaven binnen 1.000 m | Meldt "niet toegestaan" | Neemt het besluit |
+| Een bron waar de toetsing niet zonder kan valt uit (BAG, gevelcheck, Natura 2000, luchthavens, ILT-register) | Breekt de toetsing af: geen rapport | Draait de aanvraag opnieuw zodra de bron bereikbaar is |
+| Een andere bron valt uit, of alleen een verouderde lokale kopie is beschikbaar | Maakt het rapport, trekt voor die bron **geen** conclusie en meldt dat in rood bovenaan, in de paragraaf en boven de adressenlijst; de run eindigt met exitcode 2 | Beoordeelt of de aanvraag opnieuw moet worden doorgerekend |
 
-De pipeline breekt maar op twee punten af: wanneer de opgegeven puntlocaties verder dan 100 m uit
-elkaar liggen (dan is er geen samenhangend toetsingsgebied), en wanneer voor géén van de opgegeven
-luchtvaartuigen een afstandsnorm herleidbaar is (dan is er geen toetsingsafstand). In beide gevallen
-is er niets om op door te rekenen.
+De pipeline breekt op een onvolledige aanvraag niet af, maar wel in vier gevallen waarin er niets
+betrouwbaars is om op door te rekenen: de aanvraag is structureel onverwerkbaar (geen object, een
+onbekend veld of een waarde van het verkeerde type, zie [§12](#12-aanvraag-json)); de opgegeven
+puntlocaties liggen verder dan 100 m uit elkaar (geen samenhangend toetsingsgebied); voor géén van
+de opgegeven luchtvaartuigen is een afstandsnorm herleidbaar (geen toetsingsafstand); of een bron
+waar de toetsing niet zonder kan is onbereikbaar.
 
 ## 7. Risico's, beperkingen en wat daartegenover staat
 
@@ -272,7 +282,7 @@ maneges, en zoekvensters die veel ruimer zijn dan de toetsingsafstand.
 | Piloot landt niet exact op het opgegeven coördinaat | Het formulier vraagt één coördinaat; de praktijk wijkt af | Objecten net buiten de cirkel blijven ongezien | Margeband van 150 m, apart gemarkeerd op de kaarten |
 | Begraafplaats onterecht gesignaleerd | Er wordt geen onderscheid gemaakt tussen actieve en gesloten begraafplaatsen | Vals positief | Bewuste keuze; het alternatief (handmatige lijsten van gesloten begraafplaatsen) is niet betrouwbaar bij te houden |
 | NNN-gebied net buiten Overijssel niet gesignaleerd | De NNN-cache bevat alleen de provinciale begrenzing | Vals negatief bij grenslocaties | Alle Natura 2000-gebieden zijn ook NNN: bij een N2000-treffer wordt de NNN-treffer aangenomen |
-| Externe bron valt uit of wijzigt | Registers en API's zijn van hun bronhouders en veranderen zonder aankondiging | Stille onderbreking van een detectielaag | Reëel gebleken risico: het kinderopvangregister weigerde op enig moment de standaard opvraging, en een begraafplaats-collectie was na een refactor stil leeg. Sindsdien: terugval op de bestaande cache bij een mislukte download, en elke bron rapporteert in het proceslogboek per stap wat zij heeft opgeleverd, zodat nul treffers zichtbaar is in plaats van onopgemerkt |
+| Externe bron valt uit of wijzigt | Registers en API's zijn van hun bronhouders en veranderen zonder aankondiging | Stille onderbreking van een detectielaag | Reëel gebleken risico: het kinderopvangregister weigerde op enig moment de standaard opvraging, en een begraafplaats-collectie was na een refactor stil leeg. Daartegenover: elke bron meldt hoe haar bevraging is afgelopen, en het rapport leest dáárnaar in plaats van naar het aantal treffers. Een uitgevallen kernbron breekt de toetsing af; bij een andere bron trekt het rapport geen conclusie en meldt het de uitval in rood, met exitcode 2. Een luchthavenlaag zonder één luchthaven en een LRK-bestand zonder kinderopvang gelden als uitgevallen, niet als "niets gevonden". Een verouderde lokale kopie wordt tot een vaste grens gebruikt en met haar ouderdom vermeld — zie [§16](#16-gegevensbronnen-en-caching) |
 | Luchtvaartuig pas net geregistreerd | Het registerbestand is tot 30 dagen oud | Onterechte melding "niet in register" | Bij een registratie die niet in de cache voorkomt wordt het register eerst ververst en de opzoeking herhaald |
 | Bibliotheekversie verandert de uitkomst | Een minor release van de geometrie- of projectiebibliotheken kan een randgeval anders afhandelen; bij een grens van 500 m is het verschil tussen 499 en 501 m het verschil tussen wel en niet melden | Stille verandering in een juridisch document | Exact vastgepinde versies en een regressietest die 67 waarden vergelijkt met een vastgelegde nulmeting — zie [hoofdstuk 19](#19-kwaliteitsborging) |
 | Brondata is onjuist | Registers bevatten fouten | Onjuiste uitkomst | Buiten de invloedssfeer van de pipeline: de bronhouder is verantwoordelijk voor de integriteit van zijn data en die data geldt hier als gegeven. Het proceslogboek benoemt per stap welke bron is geraadpleegd, zodat een fout herleidbaar is tot de bron |
@@ -288,7 +298,8 @@ beschikbaar zolang niet alle gemeenten hun omgevingsplan hebben gedigitaliseerd.
 paragrafen dat per stap vastlegt welke bron is bevraagd, met welk endpoint en welke parameters, wat
 dat opleverde en welke regel daarop is toegepast. Paragrafen die aandacht vragen — een geraakt
 natuurgebied, een krappe indieningstermijn, een luchtvaartuig zonder norm, een ontbrekend veld —
-worden in rood weergegeven.
+worden in rood weergegeven. Bovenaan staat of alle bronnen volledig zijn geraadpleegd; is dat niet
+zo, dan noemt het rapport welke, en trekt het voor die bronnen geen conclusie.
 
 | Paragraaf | Inhoud |
 |---|---|
@@ -348,6 +359,13 @@ een geslaagde installatie garandeert niet dat een binaire uitbreiding laadt, daa
 GDAL-systeembibliotheken voor ontbreken. Het script is idempotent: een tweede run hergebruikt de
 bestaande omgeving.
 
+**Elk pakket wordt tegen zijn hash gecontroleerd**, ook alle indirecte afhankelijkheden, en er
+worden alleen kant-en-klare pakketten (wheels) geïnstalleerd. De enige uitzondering is `odfpy`, dat
+alleen als broncode bestaat; dat wordt gebouwd met de eveneens gehashte `setuptools` uit
+`requirements-build.txt` in plaats van met een bouwomgeving die pip zelf ongecontroleerd ophaalt.
+Meldt pip dat een hash niet overeenkomt, installeer dan níét zonder controle: het gedownloade
+pakket is dan niet het pakket dat is vastgelegd.
+
 Bewust een `.py`-bestand en geen `.sh` of `.bat`: op beheerde laptops is het uitvoeren van
 shellscripts vaak geblokkeerd, het draaien van een Python-bestand via de interpreter niet. Bij een
 proxy of een bedrijfs-CA-certificaat benoemt de foutmelding wat er moet gebeuren.
@@ -359,26 +377,49 @@ Daarna starten zonder de omgeving te activeren:
 .venv/bin/python tug_run.py aanvraag.json
 ```
 
+**De projectomgeving is de enige omgeving.** Wordt `tug_run.py` of `tug_gui.py` met een andere
+interpreter gestart — bijvoorbeeld `python` van het PATH — dan start het script zichzelf opnieuw in
+`.venv` en meldt dat. Alleen daar zijn de afhankelijkheden gepind, gehasht en gecontroleerd.
+
 ### 9.3 Dependencies
 
-`requirements.txt` pint alle twaalf directe dependencies **exact** (`==`), niet als minimumversie.
-De reden staat in het bestand zelf: de pipeline produceert documenten met een juridische functie, en
-dezelfde aanvraag moet op elke machine dezelfde afstanden en dezelfde classificatie opleveren.
+De afhankelijkheden liggen in twee lagen vast. `requirements.in` noemt de twaalf directe
+afhankelijkheden, **exact** gepind (`==`) en met de reden erbij: de pipeline produceert documenten
+met een juridische functie, en dezelfde aanvraag moet op elke machine dezelfde afstanden en dezelfde
+classificatie opleveren. `requirements.txt` wordt daaruit gegenereerd en bevat **alle** pakketten,
+ook de indirecte, elk met versie én hash.
 
 | Groep | Pakketten |
 |---|---|
 | Grafische schil | `PySide6` |
-| Tabellen en registers | `pandas`, `numpy`, `odfpy` (leest het ILT-register in ODS-formaat) |
+| Tabellen en registers | `pandas`, `numpy`, `odfpy` (leest het ILT-register in ODS-formaat), `defusedxml` (veilige XML-verwerking voor `odfpy`) |
 | Geo | `geopandas`, `shapely`, `pyproj`, `pyogrio` (geo-IO onder geopandas) |
-| Bronnen ophalen en parsen | `requests`, `lxml` |
+| Bronnen ophalen | `requests` |
 | Uitvoer | `reportlab` (PDF), `pillow` (kaartafbeeldingen) |
 
-Bijwerken is een bewuste handeling: pas de versie aan, draai daarna de regressietest
-(zie [hoofdstuk 19](#19-kwaliteitsborging)) en beoordeel elk verschil. De transitieve dependencies
-zijn niet gepind; geen ervan raakt de geometrie- of afstandsberekening.
+| Bestand | Inhoud |
+|---|---|
+| `requirements.in` → `requirements.txt` | De pipeline |
+| `requirements-dev.in` → `requirements-dev.txt` | Pipeline plus controlegereedschap: pytest, ruff, bandit, mypy, pip-audit, pre-commit |
+| `requirements-build.in` → `requirements-build.txt` | `setuptools`, alleen om `odfpy` te bouwen |
 
-Zonder `geopandas`/`pyogrio` draait de pipeline wel, maar wordt de NNN-analyse overgeslagen;
-N2000-signalering blijft dan actief. Zonder `PySide6` werkt alleen de grafische schil niet.
+**Bijwerken** is een bewuste handeling: pas de versie in het `.in`-bestand aan (kies geen release die
+jonger is dan een week), genereer de lockfiles opnieuw, installeer en draai de regressietest
+(zie [hoofdstuk 19](#19-kwaliteitsborging)):
+
+```bash
+uv pip compile --universal --python-version 3.12 --generate-hashes requirements.in -o requirements.txt
+uv pip compile --universal --python-version 3.12 --generate-hashes -c requirements.txt requirements-dev.in -o requirements-dev.txt
+uv pip compile --universal --python-version 3.12 --generate-hashes requirements-build.in -o requirements-build.txt
+python install.py
+.venv/bin/python test/test_regressie.py
+```
+
+`odfpy` wordt sinds 2020 niet meer onderhouden. Het werkt, en leest de XML van het register veilig
+via `defusedxml`; wordt het ooit onbruikbaar, dan is de pandas-engine `calamine` het alternatief.
+
+Zonder `geopandas`/`pyogrio` geldt de NNN-analyse als niet uitgevoerd en meldt het rapport dat in
+rood. Zonder `PySide6` werkt alleen de grafische schil niet.
 
 ### 9.4 Wat er bij de eerste run wordt gedownload
 
@@ -410,13 +451,25 @@ python tug_run.py aanvraag1.json aanvraag2.json aanvraag3.json
 Een bestand mag één aanvraagobject (`{...}`) of een array van aanvragen (`[{...}, {...}]`) bevatten;
 beide vormen mogen door elkaar worden meegegeven. Elke aanvraag levert een eigen PDF en HTML.
 
-Bij een batch logt de runner een falende aanvraag en gaat door met de volgende; aan het einde volgt
-een samenvatting met geslaagde en mislukte aanvragen, en een exitcode die aangeeft of er iets is
-misgegaan. Bij één enkele aanvraag stopt de run met de exitcode van de falende stap.
+Elke aanvraag wordt bij het inlezen tegen het schema van [§12](#12-aanvraag-json) getoetst; een
+onverwerkbare aanvraag wordt met de reden gemeld en overgeslagen. Bij een batch logt de runner een
+falende aanvraag en gaat door met de volgende; aan het einde volgt een samenvatting met volledig
+getoetste, onvolledig getoetste en niet verwerkte aanvragen.
+
+| Exitcode | Betekenis |
+|---|---|
+| 0 | Alle aanvragen volledig getoetst |
+| 1 | Minstens één aanvraag niet verwerkt: onverwerkbare invoer of een afgebroken stap (bij één aanvraag: de exitcode van die stap) |
+| 2 | Alles verwerkt, maar bij minstens één aanvraag is een bron niet volledig geraadpleegd; het rapport meldt welke |
+| 130 / 143 | De run is onderbroken (Ctrl+C) of beëindigd |
+
+Een exitcode 0 betekent dus ook echt dat elke bron is geraadpleegd. Bij de start meldt de runner
+bovendien als de laatste beveiligingscontrole ontbreekt, ouder is dan een maand of bevindingen had
+(zie [§19.5](#195-beveiligingsreview)).
 
 ### 10.2 Herstart vanaf een stap
 
-Wanneer `tug_state.json` nog gevuld is — een afgebroken run, of handmatig bewaard:
+Met een handmatig bewaarde state — na elke run, ook een afgebroken, wordt `tug_state.json` gewist:
 
 ```bash
 python tug_run.py tug_state.json --vanaf 05
@@ -428,7 +481,9 @@ bij één aanvraag tegelijk.
 ### 10.3 Dataveiligheid tijdens de run
 
 `tug_state.json` bevat tijdens de run de volledige aanvraag met alle gevonden adressen. Het bestand
-wordt na afloop overschreven met `{}`, ook wanneer een stap afbreekt.
+is alleen leesbaar voor de eigen gebruiker en wordt na elke aanvraag overschreven met `{}`: na
+succes, wanneer een stap afbreekt, en ook wanneer de run wordt onderbroken met Ctrl+C of van buitenaf
+wordt beëindigd. De lopende stap wordt dan eerst gestopt, zodat die de state niet alsnog vult.
 
 ## 11. Grafische schil
 
@@ -449,15 +504,27 @@ start daarmee `tug_run.py`, dat de enige uitvoerder blijft.
 | Puntlocaties | Klikken op de kaart plaatst een pin, klikken op een pin verwijdert hem. Handmatige invoer in WGS84 of RD. Elke pin verschijnt in het overzicht met beide coördinaatstelsels |
 | Kaart | Dezelfde Leaflet-opzet en dezelfde PDOK-tegels als de export, zodat er geen tweede kaartimplementatie uit de pas kan lopen. Schakelbaar tussen topografisch en luchtfoto; startbeeld midden-Overijssel op zoomniveau 11 |
 
+**De kaart is afgeschermd.** Leaflet komt uit `gui/vendor/leaflet` (dezelfde versie en inhoud als de
+vastgepinde versie in de HTML-export; een test bewaakt dat) en wordt in de pagina ingevoegd; de
+pagina laadt geen externe scripts en kan geen lokale bestanden lezen. Klikken op een link, zoals de
+bronvermelding, opent de systeembrowser: de kaartweergave zelf navigeert nergens heen, zodat geen
+externe pagina bij de koppeling met Python kan.
+
 **Genereren** schrijft de aanvraag naar `tmp/<omschrijving>_<timestamp>.json`, start `tug_run.py`
 daarmee en vraagt daarná pas om een exportmap — de pipeline wacht dus niet op de gebruiker. Tijdens
 de run toont een voortgangsvenster de uitvoer per stap. Na afloop worden de nieuwe bestanden uit
 `output/` naar de gekozen map verplaatst en geopend; wordt de mapkeuze geannuleerd, dan blijven ze
-in `output/` staan. Daarna wordt `tmp/` geleegd, ook na een afgebroken run — de gebruikte invoer
-blijft vastgelegd in het proceslogboek van het rapport.
+in `output/` staan. Was de toetsing onvolledig (exitcode 2), dan zegt het eindbericht dat in rood en
+verwijst het naar de melding bovenaan het rapport.
+
+Daarna wordt `tmp/` geleegd, ook na een afgebroken run — de gebruikte invoer blijft vastgelegd in het
+proceslogboek van het rapport. Wordt het venster gesloten terwijl de pipeline nog loopt, dan stopt de
+schil de pipeline (die zelf de state wist) en leegt `tmp/`. Ook bij het opstarten wordt `tmp/`
+geleegd, voor het geval een eerdere sessie hard is afgesloten.
 
 **Bewaakte invoer.** De knop blijft grijs zolang omschrijving, luchtvaartuig of puntlocatie
-ontbreekt. De schil waarschuwt bij minder dan 28 dagen tussen ondertekening en vlucht, en blokkeert
+ontbreekt. De omschrijving komt in de bestandsnamen terecht; het veld vraagt daarom om een zaaknummer
+of plaats en datum, niet om een persoonsnaam. De schil waarschuwt bij minder dan 28 dagen tussen ondertekening en vlucht, en blokkeert
 puntlocaties die verder dan 100 m uit elkaar liggen, omdat de validatiestap daarop afbreekt.
 
 **Datumvelden** staan op "vanaf heden". Een ondertekening in het verleden invoeren kan door
@@ -496,16 +563,33 @@ Zonder die vlaggen sluit het proces af met `GLX is not present`.
 
 | Veld | Type | Toelichting |
 |---|---|---|
-| `naam` | string | Vrije omschrijving van het dossier; komt in de bestandsnamen en het proceslogboek, zodat invoer en uitvoer koppelbaar zijn |
+| `naam` | string | Omschrijving van het dossier — een zaaknummer of plaats en datum, geen persoonsnaam; komt in de bestandsnamen en het proceslogboek, zodat invoer en uitvoer koppelbaar zijn |
 | `soort_ontheffing` | string | `"locatiegebonden"` of `"generiek"` |
 | `datum_vlucht` | string of array | `YYYY-MM-DD`; één datum of meerdere. Een enkele string wordt genormaliseerd naar een array |
 | `vlucht_udp` | boolean | Bij `true` geldt de uniforme daglichtperiode en worden `vlucht_start` en `vlucht_einde` genegeerd |
 | `vlucht_start` / `vlucht_einde` | string of null | `HH:MM` |
 | `aantal_vluchten` | getal | — |
-| `luchtvaartuigen` | array | Objecten met minimaal `registratie` (PH-kenmerk); `type` is facultatief |
+| `luchtvaartuigen` | array | Objecten met `registratie` (PH-kenmerk) en facultatief `type`; geen andere velden |
 | `coord_lat` / `coord_lon` | float of lijst | WGS84, minimaal zes decimalen. Bij meerdere puntlocaties twee even lange lijsten, waarbij de n-de breedtegraad bij de n-de lengtegraad hoort |
 | `datum_ondertekening` | string | `YYYY-MM-DD` |
 | `tijdstip_ondertekening` | string | `HH:MM` |
+
+**Schema.** Bij het inlezen (`tug_aanvraag.py`) wordt de structuur getoetst. Een aanvraag die daar niet
+door komt, wordt niet verwerkt — de stappen erna zouden anders halverwege vastlopen of met een
+zinloze waarde doorrekenen. Ontbrekende of lege velden zijn géén structuurfout; die meldt de
+validatie als waarschuwing ([§13](#13-validatieregels)).
+
+| Structuurcontrole (fataal) | Grens |
+|---|---|
+| De aanvraag is een JSON-object | — |
+| Alleen de velden uit de tabel hierboven; elk ander veld wordt geweigerd | Ook het vroegere `straal_override`: de toetsingsafstand komt uitsluitend uit de classificatie |
+| Elk ingevuld veld heeft het type uit de tabel; `true`/`false` telt niet als getal | — |
+| `soort_ontheffing` | `locatiegebonden` of `generiek` |
+| `aantal_vluchten` | 1 – 9.999 |
+| Tekstvelden | Maximaal 200 tekens |
+| `luchtvaartuigen` | Maximaal 50; elk een object met alleen `registratie` en `type`, beide tekst |
+| `coord_lat` / `coord_lon` als lijst | Niet leeg, maximaal 20 puntlocaties, alleen getallen |
+| `datum_vlucht` als lijst | Maximaal 366 data, elk als tekst |
 
 **Meerdere puntlocaties.** De locaties mogen onderling maximaal 100 m uit elkaar liggen; daarboven
 stopt de validatie voor die aanvraag. Het toetsingsgebied is de vereniging van de cirkels rond alle
@@ -535,8 +619,10 @@ zelf afdwingt, verdwijnen deze waarschuwingen in de praktijk vanzelf.
 | Datumformaat `YYYY-MM-DD` voor vluchtdata en ondertekening | Waarschuwing |
 | Ondertekening minimaal 28 dagen vóór de vroegste vluchtdatum | Waarschuwing met het werkelijke aantal dagen |
 | Ondertekening ná de vroegste vluchtdatum | Waarschuwing |
-| `luchtvaartuigen` is een array van objecten met `registratie` | Waarschuwing per element |
-| Puntlocaties: even lange lijsten, onderling maximaal 100 m | **Fataal** — de enige controle die de pipeline stopt |
+| Structuur van de aanvraag ([§12](#12-aanvraag-json)) | **Fataal** — aanvraag niet verwerkt |
+| Elk luchtvaartuig heeft een `registratie` | Waarschuwing per element; zonder kenmerk krijgt het luchtvaartuig geen norm en blijft het buiten de toetsing |
+| `registratie` heeft de vorm van een kenmerk (bijv. `PH-ECE`) | Waarschuwing; het register bepaalt daarna of het kenmerk bestaat |
+| Puntlocaties: even lange lijsten, onderling maximaal 100 m | **Fataal** |
 
 Alle waarschuwingen komen rood in het proceslogboek van het rapport te staan, en het rapport wordt
 ook bij een onvolledige aanvraag geproduceerd.
@@ -675,26 +761,47 @@ lokale kopie voorkomt.
 Alle bronnen zijn open data; er zijn geen API-sleutels of accounts in gebruik. Bestanden worden in
 `geo/` bewaard en automatisch opnieuw opgehaald zodra de bewaartermijn is verlopen.
 
-| Bron | Waarvoor | Bewaartermijn | Cachebestand |
-|---|---|---|---|
-| ILT Luchtvaartuigregister | PH-kenmerk → ICAO-code | 30 dagen, plus verversing bij een gemist kenmerk | `geo/luchtvaartuigregister_ilt.ods` |
-| DUO Open Onderwijsdata | Scholen PO/SO/VO/MBO/HO | 90 dagen | `geo/duo_scholen_po.geojson`, `geo/duo_scholen_overig.geojson` |
-| Landelijk Register Kinderopvang | Kinderopvang met bedverblijf | 7 dagen | `geo/lrk_kinderopvang.csv` |
-| Natuurnetwerk Nederland | NNN-geometrie Overijssel | 180 dagen | `geo/nnn_gebieden.gpkg` |
-| BAG WFS v2.0 (PDOK) | Verblijfsobjecten, gebruiksdoelen, pandgeometrie | Direct | — |
-| PDOK Locatieserver | Reverse en forward geocoding | Direct | — |
-| PDOK Location API | Begraafplaatsen, maneges | Direct | — |
-| BRT Top10NL OGC API | Dodenakkervlakken, gebouw- en gebiedspolygonen | Direct | — |
-| Natura 2000 WFS (PDOK/RVO) | Natura 2000-gebieden | Direct | — |
-| GeoPortaal Overijssel WFS | Luchthavenpuntlocaties | Direct | — |
+**Eén toegangsweg.** Elke aanroep loopt via `tug_http.py`, dat drie afspraken afdwingt: alleen
+`https` en alleen naar de hosts in `tug_config.BRON_HOSTS` — ook na een redirect en ook voor een
+verwijzing uit een bronantwoord; een maximale omvang per antwoord (ruim twee keer de gemeten omvang;
+een groter antwoord wordt afgebroken); en een mislukte bevraging is een fout, geen leeg resultaat.
+
+**Wat een storing betekent.** Elke bron meldt in een bronregister (`tug_bronstatus.py`) hoe haar
+bevraging is afgelopen. Dat register komt in de state, het rapport en de exitcode.
+
+| Bron | Bij uitval |
+|---|---|
+| BAG-verblijfsobjecten, BAG-panden voor de gevelcheck, Natura 2000, luchthavens, ILT-register | **Toetsing afgebroken**, geen rapport. Deze bronnen bepalen de adressenlijst, de natuurtoets, het luchthavenverbod en de toetsingsafstand |
+| NNN, begraafplaatsen, kinderopvang, scholen, maneges | Rapport met rode melding en **geen conclusie** voor die bron; exitcode 2 |
+| Adresaanvulling, gevelcontouren op de kaart, kaarttegels | Gemeld als weergaveprobleem; geen invloed op de toetsing |
+
+Een bron die aantoonbaar stuk is, telt als uitgevallen: een luchthavenlaag zonder één luchthaven,
+een LRK-bestand zonder kinderopvang, een DUO-bestand zonder vestigingen in Overijssel.
+
+**Noodterugval op een lokale kopie.** Lukt het verversen van een verlopen cache niet, dan wordt de
+oude kopie nog gebruikt tot een vaste grens en meldt het rapport haar ouderdom in rood (exitcode 2).
+Daarboven geldt de bron als uitgevallen. Een half ververste kopie wordt nooit weggeschreven.
+
+| Bron | Waarvoor | Bewaartermijn | Noodterugval tot | Cachebestand |
+|---|---|---|---|---|
+| ILT Luchtvaartuigregister | PH-kenmerk → ICAO-code | 30 dagen, plus verversing bij een gemist kenmerk | 90 dagen | `geo/luchtvaartuigregister_ilt.ods` |
+| DUO Open Onderwijsdata | Scholen PO/SO/VO/MBO/HO | 90 dagen | 365 dagen | `geo/duo_scholen_po.geojson`, `geo/duo_scholen_overig.geojson` |
+| Landelijk Register Kinderopvang | Kinderopvang met bedverblijf | 7 dagen | 30 dagen | `geo/lrk_kinderopvang.csv` |
+| Natuurnetwerk Nederland | NNN-geometrie Overijssel | 180 dagen | 365 dagen | `geo/nnn_gebieden.gpkg` |
+| BAG WFS v2.0 (PDOK) | Verblijfsobjecten, gebruiksdoelen, pandgeometrie | Direct | — | — |
+| PDOK Locatieserver | Reverse en forward geocoding | Direct | — | — |
+| PDOK Location API | Begraafplaatsen, maneges | Direct | — | — |
+| BRT Top10NL OGC API | Dodenakkervlakken, gebouw- en gebiedspolygonen | Direct | — | — |
+| Natura 2000 WFS (PDOK/RVO) | Natura 2000-gebieden | Direct | — | — |
+| GeoPortaal Overijssel WFS | Luchthavenpuntlocaties | Direct | — | — |
 
 ### 16.1 ILT Luchtvaartuigregister
 
 De ILT plaatst wekelijks een nieuw bestand online onder een wisselende bestandsnaam en zonder
 versie-informatie in de HTTP-headers. De pipeline leest de actuele downloadlink van de
 [bronpagina](https://www.ilent.nl/documenten/lijsten/luchtvaart/databestanden/luchtvaartregister-data),
-met een terugval die de bestandsnaam op datum reconstrueert. Alleen adressen op `*.ilent.nl` worden
-geaccepteerd.
+met een terugval die de bestandsnaam op datum reconstrueert. Alleen `https`-adressen op `*.ilent.nl`
+worden geaccepteerd.
 
 Het bestand is een ODS-archief; de tabelnaam wisselt en wordt genegeerd. Omdat het register zelden
 inhoudelijk verandert, wordt een SHA-256-hash van de inhoud gebruikt om onnodige herverwerking te
@@ -721,7 +828,7 @@ Verblijfsobjecten worden in WGS84 opgevraagd, pandgeometrieën komen terug in RD
 31.800 rijen, gefilterd op opvangtype KDV en gekoppeld via `bag_id` aan de BAG-identificatie. De
 server weigert de standaard opvraging van de HTTP-bibliotheek met een foutcode; er wordt daarom een
 browser-achtige identificatie meegestuurd. Mislukt de download alsnog, dan valt de pipeline terug op
-de bestaande cache in plaats van de detectie over te slaan.
+de bestaande cache tot de noodterugvalgrens, en meldt dat.
 
 ### 16.4 DUO Open Onderwijsdata
 
@@ -729,7 +836,8 @@ Vijf datasets (PO, SO, VO, MBO, HO) via `https://onderwijsdata.duo.nl/datastore/
 gefilterd op provincie Overijssel. DUO levert geen BAG-koppeling; adressen worden via de PDOK
 Locatieserver omgezet naar een verblijfsobject-identificatie en een RD-punt. Het basisonderwijs
 wordt apart gecacheerd omdat het vaker muteert; de overige vier zijn samengevoegd. Invalidatie
-gebeurt op een SHA-256-hash van het bronbestand.
+gebeurt op een SHA-256-hash van het bronbestand. Het GeoJSON-bestand wordt pas vervangen als alle
+datasets van de groep volledig zijn opgehaald en gegeocodeerd.
 
 ### 16.5 Natuurnetwerk Nederland
 
@@ -749,8 +857,8 @@ Luchthavens          https://services.geodataoverijssel.nl/geoserver/B64_nutsvoo
 Kaarttegels          https://service.pdok.nl/hwh/luchtfotorgb/... en https://service.pdok.nl/brt/achtergrondkaart/...
 ```
 
-Alle endpoints staan in `tug_config.py`; dat bestand is de enige plek waar URL's, drempelwaarden en
-marges zijn vastgelegd.
+Alle endpoints staan in `tug_config.py`; dat bestand is de enige plek waar URL's, toegestane hosts,
+omvanggrenzen, noodterugvalgrenzen, drempelwaarden en marges zijn vastgelegd.
 
 ## 17. Architectuur
 
@@ -759,7 +867,7 @@ tug_gui.py  (optionele grafische schil)
     │  schrijft tmp/<naam>_<timestamp>.json en roept tug_run.py aan
     ▼
 aanvraag.json  (enkel object of array)
-    │  tug_run.py — orchestrator, start elke stap als apart proces
+    │  tug_run.py — orchestrator: schema, stappen als apart proces, exitcode
     │  [per aanvraag]
     ├── tug_01_validatie.py       processtap 2 — volledigheid en termijn
     ├── tug_02_classificatie.py   processtap 3 — register, NLR-tabel, toetsingsafstand
@@ -773,14 +881,22 @@ aanvraag.json  (enkel object of array)
     │       └── tug_03_kaart.py           kaartopbouw uit tegels en lagen
     └── tug_05_output.py          processtap 6 — PDF-rapport en HTML-kaart
     │
-    ▼  tug_state.json gewist
+    ▼  tug_state.json gewist (altijd, ook bij een onderbreking)
 
-tug_config.py   alle constanten, endpoints, marges en invoerregels; workflowversie
-tug_types.py    type-aliassen; Bevindingen en VboOordeel
-tug_logging.py  logboekopbouw en terminaluitvoer
-gui/            kaart en stijlblad van de schil, sjabloon van de HTML-export
-test/           regressietest, eenheidstests en rooktest op de schil
-pyproject.toml  configuratie van ruff, bandit en pytest
+tug_config.py       alle constanten, endpoints, hosts, grenzen en invoerregels; workflowversie
+tug_http.py         de enige toegangsweg naar externe bronnen
+tug_bronstatus.py   bronregister: hoe elke bevraging afliep, en wat dat betekent
+tug_aanvraag.py     schema van de aanvraag-JSON
+tug_opslag.py       state en tijdelijke invoer met privérechten
+tug_omgeving.py     herstart in .venv; waarschuwing bij een verlopen beveiligingscontrole
+tug_types.py        type-aliassen; Bevindingen en VboOordeel
+tug_logging.py      logboekopbouw, terminaluitvoer en voortgangstellers
+beveiligingscontrole.py  pip-audit, lockfile, ruff, bandit, mypy en gitleaks in één commando
+gui/                kaart en stijlblad van de schil, sjabloon van de HTML-export, gui/vendor/leaflet
+beheer/             systemd-timer voor de maandelijkse beveiligingscontrole
+test/               regressietest, eenheidstests, beveiligingstests en rooktest op de schil
+pyproject.toml      configuratie van ruff, bandit, mypy, pytest en uv
+requirements*.in    directe afhankelijkheden; requirements*.txt gegenereerd, met hashes
 ```
 
 De stappen communiceren via `tug_state.json`: elke stap leest de state, vult zijn eigen sectie aan
@@ -791,7 +907,7 @@ en schrijft het bestand terug. Omdat elke stap een apart proces is, kan een afge
 
 | Module | Rol |
 |---|---|
-| `tug_run.py` | Orchestrator; leest de invoer, start de stappen, wist de state |
+| `tug_run.py` | Orchestrator; toetst de invoer, start de stappen, bepaalt de exitcode, wist de state |
 | `tug_01_validatie.py` | Volledigheid, datumformaten, termijn, puntlocaties |
 | `tug_02_classificatie.py` | Register ophalen en cachen, NLR-opzoeking, maatgevende norm |
 | `tug_03_ruimtelijk.py` | Coördineert alle bronnen, bouwt adresrijen en kaartlagen |
@@ -803,7 +919,12 @@ en schrijft het bestand terug. Omdat elke stap een apart proces is, kan een afge
 | `tug_geo.py` | Coördinaattransformaties, puntlocatienormalisatie, bbox-berekeningen |
 | `tug_03_kaart.py` | Kaarttegels ophalen, zones en objecten tekenen |
 | `tug_05_output.py` | PDF-rapport en interactieve kaart |
-| `tug_config.py` | Constanten, endpoints, marges, workflowversie |
+| `tug_config.py` | Constanten, endpoints, toegestane hosts, omvang- en noodterugvalgrenzen, marges, workflowversie |
+| `tug_http.py` | Alle uitgaande aanroepen: https en toegestane hosts (ook na redirects), omvanggrens, fouten als uitzondering |
+| `tug_bronstatus.py` | Bronregister; per bron of een storing de toetsing afbreekt of zichtbaar blijft |
+| `tug_aanvraag.py` | Structuurcontrole van de aanvraag |
+| `tug_opslag.py` | Schrijven van state en tijdelijke invoer met rechten voor alleen de eigenaar |
+| `tug_omgeving.py` | Herstart in de projectomgeving; meldingen over de laatste beveiligingscontrole |
 | `tug_logging.py` | Logboekregels verzamelen voor het rapport en kleuren in de terminal |
 | `tug_gui.py` | Grafische schil; stelt de aanvraag samen en start `tug_run.py` |
 | `tug_types.py` | Type-aliassen en de twee records van de ruimtelijke stap: `Bevindingen` (wat er in de omgeving is aangetroffen) en `VboOordeel` (wat dat per verblijfsobject betekent) |
@@ -815,10 +936,11 @@ en schrijft het bestand terug. Omdat elke stap een apart proces is, kan een afge
 | `aanvraag` | `tug_run.py` | De aanvraag, met genormaliseerde vluchtdata |
 | `validatie` | `tug_01_validatie.py` | Fouten, waarschuwingen, termijncontrole, logregels |
 | `classificatie` | `tug_02_classificatie.py` | Per luchtvaartuig ICAO-code, appendix, norm en bron; maatgevende norm; luchtvaartuigen zonder norm |
-| `ruimtelijk` | `tug_03_ruimtelijk.py` | Adresrijen per categorie, kaartlagen, paden naar de gerenderde kaarten |
+| `classificatie.bronstatus` | `tug_02_classificatie.py` | Uitkomst van het ophalen van het ILT-register |
+| `ruimtelijk` | `tug_03_ruimtelijk.py` | Adresrijen per categorie, kaartlagen, paden naar de gerenderde kaarten, `bronstatus` per bron |
 | `logboek` | Alle stappen | Tijdgestempelde regels per stap |
 
-Het bestand wordt na elke aanvraag overschreven met `{}`.
+Het bestand wordt na elke aanvraag overschreven met `{}` en is alleen leesbaar voor de eigenaar.
 
 ## 18. Uitvoer
 
@@ -830,7 +952,12 @@ Beide bestanden komen in `output/`:
 | `tug_kaart_{naam}_{timestamp}.html` | Interactieve kaart op luchtfoto met alle geïnventariseerde objecten en zones |
 
 `{naam}` is het `naam`-veld uit de aanvraag, teruggebracht tot bestandsnaamveilige tekens en maximaal
-veertig posities. Ontbreekt het veld, dan vervalt dat deel van de bestandsnaam.
+zestig posities. Ontbreekt het veld, dan vervalt dat deel van de bestandsnaam.
+
+**Onvolledige toetsing.** Is een bron niet volledig geraadpleegd, dan staat dat in rood bovenaan het
+proceslogboek, in de paragraaf van die bron (die dan geen conclusie trekt), boven de adressenlijst en
+als rode balk op de HTML-kaart. Per paragraaf staat ook wanneer een lokale kopie is gebruikt, met
+haar ouderdom.
 
 **Adressenlijst.** Drie secties — wettelijk relevant, aandachtslocaties, overig — met per regel
 adres, postcode en woonplaats, het gebruiksdoel of de bron die het object aanmerkt, en waar van
@@ -848,16 +975,19 @@ omtrek en het aandachtsgebied een gele, beide met een label.
 
 ## 19. Kwaliteitsborging
 
-Drie soorten controle, met elk een eigen vraag. De regressietest vraagt of de code na een upgrade
-nog hetzelfde antwoord geeft; de eenheidstests vragen of dat antwoord juist is; ruff en bandit
-vragen of de code aan de eigen stijl- en beveiligingsafspraken voldoet.
+Vier soorten controle, met elk een eigen vraag. De regressietest vraagt of de code na een upgrade
+nog hetzelfde antwoord geeft; de eenheidstests vragen of dat antwoord juist is; ruff, bandit en mypy
+vragen of de code aan de eigen stijl-, type- en beveiligingsafspraken voldoet; de
+beveiligingscontrole vraagt of de afhankelijkheden en de geschiedenis nog schoon zijn.
 
 ```bash
-.venv/bin/python -m pip install -r requirements-dev.txt   # eenmalig
+.venv/bin/python -m pip install --require-hashes --no-build-isolation \
+    --only-binary=:all: --no-binary=odfpy -r requirements-dev.txt   # eenmalig
 .venv/bin/python test/test_regressie.py                   # omgevingsdrift
-.venv/bin/pytest test                                     # beslisregels en schil
-.venv/bin/ruff check .                                    # stijl en fouten
-.venv/bin/bandit -c pyproject.toml -r .                   # beveiliging
+.venv/bin/pytest test                                     # beslisregels, bronfouten en schil
+.venv/bin/ruff check .                                    # stijl, fouten en beveiligingsregels
+.venv/bin/mypy                                            # typecontrole
+.venv/bin/python beveiligingscontrole.py                  # alles, plus pip-audit en gitleaks
 ```
 
 ### 19.1 Regressietest
@@ -913,19 +1043,37 @@ de PNG-kaart **hetzelfde oordeel** laten zien. Alle drie lezen het oordeel dat
 `_bouw_classificatie_context()` één keer velt; de tests vergelijken de uitkomsten van de
 presentatiefuncties rechtstreeks met elkaar.
 
+`test/test_beveiliging.py` bewaakt de uitkomsten van de beveiligingsaudit. Met een nepnetwerk — er
+gaat geen verkeer naar buiten — laat hij elke bron uitvallen en controleert hij dat de kernbronnen
+de toetsing afbreken, dat de overige bronnen als niet geraadpleegd in het register en in het rapport
+komen (zonder conclusie), dat een verouderde lokale kopie met haar ouderdom wordt gemeld en niet
+wordt overschreven, dat redirects en verwijzingen naar vreemde hosts of over `http` niet worden
+gevolgd, dat te grote antwoorden worden afgebroken, dat een EPS-bestand niet als kaarttegel wordt
+geopend, dat JSON in de HTML-kaart de scripttag niet kan sluiten, dat een onverwerkbare aanvraag
+wordt geweigerd, en dat de state bij elke afloop — ook Ctrl+C — wordt gewist met privérechten.
+
 `test/test_gui.py` is een rooktest op de schil: hij bouwt het venster zonder scherm op
 (`QT_QPA_PLATFORM=offscreen`), vult het, en controleert dat de knop pas vrijkomt als de aanvraag
 compleet is, dat een dubbel registratiekenmerk wordt geweigerd, dat RD-invoer op dezelfde plek
 uitkomt als GPS-invoer, dat de afstands- en termijnmeldingen verschijnen, en dat de aanvraag die het
-venster oplevert door de validatiestap wordt geaccepteerd.
+venster oplevert door de validatiestap wordt geaccepteerd. Daarnaast dat de kaart geen lokale
+bestanden kan lezen, geen externe scripts laadt en links naar de systeembrowser stuurt, en dat
+`tmp/` bij het opstarten wordt geleegd.
 
 ### 19.3 Stijl- en beveiligingscontrole
 
-`pyproject.toml` legt vast waar ruff, bandit en pytest op letten, zodat een controle op elke machine
-hetzelfde oordeel geeft. De regelset staat op E, F, W, B, SIM, UP, C4, RET, ARG, PTH en N met een
-regellengte van 100 tekens; de uitzonderingen staan met reden in het bestand. Bandit meldt alleen
-nog de subprocess-aanroepen naar `git` en `python` — die gaan met een argumentenlijst en zonder
-`shell=True`, en zijn inherent aan een pipeline die zijn stappen als los proces start.
+`pyproject.toml` legt vast waar ruff, bandit, mypy en pytest op letten, zodat een controle op elke
+machine hetzelfde oordeel geeft. De ruff-regelset staat op E, F, W, B, SIM, UP, C4, RET, ARG, PTH en N,
+aangevuld met S (beveiligingsregels), BLE (geen blinde `except Exception`) en T20 (geen `print()`
+buiten het installatiescript en de regressietest), met een regellengte van 100 tekens; de
+uitzonderingen staan met reden in het bestand of op de regel zelf. De subprocess-aanroepen naar
+`git` en `python` gaan met een argumentenlijst en zonder shell; bandit meldt ze als laag risico.
+`ruff format` wordt bewust niet toegepast: de uitgelijnde toekenningsblokken zouden verdwijnen.
+
+mypy controleert alle modules en tests; de geo-bibliotheken, reportlab en odfpy leveren geen
+typeinformatie en worden als ongetypeerd behandeld.
+
+`.pre-commit-config.yaml` draait ruff en gitleaks vóór elke commit (`.venv/bin/pre-commit install`).
 
 ### 19.4 Codereview
 
@@ -940,18 +1088,75 @@ in de interne projectdocumentatie.
 
 ### 19.5 Beveiligingsreview
 
-Getoetst aan de [OWASP Cheat Sheet Series](https://cheatsheetseries.owasp.org/). Dreigingsmodel: een
-lokaal draaiend opdrachtregelprogramma zonder netwerkinterface, waarvan alle uitgaande aanroepen naar
-Nederlandse overheids-API's gaan. Er zijn geen direct exploiteerbare kwetsbaarheden aangetroffen.
-Verholpen:
+De volledige codebase, de afhankelijkheden en de versiegeschiedenis zijn in september 2026
+doorgelicht in een zelfstandige security-audit. Toetsingskader: OWASP Top 10:2025, OWASP ASVS 5.0 en
+CWE, aangevuld met de specifieke eisen voor Python-datapijplijnen en desktopschillen; ernst in
+CVSS v4.0, kwetsbare afhankelijkheden geprioriteerd op CISA KEV, bereikbaarheid en EPSS. Alle
+bevindingen zijn met een reproductie bevestigd, daarna verholpen en opnieuw getest. De uitwerking,
+de scanrapporten en de softwarestuklijst (SBOM) staan in de interne projectdocumentatie.
+
+**Dreigingsmodel.** Een lokaal draaiende pipeline zonder netwerkinterface, accounts of
+API-sleutels, waarvan alle uitgaande aanroepen naar Nederlandse overheidsbronnen gaan, plus een
+ingebedde browsercomponent in de grafische schil. Het grootste risico vraagt geen aanvaller: het
+gedrag wanneer een bron niet reageert.
+
+| Bevinding | Ernst | Maatregel |
+|---|---|---|
+| Een uitgevallen bron leverde in het rapport dezelfde tekst op als "niets gevonden", en de run eindigde als geslaagd | Hoog (8.2) | Bronregister; kernbronnen breken de toetsing af, overige bronnen geven een rode melding zonder conclusie en exitcode 2 ([§16](#16-gegevensbronnen-en-caching)) |
+| De beeldbibliotheek pillow 12.2.0 had dertien bekende kwetsbaarheden, twee bereikbaar via kaarttegels | Middel (6.3) | pillow 12.3.0; kaarttegels alleen als PNG of JPEG geopend |
+| Verwijzingen in bronantwoorden werden deels zonder controle gevolgd; `http://` werd niet geweigerd | Middel (6.3) | Eén toegangsweg (`tug_http.py`) met `https` en een vaste hostlijst, ook na redirects |
+| Geen schemacontrole van de aanvraag; `straal_override` zonder grenzen | Middel (4.8) | Schema bij het inlezen ([§12](#12-aanvraag-json)); `straal_override` vervallen |
+| De kaart in de schil kon naar een externe site navigeren die de koppeling met Python erfde, en mocht lokale bestanden lezen | Laag (2.1) | Navigatie geblokkeerd, links naar de systeembrowser; Leaflet meegeleverd; geen uitzonderingen voor lokale inhoud |
+| State en tijdelijke invoer bleven staan na een onderbreking; ruime bestandsrechten | Laag (2.0) | Opruimen bij elke afloop en bij sluiten en opstarten van de schil; rechten alleen voor de eigenaar |
+
+Verbeterpunten zonder aantoonbaar aanvalspad, eveneens doorgevoerd: een omvanggrens per bron;
+lockfiles met hashes voor alle, ook indirecte, afhankelijkheden; een geautomatiseerde
+beveiligingscontrole (vóór elke commit, maandelijks en vóór een productierun); de projectomgeving als
+enige omgeving; het ongebruikte `lxml` verwijderd en `defusedxml` expliciet vastgelegd; volledige
+escaping van JSON in de HTML-kaart; en een invulhint die persoonsnamen buiten de bestandsnamen houdt.
+Aan de codekwaliteit: mypy zonder fouten, ruff met beveiligingsregels, specifieke uitzonderingen in
+plaats van `except Exception`, en voortgangstellers die alleen in een terminal schrijven.
+
+**Restrisico.** Wat na de hertest bewust openstaat:
+
+- Het stoppen van een lopende run en de herstart in `.venv` zijn alleen onder Linux beproefd, niet
+  onder Windows.
+- De HTML-kaart haalt Leaflet bij het openen van `unpkg.com`, vastgepind met Subresource Integrity
+  ([§5.3](#53-waar-gegevens-naartoe-gaan)).
+- De ingebedde browser krijgt beveiligingsupdates alleen via een nieuwe PySide6-versie, en `odfpy`
+  wordt niet meer onderhouden ([§20](#20-onderhoud-en-houdbaarheid), [§9.3](#93-dependencies)).
+
+**Eerder verholpen** (codereview september 2026):
 
 | Bevinding | Maatregel |
 |---|---|
 | JSON in een scripttag in de HTML-uitvoer kon de tag voortijdig sluiten | Escaping toegepast op alle JSON die in HTML wordt ingebed |
 | De downloadlink van het ILT-register werd van een webpagina gelezen zonder domeincontrole | Alleen adressen op `*.ilent.nl` worden geaccepteerd |
-| Verwijzingen uit API-antwoorden werden zonder controle gevolgd | Toegestane domeinen vastgelegd: `api.pdok.nl` en `geodata.nationaalgeoregister.nl` |
+| Polygoonverwijzingen uit de PDOK Location API werden zonder controle gevolgd | Toegestane domeinen vastgelegd: `api.pdok.nl` en `geodata.nationaalgeoregister.nl` |
 | Het ODS-archief werd uitgepakt zonder groottelimiet | Limiet van 50 MB ongecomprimeerd |
-| Meldingen buiten het logboeksysteem om | Alles loopt via het logboek |
+| Meldingen buiten het logboeksysteem om | Meldingen lopen via het logboek; alleen voortgangstellers schrijven rechtstreeks naar de terminal |
+
+**Herhalen.** Kwetsbaarheden in afhankelijkheden verschijnen ook zonder codewijziging. Eén commando
+doet de hele controle en legt de uitkomst vast in `.beveiligingscontrole.json`:
+
+```bash
+.venv/bin/python beveiligingscontrole.py
+```
+
+Het draait pip-audit op de geïnstalleerde pakketten (en schrijft een SBOM), vergelijkt de omgeving
+met de lockfiles, en draait ruff, bandit, mypy en gitleaks over de hele geschiedenis. Een onderdeel
+dat niet kan draaien telt als bevinding. `tug_run.py` meldt bij de start als de uitkomst ontbreekt,
+ouder is dan 31 dagen of bevindingen bevat.
+
+| Wanneer | Hoe |
+|---|---|
+| Vóór elke commit | pre-commit: ruff en gitleaks |
+| Maandelijks | systemd-timer (Linux): `cp beheer/tug-beveiligingscontrole.* ~/.config/systemd/user/`, daarna `systemctl --user enable --now tug-beveiligingscontrole.timer`. Onder Windows: een taak in Taakplanner die `.venv\Scripts\python.exe beveiligingscontrole.py` in de projectmap start |
+| Vóór een productierun | Handmatig, of de melding van `tug_run.py` volgen |
+
+gitleaks is geen Python-pakket. Installeer de release-binary van
+[github.com/gitleaks/gitleaks](https://github.com/gitleaks/gitleaks/releases) na controle tegen het
+bijbehorende checksumbestand, en zet hem op het PATH.
 
 ### 19.6 Bronnenaudit
 
@@ -962,17 +1167,19 @@ nul resultaten gaf. Beide zijn verholpen en gevalideerd met een volledige batch.
 
 Dat is de reden dat het proceslogboek per bron rapporteert wat zij heeft opgeleverd: een detectielaag
 die niets vindt is niet te onderscheiden van een detectielaag die stuk is, tenzij het rapport
-vermeldt dat zij is geraadpleegd.
+vermeldt dat zij is geraadpleegd. Het bronregister gaat een stap verder: het rapport trekt geen
+conclusie uit een bron die niet volledig is geraadpleegd ([§16](#16-gegevensbronnen-en-caching)).
 
 ## 20. Onderhoud en houdbaarheid
 
 | Onderdeel | Wat het onderhoud vraagt |
 |---|---|
 | **Python** | Versie 3.12 heeft ondersteuning tot oktober 2028. CPython kent geen langetermijnversies: elke minor versie krijgt ongeveer twee jaar bugfixes en daarna drie jaar beveiligingsupdates. De opvolging is dus een geplande handeling, en precies waar de regressietest voor is gebouwd |
-| **Bibliotheken** | Exacte pins; bijwerken is een bewuste handeling met de regressietest als controle. Let vooral op de HTTP- en beeldbibliotheek, waar beveiligingslekken het vaakst voorkomen |
+| **Bibliotheken** | Exacte pins met hashes, ook voor indirecte afhankelijkheden; bijwerken is een bewuste handeling via de `.in`-bestanden, met de regressietest als controle ([§9.3](#93-dependencies)). Let vooral op de HTTP- en beeldbibliotheek, waar beveiligingslekken het vaakst voorkomen. Een pin veroudert ook zonder codewijziging; de maandelijkse beveiligingscontrole meldt dat ([§19.5](#195-beveiligingsreview)) |
+| **Ingebedde browser en Leaflet** | QtWebEngine krijgt zijn Chromium-beveiligingsupdates via de PySide6-versie; pip-audit ziet die niet, dus PySide6 ook zonder melding periodiek bijwerken. De meegeleverde Leaflet in `gui/vendor/leaflet` moet dezelfde zijn als de vastgepinde versie in `gui/kaart_export.html`; een test bewaakt dat |
 | **NLR-indelingslijst** | Staat in de code en wordt met de hand bijgewerkt wanneer NLR of ILT de lijst wijzigt |
 | **Afstandsnormen en marges** | Alle drempelwaarden staan in `tug_config.py`; een beleidswijziging is daar één aanpassing, met de regressietest als controle op de gevolgen |
-| **Externe bronnen** | Endpoints en bestandsformaten veranderen zonder aankondiging. Het proceslogboek maakt zichtbaar wanneer een bron niets oplevert; een periodieke controle van alle endpoints tegen de live bronnen is de manier om stille uitval op te sporen |
+| **Externe bronnen** | Endpoints en bestandsformaten veranderen zonder aankondiging. Uitval wordt gemeld (afgebroken toetsing of exitcode 2), een formaatwijziging die nul resultaten oplevert niet altijd; een periodieke controle van alle endpoints tegen de live bronnen blijft de manier om stille uitval op te sporen. Wijzigt een host, dan ook `BRON_HOSTS` in `tug_config.py` bijwerken |
 | **Bewaartermijnen** | Verlopen caches worden automatisch vernieuwd; handmatig vernieuwen kan door het betreffende bestand in `geo/` te verwijderen |
 
 ## 21. Licentie en eigenaarschap

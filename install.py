@@ -7,6 +7,12 @@ Maakt een virtuele omgeving (.venv) in deze map en installeert daarin de
 dependencies uit requirements.txt. Vereist geen adminrechten: alles komt in
 deze projectmap terecht, niet in systeempaden.
 
+Elk pakket wordt tegen de hash in requirements.txt gecontroleerd (pip
+--require-hashes), inclusief alle transitieve afhankelijkheden. Alleen kant-en-
+klare wheels worden geïnstalleerd; de enige uitzondering is odfpy, dat alleen als
+broncode bestaat en tegen de eveneens gehashte setuptools uit
+requirements-build.txt wordt gebouwd.
+
 Dit is bewust een .py-bestand en geen .sh/.bat: op beheerde laptops is het
 uitvoeren van shellscripts vaak geblokkeerd, het draaien van een Python-bestand
 via de interpreter niet.
@@ -21,6 +27,10 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).resolve().parent
 VENV_DIR    = PROJECT_DIR / ".venv"
 REQS        = PROJECT_DIR / "requirements.txt"
+REQS_BUILD  = PROJECT_DIR / "requirements-build.txt"
+
+# Pakketten die alleen als broncode (sdist) bestaan en dus gebouwd moeten worden.
+BRONCODE_PAKKETTEN = ["odfpy"]
 
 # Ondergrens 3.12: pandas 3.0/numpy 2.4/pyproj eisen >=3.11, maar de nieuwste
 # pyproj levert geen wheels meer voor 3.11. Bovengrens 3.15: eis van PySide6.
@@ -86,7 +96,7 @@ def maak_venv():
     print(f"Omgeving aanmaken: {VENV_DIR} ...")
     try:
         venv.create(VENV_DIR, with_pip=True, upgrade_deps=False)
-    except Exception as e:
+    except (OSError, subprocess.CalledProcessError) as e:
         fout(
             f"aanmaken van de virtuele omgeving mislukt: {e}",
             "Op Debian/Ubuntu ontbreekt vaak het pakket python3-venv.",
@@ -100,17 +110,25 @@ def maak_venv():
 
 
 def pip_install(py: Path):
-    if not REQS.exists():
-        fout(f"{REQS.name} niet gevonden naast dit script.")
+    for bestand in (REQS, REQS_BUILD):
+        if not bestand.exists():
+            fout(f"{bestand.name} niet gevonden naast dit script.")
 
-    print("\npip bijwerken ...")
-    subprocess.run([str(py), "-m", "pip", "install", "--upgrade", "pip"],
-                   check=False, stdout=subprocess.DEVNULL)
+    print(f"\nBouwgereedschap installeren uit {REQS_BUILD.name} ...")
+    resultaat = subprocess.run(  # noqa: S603 — interpreter uit de eigen venv
+        [str(py), "-m", "pip", "install", "--require-virtualenv", "--require-hashes",
+         "--only-binary=:all:", "-r", str(REQS_BUILD)],
+        check=False,
+    )
+    if resultaat.returncode != 0:
+        fout("installeren van het bouwgereedschap mislukt (zie de pip-uitvoer hierboven).")
 
     print(f"Dependencies installeren uit {REQS.name} (kan enkele minuten duren, "
           "PySide6 is een grote download) ...\n")
-    resultaat = subprocess.run(
-        [str(py), "-m", "pip", "install", "--require-virtualenv",
+    resultaat = subprocess.run(  # noqa: S603 — interpreter uit de eigen venv
+        [str(py), "-m", "pip", "install", "--require-virtualenv", "--require-hashes",
+         "--no-build-isolation", "--only-binary=:all:",
+         *(f"--no-binary={naam}" for naam in BRONCODE_PAKKETTEN),
          "-r", str(REQS)],
         check=False,
     )
@@ -118,7 +136,10 @@ def pip_install(py: Path):
         fout(
             "installeren van de dependencies mislukt (zie de pip-uitvoer hierboven).",
             "Bij een bedrijfsnetwerk met proxy kan pip een proxy-instelling nodig hebben:",
-            "  python -m pip install --proxy http://proxy:poort -r requirements.txt",
+            "  python -m pip install --proxy http://proxy:poort --require-hashes "
+            "-r requirements.txt",
+            "Meldt pip dat een hash niet overeenkomt, dan is het gedownloade pakket niet",
+            "het pakket dat is vastgelegd: installeer dan níét zonder hashcontrole.",
             "Bij een SSL-fout is meestal het bedrijfscertificaat de oorzaak; vraag de",
             "IT-afdeling om het CA-bestand en zet dat in de omgevingsvariabele",
             "REQUESTS_CA_BUNDLE / PIP_CERT.",
@@ -129,7 +150,7 @@ def controleer_imports(py: Path):
     """Importeer elke library eenmaal: een geslaagde pip-install garandeert niet
     dat een binaire extensie ook laadt (ontbrekende GDAL/Qt-systeembibliotheken)."""
     modules = ["PySide6.QtWidgets", "pandas", "odf", "geopandas", "shapely",
-               "pyproj", "pyogrio", "requests", "lxml", "reportlab", "PIL"]
+               "pyproj", "pyogrio", "requests", "defusedxml", "reportlab", "PIL"]
     print("\nImports controleren ...")
     code = "import importlib,sys\n" \
            "for m in sys.argv[1:]:\n" \
@@ -139,7 +160,8 @@ def controleer_imports(py: Path):
            "    except Exception as e:\n" \
            "        print(f'  MISLUKT {m}: {e}')\n" \
            "        sys.exit(1)\n"
-    resultaat = subprocess.run([str(py), "-c", code, *modules], check=False)
+    resultaat = subprocess.run(  # noqa: S603 — interpreter uit de eigen venv
+        [str(py), "-c", code, *modules], check=False)
     if resultaat.returncode != 0:
         fout("een of meer libraries laten zich niet importeren (zie hierboven).")
 

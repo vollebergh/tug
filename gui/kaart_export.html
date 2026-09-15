@@ -26,13 +26,26 @@
             padding:0!important;}
   .cirlabel span{font-size:12px;font-weight:bold;white-space:nowrap;
                 text-shadow:1px 1px 2px #fff,-1px -1px 2px #fff,1px -1px 2px #fff,-1px 1px 2px #fff;}
+  #onvolledig{position:absolute;top:10px;left:60px;right:10px;z-index:1000;background:#b00020;
+              color:#fff;padding:8px 12px;border-radius:4px;font-size:13px;font-weight:bold;
+              box-shadow:0 1px 5px rgba(0,0,0,.35);}
+  [hidden]{display:none!important;}
 </style>
 </head>
 <body>
 <div id="map"></div>
+<div id="onvolledig" hidden></div>
 <script>
 __DATA__
 var map = L.map('map').setView([CENTER_LAT, CENTER_LON], 15);
+
+// Onvolledige toetsing: zelfde melding als bovenaan het PDF-rapport.
+if (ONVOLLEDIG.length) {
+  var banner = document.getElementById('onvolledig');
+  banner.textContent = '⚠ Onvolledige toetsing — niet (volledig) geraadpleegd: '
+    + ONVOLLEDIG.join('; ') + '. Wat hier ontbreekt is niet getoetst; zie het PDF-rapport.';
+  banner.hidden = false;
+}
 
 // Satellietkaart (B04): PDOK luchtfoto, geen API-key nodig
 L.tileLayer('https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg', {
@@ -53,7 +66,7 @@ function tekenGebied(rings, stijl, tekst, kleur, schaduw) {
     L.tooltip({permanent: true, direction: 'right', className: 'cirlabel'})
       .setLatLng(oost)
       .setContent('<span style="color:' + kleur + (schaduw ? ';text-shadow:' + schaduw : '') + '">'
-                  + tekst + '</span>')
+                  + esc(tekst) + '</span>')
       .addTo(map);
   }
   return lagen;
@@ -194,10 +207,10 @@ legend.onAdd = function() {
     + '<span class="leg-sq" style="background:rgba(255,215,0,.20);border:1px solid #ffd700"></span>Begraafplaats (buiten)<br>'
     + '<span class="leg-sq" style="background:rgba(0,100,0,.35);border:1px solid #006400"></span>Natura 2000-gebied<br>'
     + '<span class="leg-sq" style="background:rgba(60,179,60,.32);border:1px solid #3cb33c"></span>Natuurnetwerk Nederland<br>'
-    + '<span class="leg-ln" style="background:' + KLEUR_TOETSING + '"></span>' + TOETSING_LABEL + '<br>'
+    + '<span class="leg-ln" style="background:' + KLEUR_TOETSING + '"></span>' + esc(TOETSING_LABEL) + '<br>'
     + '<span class="leg-ln" style="background:' + KLEUR_AANDACHT + '"></span>Aandachtsgebied<br>'
     + '<span style="color:#c80000;font-weight:bold;font-size:15px;margin-right:6px">+</span>Stijg- en landingsplaats<br>'
-    + '<span style="color:#777;font-size:10px">Workflowversie: ' + WORKFLOW_VERSIE + '</span>';
+    + '<span style="color:#777;font-size:10px">Workflowversie: ' + esc(WORKFLOW_VERSIE) + '</span>';
   return d;
 };
 legend.addTo(map);

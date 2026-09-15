@@ -19,6 +19,7 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import tug_03_kaart as kaart  # noqa: E402
+from tug_bronstatus import Bronregister  # noqa: E402
 from tug_03_ruimtelijk import _bouw_classificatie_context  # noqa: E402
 from tug_types import Bevindingen  # noqa: E402
 
@@ -30,7 +31,7 @@ RING = [[[LON - 0.0005, LAT - 0.0005], [LON + 0.0005, LAT - 0.0005],
 @pytest.fixture(autouse=True)
 def geen_netwerk(monkeypatch):
     """Vervang de tegelhaler door een effen vlak."""
-    def effen_vlak(_clon, _clat, _zoom, breedte, hoogte, _log, tile_url=None):
+    def effen_vlak(_clon, _clat, _zoom, breedte, hoogte, _log, tile_url=None, *, bronnen):
         return Image.new("RGB", (breedte, hoogte), (120, 140, 120))
 
     monkeypatch.setattr(kaart, "_haal_tiles", effen_vlak)
@@ -77,7 +78,7 @@ def render(bev, **kwargs):
     opties = {
         "bev": bev, "oordelen": context["oordelen"], "toon_legenda": True,
         "log": lambda _regel: None, "achtergrond": "satelliet", "punten": [(LAT, LON)],
-        "toetsing_rings": RING, "signaal_rings": RING,
+        "toetsing_rings": RING, "signaal_rings": RING, "bronnen": Bronregister(),
     }
     opties.update(kwargs)
     return kaart._render_kaart(LON, LAT, 15, 800, 600, 510.0, **opties)

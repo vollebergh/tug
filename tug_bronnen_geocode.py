@@ -1,84 +1,76 @@
 """
 tug_bronnen_geocode.py -- Reverse geocoding via PDOK Locatieserver
 
-Bevat alle functies voor reverse geocoding van coördinaten naar adressen
-en woonplaatsen. Wordt gebruikt door BAG-postprocessing en de PDOK
-Location API-gebaseerde bronnen (begraafplaatsen, maneges).
+Bevat de functies die coördinaten omzetten naar een adres of woonplaats, en de
+generieke polygoon-opvraging via de `href` van een Location API-treffer. Wordt
+gebruikt door BAG-postprocessing en de PDOK Location API-bronnen (begraafplaatsen,
+maneges).
+
+Adresaanvulling raakt alleen de weergave: het object staat hoe dan ook in de
+lijst. Een mislukte aanvulling wordt daarom gemeld onder `adresaanvulling` en
+breekt niets af. Een mislukte polygoon-opvraging raakt wél de detectie en gaat
+als BronFout terug naar de aanroeper.
 """
 
 import logging
 import re
-from urllib.parse import urlparse
+from typing import Any
 
-import requests
 from pyproj import Transformer
 
-from tug_config import LOCATIESERVER_REVERSE
+from tug_bronstatus import Bronregister
+from tug_config import LOCATIESERVER_REVERSE, MAX_BYTES_API
 from tug_geo import extract_lon_lat
+from tug_http import BronFout, haal_json
 from tug_types import FeatureList, LogFn
 
-
 _logger = logging.getLogger("tug.bronnen_geocode")
+
+# Hosts waarnaar een `href` uit een Location API-antwoord mag verwijzen.
+_PDOK_TOEGESTANE_DOMEINEN = ("api.pdok.nl", "geodata.nationaalgeoregister.nl")
+
+
+def _reverse_doc(lat: float, lon: float) -> dict[str, Any] | None:
+    data = haal_json(
+        LOCATIESERVER_REVERSE, params={"lat": lat, "lon": lon, "type": "adres", "rows": 1},
+        timeout=10, max_bytes=MAX_BYTES_API,
+    )
+    docs = data.get("response", {}).get("docs", [])
+    return docs[0] if docs else None
 
 
 # ──────────────────────────────────────────────
 # Reverse geocode (enkelvoudig)
 # ──────────────────────────────────────────────
 
-def reverse_geocode(lat: float, lon: float, log: LogFn) -> str:
-    try:
-        resp = requests.get(
-            LOCATIESERVER_REVERSE,
-            params={"lat": lat, "lon": lon, "type": "adres", "rows": 1},
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            docs = resp.json().get("response", {}).get("docs", [])
-            if docs:
-                doc = docs[0]
-                weergave = doc.get("weergavenaam")
-                if weergave:
-                    return weergave
-                straat = doc.get("straatnaam", "")
-                huisnr = doc.get("huisnummer", "")
-                pc = doc.get("postcode", "")
-                wpl = doc.get("woonplaatsnaam", "")
-                return f"{straat} {huisnr}, {pc} {wpl}".strip(", ")
-    except Exception as e:
-        log(f"  WAARSCHUWING: reverse geocode mislukt ({lat:.5f},{lon:.5f}): {e}")
-    return ""
-
-
-def reverse_geocode_adres_wpl(lat: float, lon: float, log: LogFn) -> tuple[str, str]:
+def reverse_geocode_adres_wpl(
+    lat: float, lon: float, log: LogFn, *, bronnen: Bronregister,
+) -> tuple[str, str]:
     """Retourneert (adres_str, pc_wpl_str) via PDOK Locatieserver reverse geocode."""
     try:
-        resp = requests.get(
-            LOCATIESERVER_REVERSE,
-            params={"lat": lat, "lon": lon, "type": "adres", "rows": 1},
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            docs = resp.json().get("response", {}).get("docs", [])
-            if docs:
-                doc    = docs[0]
-                straat = doc.get("straatnaam", "")
-                huisnr = doc.get("huisnummer", "")
-                pc     = doc.get("postcode", "")
-                wpl    = doc.get("woonplaatsnaam", "")
-                adres  = f"{straat} {huisnr}".strip()
-                pc_wpl = f"{pc}  {wpl}".strip()
-                if not adres:
-                    weergave = doc.get("weergavenaam", "")
-                    if "," in weergave:
-                        parts  = weergave.rsplit(",", 1)
-                        adres  = parts[0].strip()
-                        pc_wpl = pc_wpl or parts[1].strip()
-                    else:
-                        adres = weergave
-                return adres or "—", pc_wpl
-    except Exception as e:
-        log(f"  WAARSCHUWING: reverse geocode mislukt ({lat:.5f},{lon:.5f}): {e}")
-    return "—", ""
+        doc = _reverse_doc(lat, lon)
+    except BronFout as fout:
+        log(f"  WAARSCHUWING: adres bij ({lat:.5f},{lon:.5f}) niet opgehaald: {fout}")
+        bronnen.mislukt("adresaanvulling", "adres bij een gesignaleerd object niet opgehaald")
+        return "—", ""
+    bronnen.geraadpleegd("adresaanvulling")
+    if not doc:
+        return "—", ""
+    straat = doc.get("straatnaam", "")
+    huisnr = doc.get("huisnummer", "")
+    pc     = doc.get("postcode", "")
+    wpl    = doc.get("woonplaatsnaam", "")
+    adres  = f"{straat} {huisnr}".strip()
+    pc_wpl = f"{pc}  {wpl}".strip()
+    if not adres:
+        weergave = doc.get("weergavenaam", "")
+        if "," in weergave:
+            parts  = weergave.rsplit(",", 1)
+            adres  = parts[0].strip()
+            pc_wpl = pc_wpl or parts[1].strip()
+        else:
+            adres = weergave
+    return adres or "—", pc_wpl
 
 
 # ──────────────────────────────────────────────
@@ -103,7 +95,9 @@ def _heeft_straatnaam(props):
 # Vul woonplaats/straatnaam via reverse geocode op meerdere features
 # ──────────────────────────────────────────────
 
-def vul_woonplaats_via_reverse_geocode(features: FeatureList, log: LogFn) -> None:
+def vul_woonplaats_via_reverse_geocode(
+    features: FeatureList, log: LogFn, *, bronnen: Bronregister,
+) -> None:
     ontbrekend = [
         f for f in features
         if not (f.get("properties", {}).get("woonplaatsnaam")
@@ -113,11 +107,13 @@ def vul_woonplaats_via_reverse_geocode(features: FeatureList, log: LogFn) -> Non
     ]
     if not ontbrekend:
         log("  Adres reverse geocode: geen VBO's zonder woonplaats/straatnaam, overgeslagen.")
+        bronnen.geraadpleegd("adresaanvulling")
         return
 
-    cache = {}
+    cache: dict[tuple[float, float], dict[str, str]] = {}
     gevuld_wpl = 0
     gevuld_straat = 0
+    mislukt = 0
     _rd_transformer = None
 
     for feat in ontbrekend:
@@ -138,32 +134,26 @@ def vul_woonplaats_via_reverse_geocode(features: FeatureList, log: LogFn) -> Non
 
         cache_key = (round(lat, 7), round(lon, 7))
         if cache_key not in cache:
+            gevonden = {"wpl": "", "straat": ""}
             try:
-                resp = requests.get(
-                    LOCATIESERVER_REVERSE,
-                    params={"lat": lat, "lon": lon, "type": "adres", "rows": 1},
-                    timeout=10,
-                )
-                gevonden = {"wpl": "", "straat": ""}
-                if resp.status_code == 200:
-                    docs = resp.json().get("response", {}).get("docs", [])
-                    if docs:
-                        doc = docs[0]
-                        weergave = doc.get("weergavenaam", "")
-                        gevonden["straat"] = doc.get("straatnaam", "")
-                        if not gevonden["straat"] and weergave:
-                            m_s = re.match(r'^(.*?)\s+\d', weergave)
-                            if m_s:
-                                gevonden["straat"] = m_s.group(1).strip()
-                        gevonden["wpl"] = doc.get("woonplaatsnaam", "")
-                        if not gevonden["wpl"] and weergave:
-                            m_w = re.search(r"\d{4}[A-Z]{2}\s+(.+)$", weergave)
-                            if m_w:
-                                gevonden["wpl"] = m_w.group(1).strip()
-                cache[cache_key] = gevonden
-            except (requests.RequestException, ValueError, KeyError) as fout:
+                doc = _reverse_doc(lat, lon)
+            except BronFout as fout:
                 _logger.warning(f"Reverse geocode mislukt voor {cache_key}: {fout}")
-                cache[cache_key] = {"wpl": "", "straat": ""}
+                mislukt += 1
+                doc = None
+            if doc:
+                weergave = doc.get("weergavenaam", "")
+                gevonden["straat"] = doc.get("straatnaam", "")
+                if not gevonden["straat"] and weergave:
+                    m_s = re.match(r'^(.*?)\s+\d', weergave)
+                    if m_s:
+                        gevonden["straat"] = m_s.group(1).strip()
+                gevonden["wpl"] = doc.get("woonplaatsnaam", "")
+                if not gevonden["wpl"] and weergave:
+                    m_w = re.search(r"\d{4}[A-Z]{2}\s+(.+)$", weergave)
+                    if m_w:
+                        gevonden["wpl"] = m_w.group(1).strip()
+            cache[cache_key] = gevonden
 
         gevonden = cache[cache_key]
         props = feat["properties"]
@@ -180,33 +170,24 @@ def vul_woonplaats_via_reverse_geocode(features: FeatureList, log: LogFn) -> Non
     log(f"  Adres reverse geocode: {len(ontbrekend)} VBO's verwerkt via "
         f"{len(cache)} unieke locaties "
         f"({gevuld_wpl} woonplaats, {gevuld_straat} straatnaam ingevuld).")
+    if mislukt:
+        log(f"  WAARSCHUWING: {mislukt} adresaanvulling(en) mislukt; die adressen blijven "
+            f"zonder aangevulde straatnaam of woonplaats in de lijst staan.")
+        bronnen.mislukt("adresaanvulling", f"{mislukt} locatie(s) niet aangevuld")
+    else:
+        bronnen.geraadpleegd("adresaanvulling")
 
 
 # ──────────────────────────────────────────────
 # Generieke polygoon-opvraging (BRT via href)
 # ──────────────────────────────────────────────
 
-_PDOK_TOEGESTANE_DOMEINEN = ("api.pdok.nl", "geodata.nationaalgeoregister.nl")
+def pdok_location_haal_polygoon(href: str) -> dict[str, Any]:
+    """Haal de polygoon achter een Location API-treffer op.
 
-
-def _pdok_location_haal_polygoon(href, log):
-    # Domeincheck: accepteer alleen bekende PDOK-domeinen
-    try:
-        hostname = urlparse(href).hostname or ""
-    except ValueError:
-        log(f"  WAARSCHUWING: BRT polygoon-href ongeldig ({href!r}) — overgeslagen.")
-        return None
-    if not any(hostname == d or hostname.endswith("." + d)
-               for d in _PDOK_TOEGESTANE_DOMEINEN):
-        log(f"  WAARSCHUWING: BRT polygoon-href verwijst naar onverwacht domein "
-            f"({hostname!r}) — overgeslagen.")
-        return None
-    try:
-        resp = requests.get(href, timeout=15)
-        if resp.status_code != 200:
-            log(f"  WAARSCHUWING: BRT polygoon-opvraging gaf status {resp.status_code} ({href})")
-            return None
-        return resp.json()
-    except Exception as e:
-        log(f"  WAARSCHUWING: BRT polygoon-opvraging mislukt: {e}")
-        return None
+    De `href` komt uit een bronantwoord en wordt alleen gevolgd naar een bekend
+    PDOK-domein en over https. Elke fout — ook een verwijzing die niet door die
+    controle komt — is een BronFout voor de aanroeper.
+    """
+    return haal_json(href, timeout=15, max_bytes=MAX_BYTES_API,
+                     toegestane_hosts=_PDOK_TOEGESTANE_DOMEINEN)

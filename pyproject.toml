@@ -1,12 +1,17 @@
 # Gereedschapsconfiguratie voor de TUG-ontheffingen-pipeline.
 #
 # Dit bestand pakketteert de workflow niet; het legt alleen vast waar ruff,
-# bandit en pytest op letten, zodat een controle op elke machine hetzelfde
+# bandit, mypy en pytest op letten, zodat een controle op elke machine hetzelfde
 # oordeel geeft. Draaien:
 #
 #     .venv/bin/ruff check .
 #     .venv/bin/bandit -c pyproject.toml -r .
+#     .venv/bin/mypy
 #     .venv/bin/pytest test
+#
+# Of alles in één keer, inclusief pip-audit en gitleaks:
+#
+#     .venv/bin/python beveiligingscontrole.py
 
 [tool.ruff]
 # 100 in plaats van de gebruikelijke 88. De modules gebruiken uitgelijnde
@@ -18,7 +23,9 @@ target-version = "py312"
 exclude = [".venv", "archief", "tmp", "output", "geo", "obsidian"]
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "B", "SIM", "UP", "C4", "RET", "ARG", "PTH", "N"]
+# S = beveiligingsregels (Bandit-port), BLE = geen blinde `except Exception`,
+# T20 = geen print() buiten install.py en de regressietest.
+select = ["E", "F", "W", "B", "SIM", "UP", "C4", "RET", "ARG", "PTH", "N", "S", "BLE", "T20"]
 ignore = [
     "E741",
     # `zip(..., strict=)` toevoegen aan geometrielussen verandert gedrag bij
@@ -32,18 +39,38 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # De GUI volgt de Qt-naamconventie voor overschreven methoden (resizeEvent,
 # closeEvent) en voor slots die vanuit JavaScript worden aangeroepen.
-"tug_gui.py" = ["N802", "N815"]
+# E402: beide startscripts herstarten zich eerst in .venv, vóór de overige imports.
+"tug_gui.py" = ["N802", "N815", "E402"]
+"tug_run.py" = ["E402"]
 # PIL-kleurconstanten en layoutmaten binnen een functie zijn hoofdletters per
 # conventie: het zijn constanten, ook al staan ze lokaal.
 "tug_03_kaart.py" = ["N806"]
 # Idem voor de PDF-layoutmaten; showPage is een override van reportlab.
 "tug_05_output.py" = ["N806", "N802"]
 # pytest kent fixtures toe op parameternaam; een ongebruikte parameter is daar
-# de manier om een fixture aan te vragen.
-"test/*.py" = ["ARG001", "ARG002"]
+# de manier om een fixture aan te vragen. assert is in tests de bedoeling.
+"test/*.py" = ["ARG001", "ARG002", "S101"]
+# De regressietest en het installatiescript zijn opdrachtregelprogramma's zonder
+# logging-configuratie: hun uitvoer ís de interface.
+"test/test_regressie.py" = ["T201"]
+"install.py" = ["T201"]
+# beveiligingscontrole.py start de controlegereedschappen als los proces.
+"beveiligingscontrole.py" = ["T201", "S603"]
 
 [tool.bandit]
 exclude_dirs = [".venv", "archief", "tmp", "output", "geo", "obsidian", "test"]
+
+[tool.mypy]
+python_version = "3.12"
+files = ["*.py", "test"]
+exclude = ["^archief/", "^tmp/", "^output/", "^geo/", "^obsidian/", "^\\.venv/"]
+warn_unused_ignores = true
+# De geo-stack, reportlab en odfpy leveren geen typeinformatie mee. Hun
+# aanroepen worden daarom niet getypeerd gecontroleerd; de eigen code wel.
+[[tool.mypy.overrides]]
+module = ["geopandas", "geopandas.*", "shapely", "shapely.*", "pyogrio", "pyogrio.*",
+          "reportlab", "reportlab.*", "odf", "odf.*", "pandas", "pandas.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
@@ -51,3 +78,11 @@ python_files = ["test_*.py"]
 # test_regressie.py is een zelfstandig script met een eigen CLI (--herijk) en
 # geen pytest-suite; pytest verzamelt daar geen tests uit.
 addopts = "-q --ignore=test/test_regressie.py"
+
+# odfpy 1.4.1 bestaat alleen als sdist zonder statische metadata. Door zijn
+# afhankelijkheid hier vast te leggen hoeft uv hem niet te bouwen om
+# requirements.txt te genereren (de afhankelijkheid staat in zijn setup.py).
+[[tool.uv.dependency-metadata]]
+name = "odfpy"
+version = "1.4.1"
+requires-dist = ["defusedxml"]

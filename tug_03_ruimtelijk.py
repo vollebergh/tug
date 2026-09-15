@@ -17,6 +17,11 @@ De stap verloopt in vier fasen, elk met een eigen functie:
 Het oordeel wordt in de tweede fase één keer geveld; alle drie de
 presentatievormen lezen datzelfde oordeel, zodat de PDF-tabel, de HTML-kaart en
 de PNG-kaart elkaar niet kunnen tegenspreken.
+
+Elke bron meldt in een Bronregister hoe haar bevraging is afgelopen; dat register
+komt als `ruimtelijk.bronstatus` in de state. Valt een bron uit waar de toetsing
+niet zonder kan (BAG, gevelcheck, Natura 2000, luchthavens), dan stopt deze stap
+met exitcode 1 en komt er geen rapport.
 """
 
 import json
@@ -29,7 +34,9 @@ from shapely.geometry import MultiPoint
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform as shapely_transform, unary_union
 
+from tug_bronstatus import BRONNEN, Bronregister, ToetsingAfgebroken, beschrijf
 from tug_logging import LogAccumulator, setup_logging
+from tug_opslag import schrijf_state
 from tug_config import (
     KAART_ACHTERGRONDEN, TOETSING_TOESLAG_M, VERSION, MODEL_LABEL, OUTPUT_DIR,
     MARGE_M, MANEGE_SIGNAAL_MARGE, KDV_BBOX_EXTRA,
@@ -57,6 +64,9 @@ from tug_types import Bevindingen, ContextDict, FeatureList, LogFn, Signalering,
 from tug_03_kaart import _render_kaart, _bereken_zoom
 
 _logger = logging.getLogger("tug.03_ruimtelijk")
+
+# Bronnen die deze stap altijd raadpleegt (of expliciet als niet nodig meldt).
+_VERWACHTE_BRONNEN = tuple(s for s in BRONNEN if s != "ilt_register")
 
 
 # ──────────────────────────────────────────────
@@ -186,10 +196,10 @@ def _bouw_classificatie_context(bev: Bevindingen) -> ContextDict:
     geluidgevoelig_sleutels = {feature_sleutel(f) for f in bev.geluidgevoelig_vbo}
     uitgesloten             = _begraafplaats_uitsluitingen(bev)
 
-    samengevoegd_kdv_straal    = set()
-    samengevoegd_school_straal = set()
-    samengevoegd_kdv_marge     = set()
-    samengevoegd_school_marge  = set()
+    samengevoegd_kdv_straal:    set[str] = set()
+    samengevoegd_school_straal: set[str] = set()
+    samengevoegd_kdv_marge:     set[str] = set()
+    samengevoegd_school_marge:  set[str] = set()
 
     oordelen = {
         "straal": _beoordeel_band(
@@ -514,7 +524,7 @@ def _nnn_via_n2000(
 
 def _promoveer_gevels(
     marge_vbo: FeatureList, geluidgevoelig: FeatureList, alle_vbo: FeatureList,
-    circle_rd: BaseGeometry, log: LogFn,
+    circle_rd: BaseGeometry, log: LogFn, bronnen: Bronregister,
 ) -> FeatureList:
     """Promoveer margeband-VBO's waarvan de gevel de toetsingsafstand snijdt.
 
@@ -526,9 +536,11 @@ def _promoveer_gevels(
     """
     if not marge_vbo:
         log("  Geen geluidgevoelige VBOs in margeband — gevel-check overgeslagen.")
+        bronnen.geraadpleegd("bag_gevelcheck", "niet nodig: margeband zonder geluidgevoelige "
+                                               "objecten")
         return marge_vbo
 
-    gecontroleerd  = gevel_check(marge_vbo, circle_rd, log)
+    gecontroleerd  = gevel_check(marge_vbo, circle_rd, log, bronnen=bronnen)
     promoties      = [f for f in gecontroleerd if f.get("_gevel_snijdt")]
     resterend      = [f for f in gecontroleerd if not f.get("_gevel_snijdt")]
     if not promoties:
@@ -544,11 +556,14 @@ def _promoveer_gevels(
 
 def _verzamel_bevindingen(
     circle_rd: BaseGeometry, circle_marge_rd: BaseGeometry, punten_rd: MultiPoint,
-    straal: float, log: LogFn,
+    straal: float, log: LogFn, bronnen: Bronregister,
 ) -> Bevindingen:
-    """Bevraag alle bronnen en breng de uitkomsten samen in één Bevindingen-record."""
+    """Bevraag alle bronnen en breng de uitkomsten samen in één Bevindingen-record.
+
+    Gooit ToetsingAfgebroken als een bron uitvalt waar de toetsing niet zonder kan.
+    """
     log("\nStap 3: Verblijfsobjecten ophalen via BAG WFS v2.0 ...")
-    alle_vbo_bbox = haal_verblijfsobjecten(circle_marge_rd, log)
+    alle_vbo_bbox = haal_verblijfsobjecten(circle_marge_rd, log, bronnen=bronnen)
 
     log("\nStap 4: Filteren op punten binnen straalcirkel ...")
     alle_vbo = filter_binnen_straal(alle_vbo_bbox, circle_rd, log)
@@ -556,47 +571,48 @@ def _verzamel_bevindingen(
 
     log("\nStap 4b: VBO's dedupliceren ...")
     alle_vbo = dedupliceer_vbo(alle_vbo, log)
-    vul_woonplaats_via_reverse_geocode(alle_vbo, log)
+    vul_woonplaats_via_reverse_geocode(alle_vbo, log, bronnen=bronnen)
 
     log(f"\nStap 4d: Marge-adressen filteren (band +{MARGE_M} m) ...")
     marge_vbo_raw = dedupliceer_vbo(
         filter_binnen_marge(alle_vbo_bbox, circle_rd, circle_marge_rd, log), log
     )
     marge_vbo = filter_geluidgevoelig(marge_vbo_raw, log)
-    vul_woonplaats_via_reverse_geocode(marge_vbo, log)
+    vul_woonplaats_via_reverse_geocode(marge_vbo, log, bronnen=bronnen)
     geluidgevoelige_marge = {feature_sleutel(f) for f in marge_vbo}
     marge_vbo_overig = [
         f for f in marge_vbo_raw if feature_sleutel(f) not in geluidgevoelige_marge
     ]
     log(f"  {len(marge_vbo_overig)} niet-geluidgevoelige VBO's in margeband (kaartweergave).")
-    vul_woonplaats_via_reverse_geocode(marge_vbo_overig, log)
+    vul_woonplaats_via_reverse_geocode(marge_vbo_overig, log, bronnen=bronnen)
 
     log("\nStap 5: Filteren op geluidgevoelige gebruiksdoelen ...")
     geluidgevoelig = filter_geluidgevoelig(alle_vbo, log)
 
     log("\nStap 6: Gevel-check op margeband (gevel snijdt toetsingsafstand → wettelijk) ...")
-    marge_vbo = _promoveer_gevels(marge_vbo, geluidgevoelig, alle_vbo, circle_rd, log)
+    marge_vbo = _promoveer_gevels(marge_vbo, geluidgevoelig, alle_vbo, circle_rd, log, bronnen)
 
     log("\nStap 7: Begraafplaatsen — PDOK Location API (BRT) ...")
-    begraafplaatsen = signaleer_begraafplaatsen(circle_rd, straal, log, punten_rd=punten_rd)
+    begraafplaatsen = signaleer_begraafplaatsen(circle_rd, straal, log, punten_rd=punten_rd,
+                                                bronnen=bronnen)
 
     log(f"\nStap 8: KDV — LRK CSV + BAG-matching (bbox straal+{KDV_BBOX_EXTRA} m) ...")
-    kdv = haal_kdv_locaties(circle_rd, log)
+    kdv = haal_kdv_locaties(circle_rd, log, bronnen=bronnen)
 
     log("\nStap 9: Scholen — DUO Open Onderwijsdata ...")
-    scholen = haal_scholen(circle_rd, log)
+    scholen = haal_scholen(circle_rd, log, bronnen=bronnen)
 
     log("\nStap 10: Maneges — PDOK Location API (BRT) ...")
-    maneges = haal_maneges_pdok(circle_rd, straal, log, punten_rd=punten_rd)
+    maneges = haal_maneges_pdok(circle_rd, straal, log, punten_rd=punten_rd, bronnen=bronnen)
 
     log("\nStap 10b: Luchthavens — GeoPortaal Overijssel WFS (on-the-fly) ...")
-    luchthavens = signaleer_luchthavens(circle_rd, log, punten_rd=punten_rd)
+    luchthavens = signaleer_luchthavens(circle_rd, log, punten_rd=punten_rd, bronnen=bronnen)
 
     log("\nStap 11: Natura 2000 — PDOK WFS (on-the-fly) ...")
-    n2000 = signaleer_natura2000(circle_rd, log, punten_rd=punten_rd)
+    n2000 = signaleer_natura2000(circle_rd, log, punten_rd=punten_rd, bronnen=bronnen)
 
     log("\nStap 12: Natuurnetwerk Nederland — GeoPackage-cache (ATOM-bron) ...")
-    nnn = signaleer_nnn(circle_rd, log, punten_rd=punten_rd)
+    nnn = signaleer_nnn(circle_rd, log, punten_rd=punten_rd, bronnen=bronnen)
 
     nnn_in_straal = _nnn_via_n2000(n2000["in_straal"], nnn["in_straal"])
     if nnn_in_straal is not nnn["in_straal"]:
@@ -625,7 +641,7 @@ def _verzamel_bevindingen(
     )
 
     log("\nStap 12b: Gevelcontouren — BAG-panden voor kaartweergave ...")
-    panden         = haal_panden(circle_marge_rd, log)
+    panden         = haal_panden(circle_marge_rd, log, bronnen=bronnen)
     kaartobjecten  = bev.kaartobjecten()
     n_contour      = koppel_gevelcontouren(kaartobjecten, panden)
     log(f"  {n_contour}/{len(kaartobjecten)} kaartobjecten gekoppeld aan een gevelcontour "
@@ -654,7 +670,7 @@ def _render_kaarten(
     bev: Bevindingen, context: ContextDict, lon: float, lat: float,
     zooms: dict[str, int], straal: float,
     punten: list[tuple[float, float]], toetsing_rings: list, signaal_rings: list,
-    naam_infix: str, timestamp: str, log: LogFn,
+    naam_infix: str, timestamp: str, log: LogFn, bronnen: Bronregister,
 ) -> list[dict[str, str]]:
     """Render de vier kaarten (twee uitsneden × twee achtergronden) en sla ze op."""
     map_w_px, map_h_px = _kaartformaat()
@@ -666,6 +682,7 @@ def _render_kaarten(
                 bev=bev, oordelen=context["oordelen"], toon_legenda=True, log=log,
                 achtergrond=achtergrond, punten=punten,
                 toetsing_rings=toetsing_rings, signaal_rings=signaal_rings,
+                bronnen=bronnen,
             )
             pad = OUTPUT_DIR / f"tug_kaart_{soort}_{achtergrond}{naam_infix}_{timestamp}.png"
             img.rotate(90, expand=True).save(pad, format="PNG")
@@ -679,14 +696,19 @@ def _render_kaarten(
 # Hoofdfunctie — leest en schrijft tug_state.json
 # ──────────────────────────────────────────────
 
-def _straal_uit_state(state: dict, aanvraag: dict) -> tuple[float, float]:
-    """Lden-afstand uit de classificatiestap plus de vaste toeslag."""
-    classificatie = state.get("classificatie", {})
-    straal = classificatie.get("norm_toepassing") or aanvraag.get("straal_override")
-    if straal is None:
+def _straal_uit_state(state: dict) -> tuple[float, float]:
+    """Lden-afstand uit de classificatiestap plus de vaste toeslag.
+
+    De afstand komt uitsluitend uit de classificatie. Er is geen handmatige
+    override: een afstand die niet uit het register en de NLR-tabel volgt, is
+    precies de aanname die de pipeline niet doet.
+    """
+    straal = state.get("classificatie", {}).get("norm_toepassing")
+    if not isinstance(straal, int | float) or isinstance(straal, bool) or straal <= 0:
         _logger.error(
-            "FOUT: straal niet beschikbaar "
-            "(classificatie.norm_toepassing ontbreekt en geen straal_override in aanvraag)."
+            "FOUT: geen geldige toetsingsafstand in de state "
+            "(classificatie.norm_toepassing ontbreekt of is geen positief getal). "
+            "Draai eerst stap 3 (tug_02_classificatie.py)."
         )
         sys.exit(1)
     straal_lden = float(straal)
@@ -748,7 +770,7 @@ def run(state_pad: str | Path) -> None:
     # Kaartcentrum = gemiddelde van de puntlocaties (bij één locatie: die locatie zelf)
     lat = sum(p[0] for p in punten) / len(punten)
     lon = sum(p[1] for p in punten) / len(punten)
-    straal_lden, straal = _straal_uit_state(state, aanvraag)
+    straal_lden, straal = _straal_uit_state(state)
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     now       = datetime.now()
@@ -774,7 +796,14 @@ def run(state_pad: str | Path) -> None:
            if len(punten) > 1 else ""))
 
     # ── Fase 1: wat ligt er in de omgeving? ──
-    bev = _verzamel_bevindingen(circle_rd, circle_marge_rd, punten_rd, straal, log)
+    bronnen = Bronregister()
+    try:
+        bev = _verzamel_bevindingen(circle_rd, circle_marge_rd, punten_rd, straal, log, bronnen)
+    except ToetsingAfgebroken as fout:
+        log(f"\nFOUT: toetsing afgebroken — {fout}")
+        log("  Zonder deze bron is geen juist rapport te maken; er wordt geen PDF "
+            "gegenereerd. Draai de aanvraag opnieuw zodra de bron bereikbaar is.")
+        sys.exit(1)
 
     # ── Fase 2: wat betekent dat per object? ──
     log("\nStap 13: Adresrijen samenvoegen ...")
@@ -816,11 +845,24 @@ def run(state_pad: str | Path) -> None:
     naam_infix  = f"_{slug}" if slug else ""
     kaarten_png = _render_kaarten(
         bev, context, lon, lat, zooms, straal,
-        punten, toetsing_rings, signaal_rings, naam_infix, timestamp, log,
+        punten, toetsing_rings, signaal_rings, naam_infix, timestamp, log, bronnen,
     )
 
+    try:
+        bronnen.controleer_compleet(list(_VERWACHTE_BRONNEN))
+    except ToetsingAfgebroken as fout:
+        log(f"\nFOUT: toetsing afgebroken — {fout}")
+        sys.exit(1)
+    onvolledig = [u for u in bronnen.naar_state()
+                  if u["toetsingsrelevant"] and u["status"] not in ("geraadpleegd", "cache")]
+
     log(f"\n{'=' * 60}")
-    log("Stap 4 voltooid.")
+    if onvolledig:
+        log("Stap 4 voltooid met ONVOLLEDIGE bronnen:")
+        for uitkomst in onvolledig:
+            log(f"  ✗ {beschrijf(uitkomst)}")
+    else:
+        log("Stap 4 voltooid.")
     log(
         f"  Wettelijk relevant: {len(wettelijk)} | Marge: {len(marge_rijen)} | "
         f"Aandacht: {len(aandacht)} | Overig: {len(overig)}"
@@ -860,6 +902,7 @@ def run(state_pad: str | Path) -> None:
             for i in bev.luchthavens_in_signaal
         ],
         "statistieken":       bev.statistieken(),
+        "bronstatus":         bronnen.naar_state(),
         "log_regels":         log.lines,
     }
 
@@ -871,7 +914,7 @@ def run(state_pad: str | Path) -> None:
                       f"wettelijk relevante adressen."),
     })
 
-    state_pad.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    schrijf_state(state_pad, state)
     _logger.info(f"State geschreven naar {state_pad}")
 
 

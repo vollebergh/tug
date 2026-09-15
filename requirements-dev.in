@@ -1,0 +1,19 @@
+# Gereedschap voor controle en onderhoud — bron voor requirements-dev.txt.
+#
+#     uv pip compile --universal --python-version 3.12 --generate-hashes \
+#         -c requirements.txt requirements-dev.in -o requirements-dev.txt
+#
+# De constraint op requirements.txt houdt de pipelineversies gelijk; het
+# resultaat bevat pipeline én gereedschap, allemaal met hash. Installeren:
+#
+#     .venv/bin/python -m pip install --require-hashes -r requirements-dev.txt
+
+-r requirements.in
+
+pytest==9.1.1           # eenheidstests (test/)
+ruff==0.16.7            # stijl- en beveiligingsregels, configuratie in pyproject.toml
+bandit==1.9.4           # beveiligingsscan als rapport
+mypy==2.3.1             # typecontrole, configuratie in pyproject.toml
+types-requests==2.33.0.20260906
+pip-audit==2.10.1       # bekende kwetsbaarheden in afhankelijkheden
+pre-commit==4.6.2       # draait ruff en gitleaks vóór elke commit

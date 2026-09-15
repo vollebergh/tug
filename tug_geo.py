@@ -35,6 +35,21 @@ def naam_slug(naam: str | None) -> str:
     return slug.strip("_")[:NAAM_SLUG_MAX]
 
 
+def json_voor_script(waarde: Any) -> str:
+    """JSON die veilig in een `<script>`-blok van een HTML-document kan staan.
+
+    `<`, `>` en `&` worden als unicode-escape geschreven. Daarmee kan geen naam uit
+    een register de scripttag sluiten (`</script>`) of de HTML-parser in een
+    commentaar- of dubbel-escapetoestand brengen (`<!--<script>`); de JSON zelf
+    verandert er niet door. U+2028/U+2029 gaan mee voor oudere JavaScript-engines.
+    """
+    tekst = json.dumps(waarde, ensure_ascii=False)
+    for teken, escape in (("<", "\\u003c"), (">", "\\u003e"), ("&", "\\u0026"),
+                          ("\u2028", "\\u2028"), ("\u2029", "\\u2029")):
+        tekst = tekst.replace(teken, escape)
+    return tekst
+
+
 def feature_sleutel(feat: Feature) -> str:
     """Stabiele identiteit van een feature, bruikbaar als sleutel in een set of dict.
 

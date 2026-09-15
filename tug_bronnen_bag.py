@@ -5,17 +5,18 @@ Bevat alle functies voor het ophalen en filteren van BAG-verblijfsobjecten
 en pandgeometrieën, inclusief gevel-check en geluidgevoeligheidsfilter.
 """
 
-import logging
 import copy
+import logging
 
-import requests
 from shapely.geometry import shape
 from shapely.geometry.base import BaseGeometry
 
+from tug_bronstatus import Bronregister
 from tug_config import (
     BAG_WFS, BAG_PAGE_SIZE, GELUIDGEVOELIGE_DOELEN,
-    MARGE_M, PAND_BBOX_ZOEK_MARGE,
+    MARGE_M, MAX_BYTES_API, PAND_BBOX_ZOEK_MARGE,
 )
+from tug_http import BronFout, haal_json
 from tug_geo import (
     circle_bbox_wgs84, make_transformer,
     shapely_from_geojson_geom, transform_geom_to_rd,
@@ -36,17 +37,24 @@ def _deelgebieden(geom: BaseGeometry) -> list:
     return list(geom.geoms) if hasattr(geom, "geoms") else [geom]
 
 
-def haal_verblijfsobjecten(circle_rd: BaseGeometry, log: LogFn) -> FeatureList:
+def haal_verblijfsobjecten(
+    circle_rd: BaseGeometry, log: LogFn, *, bronnen: Bronregister,
+) -> FeatureList:
+    """Alle BAG-verblijfsobjecten in de bbox van circle_rd.
+
+    Dit is de adressenlijst zelf: faalt één pagina, dan breekt de toetsing af
+    (via het bronregister) in plaats van met een onvolledige lijst door te gaan.
+    """
     delen = _deelgebieden(circle_rd)
     if len(delen) > 1:
         # Dubbele features (overlap van bboxen) worden later door dedupliceer_vbo samengevoegd
-        return [f for deel in delen for f in haal_verblijfsobjecten(deel, log)]
+        return [f for deel in delen for f in haal_verblijfsobjecten(deel, log, bronnen=bronnen)]
     lon_min, lat_min, lon_max, lat_max = circle_bbox_wgs84(circle_rd)
     bbox_str = f"{lat_min},{lon_min},{lat_max},{lon_max},EPSG:4326"
     log(f"  Ophalen verblijfsobjecten via BAG WFS v2.0 "
         f"(bbox {lat_min:.5f},{lon_min:.5f},{lat_max:.5f},{lon_max:.5f}) ...")
 
-    features = []
+    features: FeatureList = []
     start_index = 0
 
     while True:
@@ -59,11 +67,13 @@ def haal_verblijfsobjecten(circle_rd: BaseGeometry, log: LogFn) -> FeatureList:
                              "bag:huisnummer,bag:huisletter,bag:toevoeging,"
                              "bag:postcode,bag:woonplaats,bag:pandidentificatie"),
         }
-        resp = requests.get(BAG_WFS, params=params, timeout=30)
-        if resp.status_code != 200:
-            log(f"  WAARSCHUWING: BAG WFS gaf statuscode {resp.status_code}")
-            break
-        data = resp.json()
+        try:
+            data = haal_json(BAG_WFS, params=params, timeout=30, max_bytes=MAX_BYTES_API)
+        except BronFout as fout:
+            log(f"  FOUT: BAG-verblijfsobjecten (pagina vanaf {start_index}) niet opgehaald: "
+                f"{fout}")
+            bronnen.mislukt("bag_verblijfsobjecten", str(fout))
+            raise
         batch = data.get("features", [])
         if features == [] and batch:
             log(f"  BAG verblijfsobject property-namen: "
@@ -74,6 +84,7 @@ def haal_verblijfsobjecten(circle_rd: BaseGeometry, log: LogFn) -> FeatureList:
         start_index += BAG_PAGE_SIZE
 
     log(f"  {len(features)} verblijfsobjecten opgehaald binnen bbox.")
+    bronnen.geraadpleegd("bag_verblijfsobjecten")
     return features
 
 
@@ -174,14 +185,17 @@ def filter_geluidgevoelig(features: FeatureList, log: LogFn) -> FeatureList:
 # BAG — gevelcontouren voor kaartweergave
 # ──────────────────────────────────────────────
 
-def haal_panden(circle_rd: BaseGeometry, log: LogFn) -> FeatureList:
-    """Haal alle BAG-panden op binnen de bbox van circle_rd (WGS84-geometrie)."""
+def haal_panden(circle_rd: BaseGeometry, log: LogFn, *, bronnen: Bronregister) -> FeatureList:
+    """Haal alle BAG-panden op binnen de bbox van circle_rd (WGS84-geometrie).
+
+    Alleen voor de kaartweergave: bij een storing valt de kaart terug op punten.
+    """
     delen = _deelgebieden(circle_rd)
     if len(delen) > 1:
-        return [f for deel in delen for f in haal_panden(deel, log)]
+        return [f for deel in delen for f in haal_panden(deel, log, bronnen=bronnen)]
     lon_min, lat_min, lon_max, lat_max = circle_bbox_wgs84(circle_rd)
     bbox_str = f"{lat_min},{lon_min},{lat_max},{lon_max},EPSG:4326"
-    panden = []
+    panden: FeatureList = []
     start_index = 0
     while True:
         params = {
@@ -191,17 +205,20 @@ def haal_panden(circle_rd: BaseGeometry, log: LogFn) -> FeatureList:
             "BBOX": bbox_str, "count": BAG_PAGE_SIZE, "startIndex": start_index,
             "propertyName": "bag:identificatie,bag:geom",
         }
-        resp = requests.get(BAG_WFS, params=params, timeout=60)
-        if resp.status_code != 200:
-            log(f"  WAARSCHUWING: BAG WFS (pand) gaf statuscode {resp.status_code}; "
-                f"kaart valt terug op puntweergave.")
-            break
-        batch = resp.json().get("features", [])
+        try:
+            data = haal_json(BAG_WFS, params=params, timeout=60, max_bytes=MAX_BYTES_API)
+        except BronFout as fout:
+            log(f"  WAARSCHUWING: BAG-panden niet (volledig) opgehaald: {fout}; "
+                f"kaart valt deels terug op puntweergave.")
+            bronnen.mislukt("gevelcontouren", str(fout))
+            return panden
+        batch = data.get("features", [])
         panden.extend(batch)
         if len(batch) < BAG_PAGE_SIZE:
             break
         start_index += BAG_PAGE_SIZE
     log(f"  {len(panden)} panden opgehaald voor gevelcontouren.")
+    bronnen.geraadpleegd("gevelcontouren")
     return panden
 
 
@@ -234,9 +251,9 @@ def koppel_gevelcontouren(features: FeatureList, panden: FeatureList) -> int:
         props = feat.get("properties", {})
         idx = None
         pid = props.get("pandidentificatie") or props.get("maaktDeelUitVan")
-        for p in ([pid] if isinstance(pid, str) else (pid or [])):
-            if str(p) in per_id:
-                idx = per_id[str(p)]
+        for kandidaat in ([pid] if isinstance(pid, str) else (pid or [])):
+            if str(kandidaat) in per_id:
+                idx = per_id[str(kandidaat)]
                 break
         if idx is None:
             geom = feat.get("geometry") or {}
@@ -286,6 +303,8 @@ def haal_pand_geometrie_via_bbox(pand_id, vbo_feat, log):
     4. Als geen pand het punt bevat: probeer strikte ID-match (pandidentificatie
        kan ook kloppen als het punt net op de grens ligt).
     5. Als ook dat niet lukt: retourneer None — nooit een willekeurig buurpand.
+
+    Een mislukte bevraging is geen "geen pand": die gaat als BronFout terug.
     """
     geom = vbo_feat.get("geometry", {})
     if not geom:
@@ -312,11 +331,8 @@ def haal_pand_geometrie_via_bbox(pand_id, vbo_feat, log):
         "TYPENAME": "bag:pand", "outputFormat": "application/json",
         "BBOX": bbox_str, "count": 100,
     }
-    resp = requests.get(BAG_WFS, params=params, timeout=30)
-    if resp.status_code != 200:
-        log(f"  WAARSCHUWING: pand bbox-query voor {pand_id} gaf status {resp.status_code}")
-        return None
-    features = resp.json().get("features", [])
+    features = haal_json(BAG_WFS, params=params, timeout=30,
+                         max_bytes=MAX_BYTES_API).get("features", [])
     if not features:
         return None
 
@@ -344,7 +360,8 @@ def haal_pand_geometrie_via_bbox(pand_id, vbo_feat, log):
 
 
 def gevel_check(
-    geluidgevoelig_features: FeatureList, circle_rd: BaseGeometry, log: LogFn
+    geluidgevoelig_features: FeatureList, circle_rd: BaseGeometry, log: LogFn,
+    *, bronnen: Bronregister,
 ) -> FeatureList:
     log("  Gevel-check: pandgeometrie ophalen voor gefilterde verblijfsobjecten ...")
     pand_ids = haal_pand_ids(geluidgevoelig_features)
@@ -367,7 +384,12 @@ def gevel_check(
     stap_pand = max(1, totaal_panden // 10)
     for i, pid in enumerate(pand_ids_lijst, 1):
         vbo_ref = pand_id_to_vbo.get(pid)
-        pand_feat = haal_pand_geometrie_via_bbox(pid, vbo_ref, log) if vbo_ref else None
+        try:
+            pand_feat = haal_pand_geometrie_via_bbox(pid, vbo_ref, log) if vbo_ref else None
+        except BronFout as fout:
+            log(f"  FOUT: pandgeometrie voor de gevelcheck niet opgehaald ({pid}): {fout}")
+            bronnen.mislukt("bag_gevelcheck", str(fout))
+            raise
         if not pand_feat:
             continue
         geom_dict = pand_feat.get("geometry")
@@ -381,6 +403,7 @@ def gevel_check(
                 f"({round(i / totaal_panden * 100)}%) panden gecontroleerd ...")
 
     log(f"  {len(snijdende_pand_ids)} panden waarvan geometrie de straalcirkel snijdt.")
+    bronnen.geraadpleegd("bag_gevelcheck")
 
     resultaat = []
     for feat in geluidgevoelig_features:

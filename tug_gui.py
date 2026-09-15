@@ -29,14 +29,23 @@ De kaart is dezelfde Leaflet-kaart met dezelfde PDOK-tegels als de HTML- en
 PDF-export (tug_config.KAART_ACHTERGRONDEN); zie gui/kaart.html.
 """
 
+import sys
+
+# Eerst naar de projectomgeving, vóór PySide6 en de rest: een andere interpreter
+# heeft die pakketten mogelijk niet (tug_omgeving gebruikt alleen de standaardbibliotheek).
+if __name__ == "__main__":
+    from tug_omgeving import zorg_voor_projectomgeving
+    zorg_voor_projectomgeving()
+
 import json
 import os
 import re
 import shutil
+import signal
 import subprocess
-import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from pyproj import Transformer
 
@@ -47,7 +56,7 @@ from PySide6.QtGui import (
     QColor, QDesktopServices, QIcon, QPainter, QPainterPath, QPen, QPixmap,
 )
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtWebEngineCore import QWebEngineSettings
+from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDoubleSpinBox,
@@ -60,7 +69,8 @@ from tug_config import (
     GUI_DIR, KAART_ACHTERGRONDEN, MAX_PUNT_AFSTAND_M, MIN_INDIENTERMIJN_DAGEN,
     NL_BBOX, OUTPUT_DIR, REGISTRATIE_PATROON, VERSION,
 )
-from tug_geo import in_nederland, naam_slug
+from tug_geo import in_nederland, json_voor_script, naam_slug
+from tug_opslag import schrijf_state, wis_state
 
 # ──────────────────────────────────────────────
 # Constanten
@@ -68,6 +78,16 @@ from tug_geo import in_nederland, naam_slug
 
 SCRIPT_DIR   = Path(__file__).parent
 TMP_DIR      = SCRIPT_DIR / "tmp"
+STATE_PAD    = SCRIPT_DIR / "tug_state.json"   # tug_run.STATE_PAD
+LEAFLET_DIR  = GUI_DIR / "vendor" / "leaflet"
+
+# Herkomst van de kaartpagina. Een niet-lokale oorsprong (.invalid bestaat nooit)
+# zodat de pagina geen lokale inhoud is: zij krijgt geen toegang tot bestanden en
+# laat de tegels gewoon laden, zonder de LocalContentCanAccess…-uitzonderingen.
+KAART_BASIS_URL = "https://tug-kaart.invalid/"
+
+# Hoe lang de schil wacht tot een gestopte pipeline zelf heeft opgeruimd.
+STOP_WACHTTIJD_S = 15
 
 VENSTER_B, VENSTER_H = 1400, 1000
 LINKER_FRACTIE       = 0.33
@@ -84,6 +104,7 @@ ONDERTEKENING_VANAF_HEDEN = True
 STANDAARD_DAGEN_VOORUIT   = 42   # voorgestelde vluchtdatum: ruim buiten de indientermijn
 STANDAARD_AANTAL_VLUCHTEN = 50
 AANTAL_STAPPEN            = 4    # tug_run.STAPPEN
+EXIT_ONVOLLEDIG           = 2    # tug_run.EXIT_ONVOLLEDIG: rapport gemaakt, toetsing onvolledig
 
 # Bereik van de RD-invoervelden (EPSG:28992), ruim om Nederland heen.
 RD_X_BEREIK = (0.0, 300000.0)
@@ -132,9 +153,9 @@ class Info(QLabel):
     def __init__(self, uitleg: str):
         super().__init__("i")
         self.setObjectName("info")
-        self.setAlignment(Qt.AlignCenter)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setToolTip(uitleg)
-        self.setCursor(Qt.WhatsThisCursor)
+        self.setCursor(Qt.CursorShape.WhatsThisCursor)
 
 
 def sectiekop(tekst: str, uitleg: str | None = None) -> QWidget:
@@ -185,12 +206,12 @@ def _teken_streep(pad: Path, punten: list[tuple[float, float]], kleur: str,
                   formaat: int = 16, dikte: float = 1.8) -> None:
     """Tekent een chevron of vinkje als PNG; QSS kan geen vormen tekenen."""
     pm = QPixmap(formaat, formaat)
-    pm.fill(Qt.transparent)
+    pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
     pen = QPen(QColor(kleur), dikte)
-    pen.setCapStyle(Qt.RoundCap)
-    pen.setJoinStyle(Qt.RoundJoin)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
     p.setPen(pen)
     lijn = QPainterPath()
     lijn.moveTo(*punten[0])
@@ -203,12 +224,13 @@ def _teken_streep(pad: Path, punten: list[tuple[float, float]], kleur: str,
 
 def iconen() -> dict[str, str]:
     """Genereert de pictogrammen die het stijlblad nodig heeft en geeft hun paden."""
-    map_ = Path(QStandardPaths.writableLocation(QStandardPaths.CacheLocation)) / "iconen"
+    cache = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
+    map_ = Path(cache) / "iconen"
     map_.mkdir(parents=True, exist_ok=True)
-    neer = [(4, 6.5), (8, 10.5), (12, 6.5)]
-    op   = [(4, 10), (8, 6), (12, 10)]
-    vink = [(4, 8.4), (6.8, 11.2), (12, 5.4)]
-    specificaties = {
+    neer: list[tuple[float, float]] = [(4, 6.5), (8, 10.5), (12, 6.5)]
+    op:   list[tuple[float, float]] = [(4, 10), (8, 6), (12, 10)]
+    vink: list[tuple[float, float]] = [(4, 8.4), (6.8, 11.2), (12, 5.4)]
+    specificaties: dict[str, tuple[list[tuple[float, float]], str]] = {
         "__PIJL_NEER__":      (neer, "#93a1b3"),
         "__PIJL_NEER_ZWAK__": (neer, "#4a5566"),
         "__PIJL_OP__":        (op,   "#93a1b3"),
@@ -226,11 +248,11 @@ def iconen() -> dict[str, str]:
 def app_icoon() -> QIcon:
     """Tekent het pin-icoon van de kaart als vensterpictogram."""
     pm = QPixmap(64, 64)
-    pm.fill(Qt.transparent)
+    pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.setBrush(QColor("#4b93ff"))
-    p.setPen(Qt.NoPen)
+    p.setPen(Qt.PenStyle.NoPen)
     pad = QPainterPath()
     pad.moveTo(32, 58)
     pad.cubicTo(52, 36, 54, 28, 54, 24)
@@ -261,7 +283,7 @@ class LuchtvaartuigRij(QFrame):
 
         nr = QLabel(str(nummer))
         nr.setObjectName("rijNr")
-        nr.setAlignment(Qt.AlignCenter)
+        nr.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(nr)
 
         naam = QLabel(lv["registratie"])
@@ -277,7 +299,7 @@ class LuchtvaartuigRij(QFrame):
         weg = QPushButton("✕")
         weg.setObjectName("verwijder")
         weg.setToolTip("Luchtvaartuig verwijderen")
-        weg.setCursor(Qt.PointingHandCursor)
+        weg.setCursor(Qt.CursorShape.PointingHandCursor)
         weg.clicked.connect(lambda: self.verwijderd.emit(self._id))
         lay.addWidget(weg)
 
@@ -290,7 +312,7 @@ class PuntRij(QFrame):
         super().__init__()
         self.setObjectName("rij")
         self._id = punt["id"]
-        self.setCursor(Qt.PointingHandCursor)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip("Klik om deze puntlocatie op de kaart te tonen")
 
         lay = QHBoxLayout(self)
@@ -299,7 +321,7 @@ class PuntRij(QFrame):
 
         nr = QLabel(str(nummer))
         nr.setObjectName("rijNr")
-        nr.setAlignment(Qt.AlignCenter)
+        nr.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(nr)
 
         kolom = QVBoxLayout()
@@ -318,7 +340,7 @@ class PuntRij(QFrame):
         weg = QPushButton("✕")
         weg.setObjectName("verwijder")
         weg.setToolTip("Puntlocatie verwijderen")
-        weg.setCursor(Qt.PointingHandCursor)
+        weg.setCursor(Qt.CursorShape.PointingHandCursor)
         weg.clicked.connect(lambda: self.verwijderd.emit(self._id))
         lay.addWidget(weg)
 
@@ -356,21 +378,60 @@ class Brug(QObject):
         self.kaartGereed.emit()
 
 
+class KaartPagina(QWebEnginePage):
+    """De ingebedde kaart mag nergens anders heen.
+
+    Na het laden van de eigen pagina wordt elke navigatie geweigerd. Een klik op
+    een link (zoals de bronvermelding van Leaflet) opent in de systeembrowser: een
+    externe pagina in dit venster zou anders de brug naar Python erven en
+    puntlocaties kunnen toevoegen of verwijderen.
+    """
+
+    def __init__(self, ouder: QObject | None = None):
+        super().__init__(ouder)
+        self.geladen = False
+        self.loadFinished.connect(self._na_laden)
+
+    def _na_laden(self, _gelukt: bool) -> None:
+        self.geladen = True
+
+    def acceptNavigationRequest(self, url, soort, _hoofdframe):  # noqa: N802 — Qt-override
+        if not self.geladen:
+            return True
+        if soort == QWebEnginePage.NavigationType.NavigationTypeLinkClicked and \
+                url.scheme() in ("http", "https"):
+            QDesktopServices.openUrl(url)
+        return False
+
+
+def kaart_html(config: dict) -> str:
+    """De kaartpagina met Leaflet ingevoegd uit gui/vendor en de configuratie als JSON."""
+    sjabloon = (GUI_DIR / "kaart.html").read_text(encoding="utf-8")
+    # Eerst de configuratie, dan pas Leaflet: zo kan niets in de bibliotheek per
+    # ongeluk als plaatshouder worden gelezen.
+    html = sjabloon.replace("__CONFIG__", json_voor_script(config))
+    css = (LEAFLET_DIR / "leaflet.css").read_text(encoding="utf-8")
+    js  = (LEAFLET_DIR / "leaflet.js").read_text(encoding="utf-8")
+    return html.replace("__LEAFLET_CSS__", css).replace("__LEAFLET_JS__", js)
+
+
 class Kaartpaneel(QWidget):
     def __init__(self):
         super().__init__()
         self.brug = Brug()
 
         self.web = QWebEngineView()
+        self.pagina = KaartPagina(self.web)
+        self.web.setPage(self.pagina)
         instellingen = self.web.settings()
-        instellingen.setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, True)
-        instellingen.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
+        instellingen.setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, False)
+        instellingen.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, False)
         instellingen.setAttribute(QWebEngineSettings.ShowScrollBars, False)
 
-        kanaal = QWebChannel(self.web.page())
+        kanaal = QWebChannel(self.pagina)
         kanaal.registerObject("brug", self.brug)
-        self.web.page().setWebChannel(kanaal)
-        self.web.page().setBackgroundColor(QColor("#0f131a"))
+        self.pagina.setWebChannel(kanaal)
+        self.pagina.setBackgroundColor(QColor("#0f131a"))
 
         config = {
             "start_lat":  KAART_START_LAT,
@@ -391,9 +452,7 @@ class Kaartpaneel(QWidget):
             for k in ("topografisch", "satelliet") if k in config["achtergronden"]
         }
 
-        html = (GUI_DIR / "kaart.html").read_text(encoding="utf-8")
-        html = html.replace("__CONFIG__", json.dumps(config, ensure_ascii=False))
-        self.web.setHtml(html, QUrl.fromLocalFile(str(GUI_DIR) + "/"))
+        self.web.setHtml(kaart_html(config), QUrl(KAART_BASIS_URL))
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -411,19 +470,31 @@ class Pijplijn(QThread):
     def __init__(self, json_pad: Path):
         super().__init__()
         self.json_pad = json_pad
+        self.proces: subprocess.Popen | None = None
 
     def run(self) -> None:
         env = {**os.environ, "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"}
+        # Een eigen procesgroep, zodat stop() de run netjes kan beëindigen: onder
+        # Windows is CTRL_BREAK alleen zo aan één groep te sturen.
+        groep: dict[str, Any]
+        if sys.platform == "win32":
+            groep = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        else:
+            groep = {"start_new_session": True}
         try:
-            proces = subprocess.Popen(
+            proces = subprocess.Popen(  # noqa: S603 — eigen interpreter, vast script
                 [sys.executable, str(SCRIPT_DIR / "tug_run.py"), str(self.json_pad)],
                 cwd=str(SCRIPT_DIR), env=env, text=True, bufsize=1,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                encoding="utf-8", errors="replace",
+                encoding="utf-8", errors="replace", **groep,
             )
         except OSError as fout:
             self.regel.emit(f"FOUT: pipeline kon niet worden gestart — {fout}")
             self.klaar.emit(1)
+            return
+        self.proces = proces
+        if proces.stdout is None:   # kan niet: stdout=PIPE; voor de typecontrole
+            self.klaar.emit(proces.wait())
             return
 
         for regel in proces.stdout:
@@ -432,6 +503,27 @@ class Pijplijn(QThread):
             # laatste stand is nog interessant.
             self.regel.emit(regel.rstrip().rsplit("\r", 1)[-1])
         self.klaar.emit(proces.wait())
+
+    def stop(self) -> bool:
+        """Vraag de pipeline te stoppen; True als hij binnen de wachttijd zelf eindigde.
+
+        tug_run.py vangt het signaal op, stopt de lopende stap en wist de state. Pas
+        als dat niet binnen STOP_WACHTTIJD_S lukt, wordt het proces hard beëindigd.
+        """
+        proces = self.proces
+        if proces is None or proces.poll() is not None:
+            return True
+        if sys.platform == "win32":
+            proces.send_signal(signal.CTRL_BREAK_EVENT)
+        else:
+            proces.terminate()
+        try:
+            proces.wait(timeout=STOP_WACHTTIJD_S)
+            return True
+        except subprocess.TimeoutExpired:
+            proces.kill()
+            proces.wait()
+            return False
 
 
 # ──────────────────────────────────────────────
@@ -445,7 +537,7 @@ class Sluier(QWidget):
         super().__init__(ouder)
         self.setObjectName("sluier")
         # Zonder WA_StyledBackground tekent een kaal QWidget zijn QSS-achtergrond niet.
-        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.hide()
 
         buiten = QVBoxLayout(self)
@@ -485,7 +577,7 @@ class Sluier(QWidget):
         knoppen = QHBoxLayout()
         knoppen.addStretch(1)
         self.sluit = QPushButton("Sluiten")
-        self.sluit.setCursor(Qt.PointingHandCursor)
+        self.sluit.setCursor(Qt.CursorShape.PointingHandCursor)
         self.sluit.clicked.connect(self.hide)
         self.sluit.setEnabled(False)
         knoppen.addWidget(self.sluit)
@@ -502,7 +594,9 @@ class Sluier(QWidget):
         self.logboek.clear()
         self.balk.setValue(0)
         self.sluit.setEnabled(False)
-        self.resize(self.parentWidget().size())
+        ouder = self.parentWidget()
+        if ouder is not None:
+            self.resize(ouder.size())
         self.show()
         self.raise_()
 
@@ -553,12 +647,13 @@ class Aanvraagpaneel(QWidget):
         # Omschrijving dossier
         rooster.addWidget(veldlabel(
             "Omschrijving dossier",
-            "Vrij in te vullen. Komt terug in de bestandsnaam van de HTML- en "
-            "PDF-export en op het voorblad van het PDF-rapport."
+            "Een zaaknummer of een omschrijving van plaats en datum. Komt terug in de "
+            "bestandsnaam van de HTML- en PDF-export en op het voorblad van het "
+            "PDF-rapport — vul daarom geen naam van aanvrager of omwonende in."
         ), rij, 0, 1, 2)
         rij += 1
         self.veld_naam = QLineEdit()
-        self.veld_naam.setPlaceholderText("bijv. Ambt Delden 4 oktober")
+        self.veld_naam.setPlaceholderText("zaaknummer of plaats en datum — geen persoonsnamen")
         self.veld_naam.textChanged.connect(self.gewijzigd)
         rooster.addWidget(self.veld_naam, rij, 0, 1, 2)
         rij += 1
@@ -736,7 +831,7 @@ class Luchtvaartuigenpaneel(QWidget):
         plus = QPushButton("+")
         plus.setObjectName("plus")
         plus.setToolTip("Luchtvaartuig toevoegen (of druk op Enter)")
-        plus.setCursor(Qt.PointingHandCursor)
+        plus.setCursor(Qt.CursorShape.PointingHandCursor)
         plus.clicked.connect(self.toevoegen)
         invoer.addWidget(plus)
         vak.addLayout(invoer)
@@ -845,7 +940,7 @@ class Puntlocatiespaneel(QWidget):
         for knop in (self.knop_wgs, self.knop_rd):
             knop.setObjectName("segment")
             knop.setCheckable(True)
-            knop.setCursor(Qt.PointingHandCursor)
+            knop.setCursor(Qt.CursorShape.PointingHandCursor)
             groep.addButton(knop)
             balk_lay.addWidget(knop)
         balk_lay.addStretch(1)
@@ -863,7 +958,7 @@ class Puntlocatiespaneel(QWidget):
         knop = QPushButton("+")
         knop.setObjectName("plus")
         knop.setToolTip("Puntlocatie toevoegen")
-        knop.setCursor(Qt.PointingHandCursor)
+        knop.setCursor(Qt.CursorShape.PointingHandCursor)
         knop.clicked.connect(self._handmatig_toevoegen)
         invoer.addWidget(knop)
         vak.addLayout(invoer)
@@ -1097,12 +1192,13 @@ class Exportafhandeling(QObject):
             self.regel.emit(f"Geopend: {doel.name}")
         return verplaatst
 
-    def _leeg_tmp(self) -> None:
-        """Wist de tijdelijke aanvraag-JSON's na afloop van de pipeline.
+    def leeg_tmp(self) -> None:
+        """Wist de tijdelijke aanvraag-JSON's.
 
         De procesbeschrijving in het PDF-rapport legt de gebruikte invoer al
-        vast, dus het bestand hoeft niet te blijven staan. Gelijk aan het wissen
-        van tug_state.json door tug_run.py: ook na een fout.
+        vast, dus het bestand hoeft niet te blijven staan. Gebeurt na elke run
+        (ook na een fout), bij het sluiten van de schil en bij het opstarten —
+        zodat ook een eerder vastgelopen of hard afgesloten schil niets achterlaat.
         """
         if not TMP_DIR.exists():
             return
@@ -1115,13 +1211,22 @@ class Exportafhandeling(QObject):
                 self.regel.emit(f"Kon {bestand.name} niet wissen ({fout})")
         self.regel.emit(f"Tijdelijke invoer gewist ({TMP_DIR.name}/) — dataveiligheid.")
 
+    def stop(self) -> None:
+        """Stop een lopende pipeline en ruim op: voor het sluiten van de schil."""
+        if self.pijplijn is not None:
+            if not self.pijplijn.stop():
+                # tug_run kon zelf niet meer opruimen; dan doet de schil het.
+                wis_state(STATE_PAD)
+            self.pijplijn.wait()
+        self.leeg_tmp()
+
     def _afronden(self) -> None:
         if self._afgerond:
             return
         self._afgerond = True
 
         code = self._resultaat or 0
-        if code != 0:
+        if code not in (0, EXIT_ONVOLLEDIG):
             self.voltooi.emit(
                 "Pipeline afgebroken",
                 f"De pipeline stopte met foutcode {code}. Zie het logboek hierboven.",
@@ -1140,16 +1245,28 @@ class Exportafhandeling(QObject):
             else:
                 verplaatst = self._verplaats_en_open(nieuw)
                 map_tekst  = str(self._doelmap) if self._doelmap else str(OUTPUT_DIR)
-                self.voltooi.emit(
-                    "Pipeline voltooid",
-                    f"{len(verplaatst)} bestand(en) in {map_tekst} — geopend.",
-                    True,
-                )
-                self.status.emit(
-                    f"Klaar: {len(verplaatst)} bestand(en) in {map_tekst}.", "statusOk"
-                )
+                if code == EXIT_ONVOLLEDIG:
+                    self.voltooi.emit(
+                        "Voltooid — toetsing ONVOLLEDIG",
+                        f"Niet alle bronnen zijn volledig geraadpleegd; het rapport meldt "
+                        f"welke. {len(verplaatst)} bestand(en) in {map_tekst} — geopend.",
+                        False,
+                    )
+                    self.status.emit(
+                        f"Onvolledige toetsing — zie de rode melding bovenaan het rapport "
+                        f"({map_tekst}).", "statusFout"
+                    )
+                else:
+                    self.voltooi.emit(
+                        "Pipeline voltooid",
+                        f"{len(verplaatst)} bestand(en) in {map_tekst} — geopend.",
+                        True,
+                    )
+                    self.status.emit(
+                        f"Klaar: {len(verplaatst)} bestand(en) in {map_tekst}.", "statusOk"
+                    )
 
-        self._leeg_tmp()
+        self.leeg_tmp()
         self.pijplijn = None
 
 
@@ -1199,6 +1316,8 @@ class Hoofdvenster(QMainWindow):
         self.sluier = Sluier(self)
         self._verbind()
         self._ververs_status()
+        # Een eerder hard afgesloten schil kan invoer in tmp/ hebben laten staan.
+        self.export.leeg_tmp()
 
     # ── Opbouw ────────────────────────────────
 
@@ -1241,7 +1360,7 @@ class Hoofdvenster(QMainWindow):
     def _bouw_overzichten(self) -> QWidget:
         gebied = QScrollArea()
         gebied.setWidgetResizable(True)
-        gebied.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        gebied.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         binnen = QWidget()
         lay = QVBoxLayout(binnen)
@@ -1262,7 +1381,7 @@ class Hoofdvenster(QMainWindow):
 
         self.knop_genereer = QPushButton("Genereer")
         self.knop_genereer.setObjectName("genereer")
-        self.knop_genereer.setCursor(Qt.PointingHandCursor)
+        self.knop_genereer.setCursor(Qt.CursorShape.PointingHandCursor)
         self.knop_genereer.setToolTip(
             "Schrijft de aanvraag-JSON, start de pipeline en vraagt daarna waar de "
             "HTML- en PDF-export moeten worden opgeslagen."
@@ -1354,7 +1473,7 @@ class Hoofdvenster(QMainWindow):
         TMP_DIR.mkdir(parents=True, exist_ok=True)
         stempel  = datetime.now().strftime("%Y%m%d_%H%M%S")
         json_pad = TMP_DIR / f"{naam_slug(aanvraag['naam']) or 'aanvraag'}_{stempel}.json"
-        json_pad.write_text(json.dumps(aanvraag, ensure_ascii=False, indent=2), encoding="utf-8")
+        schrijf_state(json_pad, aanvraag)
 
         self.knop_genereer.setEnabled(False)
         self.status.setText("Pipeline draait …")
@@ -1378,6 +1497,11 @@ class Hoofdvenster(QMainWindow):
             if antwoord != QMessageBox.Yes:
                 event.ignore()
                 return
+            self.status.setText("Pipeline wordt gestopt en opgeruimd …")
+            QApplication.processEvents()
+            self.export.stop()
+        else:
+            self.export.leeg_tmp()
         super().closeEvent(event)
 
 

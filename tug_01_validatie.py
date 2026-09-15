@@ -3,6 +3,7 @@ tug_01_validatie.py -- Stap 2 TUG-ontheffingen workflow
 Versie: zie git (workflowversie = korte commit-hash, zie tug_config.VERSION)
 
 Volledigheidscheck van de aanvraag:
+  - Controleert de structuur (tug_aanvraag; fataal bij een onverwerkbare aanvraag)
   - Controleert aanwezigheid van verplichte velden
   - Normaliseert datum_vlucht naar een lijst (str → [str])
   - Controleert of datum_ondertekening minimaal MIN_INDIENTERMIJN_DAGEN vóór
@@ -14,13 +15,16 @@ Uitvoer: tug_state.json  (sectie validatie gevuld; aanvraag.datum_vlucht genorma
 
 import json
 import logging
+import re
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from tug_config import MIN_INDIENTERMIJN_DAGEN, VERSION
+from tug_aanvraag import controleer_structuur
+from tug_config import MIN_INDIENTERMIJN_DAGEN, REGISTRATIE_PATROON, VERSION
 from tug_geo import puntlocaties
 from tug_logging import LogAccumulator, setup_logging
+from tug_opslag import schrijf_state
 
 VERPLICHTE_VELDEN = [
     "soort_ontheffing",
@@ -123,6 +127,19 @@ def run(state_pad: str | Path) -> None:
     log(f"## Workflowversie: {VERSION}")
     log(f"{'=' * 60}")
 
+    # ── 0. Structuur ──────────────────────────
+    # tug_run toetst dit al bij het inlezen; hier nogmaals, zodat de stap ook
+    # losstaand (en bij --vanaf op een bewerkte state) niets onverwerkbaars doorlaat.
+    log("\nStap 2-0: Structuur van de aanvraag ...")
+    structuurfouten = controleer_structuur(aanvraag)
+    if structuurfouten:
+        for melding in structuurfouten:
+            log(f"  ✗ {melding}")
+        fouten.extend(structuurfouten)
+        aanvraag = aanvraag if isinstance(aanvraag, dict) else {}
+    else:
+        log("  ✓ structuur en typen")
+
     # ── 1. Verplichte velden ──────────────────
     log("\nStap 2a: Volledigheidscheck verplichte velden ...")
     for veld in VERPLICHTE_VELDEN:
@@ -220,14 +237,20 @@ def run(state_pad: str | Path) -> None:
                 waarschuw.append(f"luchtvaartuigen[{i}] is geen object")
                 log(f"  ✗ luchtvaartuigen[{i}]: geen object")
                 continue
-            if not lv.get("registratie"):
+            registratie = lv.get("registratie")
+            if not registratie:
                 waarschuw.append(f"luchtvaartuigen[{i}]: 'registratie' ontbreekt")
                 log(f"  ✗ luchtvaartuigen[{i}]: 'registratie' ontbreekt")
+            elif not re.match(REGISTRATIE_PATROON, str(registratie).strip().upper()):
+                melding = (f"luchtvaartuigen[{i}]: registratiekenmerk {registratie!r} heeft niet "
+                           f"de vorm van een kenmerk (bijv. PH-ECE)")
+                waarschuw.append(melding)
+                log(f"  ✗ {melding}")
             else:
-                log(f"  ✓ luchtvaartuigen[{i}]: {lv['registratie']}")
+                log(f"  ✓ luchtvaartuigen[{i}]: {registratie}")
 
     # ── 7. Puntlocaties (één of meer) ─────────
-    if "coord_lat" in aanvraag and "coord_lon" in aanvraag:
+    if "coord_lat" in aanvraag and "coord_lon" in aanvraag and not structuurfouten:
         log("\nStap 2g: Validatie puntlocaties ...")
         try:
             punten = puntlocaties(aanvraag)
@@ -272,7 +295,7 @@ def run(state_pad: str | Path) -> None:
         ),
     })
 
-    state_pad.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+    schrijf_state(state_pad, state)
     logging.getLogger("tug.01_validatie").info(f"State geschreven naar {state_pad}")
     if fouten:
         logging.getLogger("tug.01_validatie").error(f"FOUT: {'; '.join(fouten)}")

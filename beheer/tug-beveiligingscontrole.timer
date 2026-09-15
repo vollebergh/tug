@@ -1,0 +1,12 @@
+# Draait de beveiligingscontrole op de eerste van elke maand; een gemiste run
+# (machine uit) wordt bij de volgende start ingehaald.
+[Unit]
+Description=TUG-ontheffingen: maandelijkse beveiligingscontrole
+
+[Timer]
+OnCalendar=*-*-01 07:00:00
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target
