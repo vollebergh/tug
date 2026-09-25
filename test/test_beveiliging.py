@@ -90,6 +90,14 @@ class NepAntwoord:
         self.gesloten = True
 
 
+# Een willekeurig functioneel gebied (geen luchthaven) en één provinciale regeling ver weg.
+GEBIED = {"type": "Feature", "properties": {"typefunctioneelgebied": "sportterrein"},
+          "geometry": {"type": "Polygon", "coordinates": [[[LON, LAT], [LON + 0.001, LAT],
+                                                           [LON, LAT + 0.001], [LON, LAT]]]}}
+REGELING = {"type": "Feature", "properties": {"NAAM": "Veld ver weg"},
+            "geometry": {"type": "Point", "coordinates": [6.9, 52.2]}}
+
+
 def json_antwoord(data, status=200):
     return NepAntwoord(status, json.dumps(data).encode())
 
@@ -241,8 +249,22 @@ class TestAfbrekendeBronnen:
             brt.signaleer_luchthavens(CIRKEL, stil, punten_rd=PUNT, bronnen=Bronregister())
 
     def test_luchthavenlaag_zonder_luchthavens(self, nepnet):
+        nepnet.zet("functioneel_gebied_vlak", json_antwoord({"features": [GEBIED]}))
         nepnet.zet("geodataoverijssel", json_antwoord({"features": []}))
         with pytest.raises(ToetsingAfgebroken, match="nul luchthavens"):
+            brt.signaleer_luchthavens(CIRKEL, stil, punten_rd=PUNT, bronnen=Bronregister())
+
+    def test_luchthaventerreinen_onbereikbaar(self, nepnet):
+        """B23: zonder Top10NL is het verbod binnen 1.000 m niet getoetst."""
+        nepnet.zet("geodataoverijssel", json_antwoord({"features": [REGELING]}))
+        r = Bronregister()
+        with pytest.raises(ToetsingAfgebroken, match="Luchthaventerreinen"):
+            brt.signaleer_luchthavens(CIRKEL, stil, punten_rd=PUNT, bronnen=r)
+        assert r.status("luchthaventerreinen").status == MISLUKT
+
+    def test_luchthaventerreinen_leeg_antwoord(self, nepnet):
+        nepnet.zet("functioneel_gebied_vlak", json_antwoord({"features": []}))
+        with pytest.raises(ToetsingAfgebroken, match="nul functionele gebieden"):
             brt.signaleer_luchthavens(CIRKEL, stil, punten_rd=PUNT, bronnen=Bronregister())
 
     def test_bag_tweede_pagina_timeout(self, nepnet, monkeypatch):

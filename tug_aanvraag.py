@@ -18,12 +18,16 @@ de vergunningverlener, en elke extra afhankelijkheid is extra aanvalsoppervlak.
 
 from typing import Any
 
+from tug_config import TOETSING_TOESLAG_M
+
 SOORTEN_ONTHEFFING = ("locatiegebonden", "generiek")
 MAX_TEKST          = 200      # naam, type, tijd- en datumvelden
 MAX_LUCHTVAARTUIGEN = 50
 MAX_PUNTLOCATIES   = 20
 MAX_VLUCHTDATA     = 366
 AANTAL_VLUCHTEN    = (1, 9999)
+TOESLAG_BEREIK     = (0, 500)    # m rond de puntlocatie, opgeteld bij de Lden-afstand (B21)
+AFSTAND_BEREIK     = (1, 2000)   # m, handmatige geluidsafstand per luchtvaartuig (B12)
 
 # Veld → toegestane Python-typen na json.loads. Elk veld mag ook null zijn of
 # ontbreken; dat is een inhoudscontrole en geen structuurfout.
@@ -41,8 +45,10 @@ _VELDEN: dict[str, tuple[type, ...]] = {
     "coord_lon":              (int, float, list),
     "datum_ondertekening":    _TEKST,
     "tijdstip_ondertekening": _TEKST,
+    "toeslag_m":              (int, float),
 }
-_LUCHTVAARTUIG_VELDEN = {"registratie", "type"}
+_LUCHTVAARTUIG_TEKSTVELDEN = {"registratie", "type"}
+_LUCHTVAARTUIG_VELDEN = _LUCHTVAARTUIG_TEKSTVELDEN | {"afstand_m"}
 
 _TYPENAMEN = {str: "tekst", int: "geheel getal", float: "getal", bool: "ja/nee (true/false)",
               list: "lijst", dict: "object"}
@@ -93,6 +99,13 @@ def controleer_structuur(aanvraag: Any, label: str = "aanvraag") -> list[str]:
 def _controleer_lijsten(aanvraag: dict[str, Any], label: str) -> list[str]:
     fouten = []
 
+    toeslag = aanvraag.get("toeslag_m")
+    if isinstance(toeslag, int | float) and not isinstance(toeslag, bool):
+        laag, hoog = TOESLAG_BEREIK
+        if not laag <= toeslag <= hoog:
+            fouten.append(f"{label}: 'toeslag_m' moet tussen {laag} en {hoog} m liggen, "
+                          f"niet {toeslag}")
+
     aantal = aanvraag.get("aantal_vluchten")
     if isinstance(aantal, int) and not isinstance(aantal, bool):
         laag, hoog = AANTAL_VLUCHTEN
@@ -115,16 +128,25 @@ def _controleer_lijsten(aanvraag: dict[str, Any], label: str) -> list[str]:
         for i, lv in enumerate(toestellen):
             plek = f"{label}: luchtvaartuigen[{i}]"
             if not isinstance(lv, dict):
-                fouten.append(f"{plek} moet een object zijn met 'registratie' en eventueel 'type'")
+                fouten.append(f"{plek} moet een object zijn met 'registratie' en eventueel "
+                              f"'type' en 'afstand_m'")
                 continue
             onbekend = sorted(set(lv) - _LUCHTVAARTUIG_VELDEN)
             if onbekend:
                 fouten.append(f"{plek}: onbekende veld(en) {', '.join(onbekend)}")
-            for veld in _LUCHTVAARTUIG_VELDEN & set(lv):
+            for veld in _LUCHTVAARTUIG_TEKSTVELDEN & set(lv):
                 if lv[veld] is not None and not isinstance(lv[veld], str):
                     fouten.append(f"{plek}: '{veld}' moet tekst zijn")
                 elif _tekst_te_lang(lv[veld]):
                     fouten.append(f"{plek}: '{veld}' is langer dan {MAX_TEKST} tekens")
+            afstand = lv.get("afstand_m")
+            if afstand is not None:
+                laag, hoog = AFSTAND_BEREIK
+                if not _is_type(afstand, (int, float)):
+                    fouten.append(f"{plek}: 'afstand_m' moet een getal zijn")
+                elif not laag <= afstand <= hoog:
+                    fouten.append(f"{plek}: 'afstand_m' moet tussen {laag} en {hoog} m "
+                                  f"liggen, niet {afstand}")
 
     for veld in ("coord_lat", "coord_lon"):
         waarde = aanvraag.get(veld)
@@ -141,3 +163,12 @@ def _controleer_lijsten(aanvraag: dict[str, Any], label: str) -> list[str]:
         fouten.append(f"{label}: 'soort_ontheffing' moet "
                       f"{' of '.join(repr(s) for s in SOORTEN_ONTHEFFING)} zijn, niet {soort!r}")
     return fouten
+
+
+def toeslag_van(aanvraag: dict[str, Any]) -> float:
+    """De toeslag rond de puntlocatie in meters: opgegeven in de aanvraag, anders
+    TOETSING_TOESLAG_M. Het bereik is bij het inlezen al gecontroleerd (B21)."""
+    waarde = aanvraag.get("toeslag_m")
+    if isinstance(waarde, int | float) and not isinstance(waarde, bool):
+        return float(waarde)
+    return float(TOETSING_TOESLAG_M)

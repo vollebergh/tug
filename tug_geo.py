@@ -151,7 +151,8 @@ def puntlocaties(aanvraag: dict[str, Any]) -> list[tuple[float, float]]:
 
     `coord_lat` en `coord_lon` zijn elk een getal (één locatie) of een lijst van
     even lange lengte (meerdere locaties; de n-de lat hoort bij de n-de lon).
-    Meerdere locaties liggen onderling hooguit MAX_PUNT_AFSTAND_M uit elkaar.
+    Liggen meerdere locaties verder dan MAX_PUNT_AFSTAND_M uit elkaar, dan is dat
+    een melding en geen fout (B14): zie max_onderlinge_afstand().
     Gooit ValueError bij een ongeldige invoer.
     """
     lat, lon = aanvraag.get("coord_lat"), aanvraag.get("coord_lon")
@@ -174,18 +175,28 @@ def puntlocaties(aanvraag: dict[str, Any]) -> list[tuple[float, float]]:
             raise ValueError(f"puntlocatie {i}: ({la}, {lo}) ligt niet in Nederland "
                              f"(lat/lon verwisseld?)")
         punten.append((la, lo))
-
-    # Meerdere puntlocaties mogen onderling niet verder dan MAX_PUNT_AFSTAND_M uit elkaar liggen
-    rd = [wgs84_to_rd(lo, la) for la, lo in punten]
-    for i in range(len(rd)):
-        for j in range(i + 1, len(rd)):
-            afstand = ((rd[i][0] - rd[j][0]) ** 2 + (rd[i][1] - rd[j][1]) ** 2) ** 0.5
-            if afstand > MAX_PUNT_AFSTAND_M:
-                raise ValueError(
-                    f"puntlocatie {i + 1} en {j + 1} liggen {afstand:.0f} m uit elkaar; "
-                    f"maximaal {MAX_PUNT_AFSTAND_M} m toegestaan"
-                )
     return punten
+
+
+def max_onderlinge_afstand(punten: list[tuple[float, float]]) -> float:
+    """Grootste onderlinge afstand in meters (RD) tussen puntlocaties (lat, lon).
+
+    0 bij minder dan twee punten. Boven MAX_PUNT_AFSTAND_M volgt een melding in
+    schil en rapport; de toetsing gaat door (B14).
+    """
+    rd = [wgs84_to_rd(lo, la) for la, lo in punten]
+    return max((((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
+                for i, a in enumerate(rd) for b in rd[i + 1:]), default=0.0)
+
+
+def puntafstand_melding(afstand: float) -> str:
+    """Eén zin over de onderlinge afstand, gelijk in schil, rapport en HTML-kaart."""
+    tekst = f"Grootste onderlinge afstand tussen de puntlocaties: {afstand:.0f} m"
+    if afstand > MAX_PUNT_AFSTAND_M:
+        tekst += (f" — meer dan {MAX_PUNT_AFSTAND_M} m. De toetsing is uitgevoerd op de "
+                  f"vereniging van de cirkels rond alle puntlocaties; beoordeel of dit één "
+                  f"samenhangend terrein is")
+    return tekst + "."
 
 
 # ──────────────────────────────────────────────

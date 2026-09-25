@@ -155,7 +155,7 @@ aanvraag (soort, data, luchtvaartuigen, puntlocatie(s), ondertekening)
     │      PH-registratie → ILT-register → ICAO-type → NLR-tabel → afstandsnorm
     │      de grootste norm van alle luchtvaartuigen is maatgevend
     │
-    ├─ 3. toetsingsafstand = maatgevende norm + 10 m
+    ├─ 3. toetsingsafstand = maatgevende norm + toeslag (standaard 10 m)
     │      cirkel(s) rond de puntlocatie(s) in RD New (EPSG:28992)
     │
     ├─ 4. wat ligt daarbinnen?
@@ -250,19 +250,21 @@ vergunningverlener in plaats van naar een impliciete aanname.
 | Ontbrekend of onjuist gevormd veld in de aanvraag | Waarschuwing in rood in het proceslogboek; rekent door | Beoordeelt of de aanvraag moet worden aangevuld |
 | Aanvraag korter dan 28 dagen voor de vlucht ondertekend | Waarschuwing; rekent door | Beoordeelt de termijnoverschrijding |
 | Luchtvaartuig niet in het ILT-register, of ICAO-code zonder vastgestelde norm | Neemt **geen** norm aan; laat het luchtvaartuig buiten de toetsing en meldt dat in een rood blok | Bepaalt of het luchtvaartuig in de ontheffing wordt opgenomen en welke norm daarvoor geldt |
+| Voor geen enkel luchtvaartuig een norm | Inventariseert tot de ruimste norm (500 m), trekt geen conclusie, meldt dat in rood; exitcode 2 | Bepaalt de norm en beoordeelt de adressenlijst daarop |
 | Object in de margeband (tot 150 m buiten de toetsingsafstand) | Toont het op de kaart, niet in de adressenlijst | Beoordeelt of ook daar instemming wenselijk is |
 | Manege in het aandachtsgebied | Signaleert de manege | Beoordeelt de feitelijke terreinsituatie |
 | Natura 2000 of NNN geraakt | Signaleert gebied en afstand | Beoordeelt of de vluchtomschrijving aanleiding geeft tot doorverwijzing naar een passende beoordeling |
 | Luchthaven binnen 1.000 m | Meldt "niet toegestaan" | Neemt het besluit |
-| Een bron waar de toetsing niet zonder kan valt uit (BAG, gevelcheck, Natura 2000, luchthavens, ILT-register) | Breekt de toetsing af: geen rapport | Draait de aanvraag opnieuw zodra de bron bereikbaar is |
+| Een bron waar de toetsing niet zonder kan valt uit (BAG, gevelcheck, Natura 2000, luchthavens en luchthaventerreinen, ILT-register) | Breekt de toetsing af: geen rapport | Draait de aanvraag opnieuw zodra de bron bereikbaar is |
 | Een andere bron valt uit, of alleen een verouderde lokale kopie is beschikbaar | Maakt het rapport, trekt voor die bron **geen** conclusie en meldt dat in rood bovenaan, in de paragraaf en boven de adressenlijst; de run eindigt met exitcode 2 | Beoordeelt of de aanvraag opnieuw moet worden doorgerekend |
 
-De pipeline breekt op een onvolledige aanvraag niet af, maar wel in vier gevallen waarin er niets
+De pipeline breekt op een onvolledige aanvraag niet af, maar wel in twee gevallen waarin er niets
 betrouwbaars is om op door te rekenen: de aanvraag is structureel onverwerkbaar (geen object, een
-onbekend veld of een waarde van het verkeerde type, zie [§12](#12-aanvraag-json)); de opgegeven
-puntlocaties liggen verder dan 100 m uit elkaar (geen samenhangend toetsingsgebied); voor géén van
-de opgegeven luchtvaartuigen is een afstandsnorm herleidbaar (geen toetsingsafstand); of een bron
-waar de toetsing niet zonder kan is onbereikbaar.
+onbekend veld, een waarde van het verkeerde type of buiten het bereik, of een puntlocatie buiten
+Nederland, zie [§12](#12-aanvraag-json)); of een bron waar de toetsing niet zonder kan is
+onbereikbaar. Puntlocaties die meer dan 100 m uit elkaar liggen geven een waarschuwing, geen stop. Is voor géén van de luchtvaartuigen een
+afstandsnorm herleidbaar, dan rekent zij door als inventarisatie zonder conclusie (exitcode 2, zie
+[§14](#14-classificatie-van-luchtvaartuigen)).
 
 ## 7. Risico's, beperkingen en wat daartegenover staat
 
@@ -270,7 +272,7 @@ De asymmetrie van dit systeem bepaalt het ontwerp: een **gemist object** (vals n
 een omwonende die niet om instemming is gevraagd en een beschikking die op onvolledige informatie
 rust. Een **te veel gesignaleerd object** (vals positief) kost de aanvrager extra werk en verder
 niets. Waar een keuze zich voordoet, is die daarom consequent naar ruim signaleren gemaakt: een
-toeslag van 10 m op de afstandsnorm, een margeband van 150 m, een aandachtsgebied van 375 m rond
+toeslag van standaard 10 m op de afstandsnorm, een margeband van 150 m, een aandachtsgebied van 375 m rond
 maneges, en zoekvensters die veel ruimer zijn dan de toetsingsafstand.
 
 | Risico | Oorzaak | Gevolg | Wat daartegenover staat |
@@ -460,7 +462,7 @@ getoetste, onvolledig getoetste en niet verwerkte aanvragen.
 |---|---|
 | 0 | Alle aanvragen volledig getoetst |
 | 1 | Minstens één aanvraag niet verwerkt: onverwerkbare invoer of een afgebroken stap (bij één aanvraag: de exitcode van die stap) |
-| 2 | Alles verwerkt, maar bij minstens één aanvraag is een bron niet volledig geraadpleegd; het rapport meldt welke |
+| 2 | Alles verwerkt, maar bij minstens één aanvraag is een bron niet volledig geraadpleegd of is voor geen enkel luchtvaartuig een afstandsnorm herleidbaar; het rapport meldt wat |
 | 130 / 143 | De run is onderbroken (Ctrl+C) of beëindigd |
 
 Een exitcode 0 betekent dus ook echt dat elke bron is geraadpleegd. Bij de start meldt de runner
@@ -499,8 +501,8 @@ start daarmee `tug_run.py`, dat de enige uitvoerder blijft.
 
 | Onderdeel | Toelichting |
 |---|---|
-| Aanvraaggegevens | Omschrijving dossier, soort ontheffing, aantal vluchten, vluchtdatum, datum en tijdstip ondertekening, uniforme daglichtperiode of start- en eindtijd |
-| Luchtvaartuigen | Registratiekenmerk invoeren en toevoegen met `+` of Enter; het overzicht eronder groeit mee en heeft per regel een verwijderknop |
+| Aanvraaggegevens | Omschrijving dossier, vluchtdatum en datum ondertekening |
+| Luchtvaartuigen | Registratiekenmerk invoeren en toevoegen met `+` of Enter; het overzicht eronder groeit mee en heeft per regel een veld voor een handmatige geluidsafstand en een verwijderknop |
 | Puntlocaties | Klikken op de kaart plaatst een pin, klikken op een pin verwijdert hem. Handmatige invoer in WGS84 of RD. Elke pin verschijnt in het overzicht met beide coördinaatstelsels |
 | Kaart | Dezelfde Leaflet-opzet en dezelfde PDOK-tegels als de export, zodat er geen tweede kaartimplementatie uit de pas kan lopen. Schakelbaar tussen topografisch en luchtfoto; startbeeld midden-Overijssel op zoomniveau 11 |
 
@@ -522,10 +524,36 @@ proceslogboek van het rapport. Wordt het venster gesloten terwijl de pipeline no
 schil de pipeline (die zelf de state wist) en leegt `tmp/`. Ook bij het opstarten wordt `tmp/`
 geleegd, voor het geval een eerdere sessie hard is afgesloten.
 
+**Uitleg bij de velden.** Een klein "i" naast een kop of veld toont de uitleg direct bij aanwijzen
+of aanklikken, ook als het venster niet actief is.
+
 **Bewaakte invoer.** De knop blijft grijs zolang omschrijving, luchtvaartuig of puntlocatie
 ontbreekt. De omschrijving komt in de bestandsnamen terecht; het veld vraagt daarom om een zaaknummer
-of plaats en datum, niet om een persoonsnaam. De schil waarschuwt bij minder dan 28 dagen tussen ondertekening en vlucht, en blokkeert
-puntlocaties die verder dan 100 m uit elkaar liggen, omdat de validatiestap daarop afbreekt.
+of plaats en datum, niet om een persoonsnaam. De schil waarschuwt bij minder dan 28 dagen tussen ondertekening en vlucht. Bij meerdere
+puntlocaties toont zij de grootste onderlinge afstand, boven 100 m als waarschuwing; genereren
+blijft mogelijk.
+
+**Handmatige geluidsafstand.** Elke regel in het overzicht van luchtvaartuigen heeft een veld dat
+op "uit register" staat. Vul daar een afstand in voor een luchtvaartuig dat het ILT-register niet
+kent, zoals een buitenlandse registratie; die waarde gaat als `afstand_m` mee en vóór het register.
+
+**Marge rond puntlocatie.** Onder de puntlocaties staat de marge rond de puntlocatie (in de aanvraag `toeslag_m`; standaard 10 m, 0 – 500 m),
+die bij de geluidsafstand wordt opgeteld. Het rapport noemt een afwijkende waarde als zodanig. Een kleinere toeslag verkleint de marge die de toetsing naar ruim signaleren laat hellen (§7).
+
+**Verborgen velden.** Velden die de toetsing niet sturen, staan niet in beeld maar worden wel met
+een vaste waarde in de aanvraag weggeschreven. Schema, validatie en rapport blijven daardoor
+ongewijzigd; het proceslogboek toont deze waarden, dus lees ze als standaardwaarde en niet als
+opgave van de aanvrager.
+
+| Veld in de aanvraag | Weggeschreven waarde |
+|---|---|
+| `soort_ontheffing` | `locatiegebonden` |
+| `aantal_vluchten` | `50` |
+| `tijdstip_ondertekening` | het tijdstip waarop het venster werd geopend |
+| `vlucht_udp`, `vlucht_start`, `vlucht_einde` | `true`, `null`, `null` (vluchten binnen de uniforme daglichtperiode) |
+| `type` per luchtvaartuig | `heli` |
+
+Weer tonen kan door `TOON_AANVULLENDE_VELDEN = True` te zetten boven in `tug_gui.py`.
 
 **Datumvelden** staan op "vanaf heden". Een ondertekening in het verleden invoeren kan door
 `ONDERTEKENING_VANAF_HEDEN = False` te zetten boven in `tug_gui.py`.
@@ -552,10 +580,11 @@ Zonder die vlaggen sluit het proces af met `GLX is not present`.
   "aantal_vluchten": 12,
   "luchtvaartuigen": [
     {"registratie": "PH-ANK", "type": "heli"},
-    {"registratie": "PH-ECE", "type": "heli"}
+    {"registratie": "OO-EYP", "type": "heli", "afstand_m": 300}
   ],
   "coord_lat": [52.405354, 52.405612],
   "coord_lon": [6.129962, 6.130331],
+  "toeslag_m": 10,
   "datum_ondertekening": "2026-06-01",
   "tijdstip_ondertekening": "16:29"
 }
@@ -569,8 +598,9 @@ Zonder die vlaggen sluit het proces af met `GLX is not present`.
 | `vlucht_udp` | boolean | Bij `true` geldt de uniforme daglichtperiode en worden `vlucht_start` en `vlucht_einde` genegeerd |
 | `vlucht_start` / `vlucht_einde` | string of null | `HH:MM` |
 | `aantal_vluchten` | getal | — |
-| `luchtvaartuigen` | array | Objecten met `registratie` (PH-kenmerk) en facultatief `type`; geen andere velden |
+| `luchtvaartuigen` | array | Objecten met `registratie` (PH-kenmerk), facultatief `type`, en facultatief `afstand_m`: een handmatig vastgestelde geluidsafstand in meters die vóór het register gaat (zie [§14](#14-classificatie-van-luchtvaartuigen)); geen andere velden |
 | `coord_lat` / `coord_lon` | float of lijst | WGS84, minimaal zes decimalen. Bij meerdere puntlocaties twee even lange lijsten, waarbij de n-de breedtegraad bij de n-de lengtegraad hoort |
+| `toeslag_m` | getal | Toeslag in meters rond de puntlocatie, opgeteld bij de geluidsafstand; ontbreekt het veld, dan 10 m |
 | `datum_ondertekening` | string | `YYYY-MM-DD` |
 | `tijdstip_ondertekening` | string | `HH:MM` |
 
@@ -587,12 +617,15 @@ validatie als waarschuwing ([§13](#13-validatieregels)).
 | `soort_ontheffing` | `locatiegebonden` of `generiek` |
 | `aantal_vluchten` | 1 – 9.999 |
 | Tekstvelden | Maximaal 200 tekens |
-| `luchtvaartuigen` | Maximaal 50; elk een object met alleen `registratie` en `type`, beide tekst |
+| `luchtvaartuigen` | Maximaal 50; elk een object met alleen `registratie` en `type` (tekst) en `afstand_m` (getal, 1 – 2.000 m) |
+| `toeslag_m` | 0 – 500 m |
 | `coord_lat` / `coord_lon` als lijst | Niet leeg, maximaal 20 puntlocaties, alleen getallen |
 | `datum_vlucht` als lijst | Maximaal 366 data, elk als tekst |
 
-**Meerdere puntlocaties.** De locaties mogen onderling maximaal 100 m uit elkaar liggen; daarboven
-stopt de validatie voor die aanvraag. Het toetsingsgebied is de vereniging van de cirkels rond alle
+**Meerdere puntlocaties.** Bij meerdere locaties vermelden schil, proceslogboek (§3) en HTML-kaart
+(legenda) de grootste onderlinge afstand. Boven 100 m volgt een waarschuwing — in de schil, rood in
+het rapport en als oranje balk op de HTML-kaart — maar de toetsing gaat door; de vergunningverlener
+beoordeelt of het één samenhangend terrein is. Het toetsingsgebied is de vereniging van de cirkels rond alle
 locaties, en er blijft één adressenlijst per aanvraag. Het rapport vermeldt bij een natuurtreffer
 welke puntlocatie het gebied raakt.
 
@@ -622,7 +655,8 @@ zelf afdwingt, verdwijnen deze waarschuwingen in de praktijk vanzelf.
 | Structuur van de aanvraag ([§12](#12-aanvraag-json)) | **Fataal** — aanvraag niet verwerkt |
 | Elk luchtvaartuig heeft een `registratie` | Waarschuwing per element; zonder kenmerk krijgt het luchtvaartuig geen norm en blijft het buiten de toetsing |
 | `registratie` heeft de vorm van een kenmerk (bijv. `PH-ECE`) | Waarschuwing; het register bepaalt daarna of het kenmerk bestaat |
-| Puntlocaties: even lange lijsten, onderling maximaal 100 m | **Fataal** |
+| Puntlocaties: even lange lijsten, binnen Nederland | **Fataal** |
+| Puntlocaties onderling meer dan 100 m uit elkaar | Waarschuwing met de grootste onderlinge afstand; rekent door |
 
 Alle waarschuwingen komen rood in het proceslogboek van het rapport te staan, en het rapport wordt
 ook bij een onvolledige aanvraag geproduceerd.
@@ -657,9 +691,20 @@ De pipeline neemt **geen afstandsnorm aan die zij niet kan onderbouwen**.
 | Appendixcategorie 013, 015, 016 of 017 | **Geen norm**; het luchtvaartuig blijft buiten de toetsing | Rood, met een apart blok dat de reden benoemt |
 | ICAO-code niet in de NLR-indelingslijst | 150 m op grond van de Beleidsregel; vermoedelijk een MLA of vliegtuig | Regel met bronvermelding `beleidsregel 150 m` |
 | PH-kenmerk niet in het ILT-register (bijvoorbeeld een buitenlandse registratie) | **Geen norm**; het luchtvaartuig blijft buiten de toetsing | Rood, met een apart blok dat de reden benoemt |
+| `afstand_m` opgegeven bij het luchtvaartuig | De opgegeven afstand, vóór register en NLR-tabel; het luchtvaartuig telt mee | Regel "handmatig opgegeven in de aanvraag", met ernaast wat register en NLR-tabel opleveren; een afwijking wordt benoemd |
 
-Blijft er geen enkel luchtvaartuig met een herleidbare norm over, dan stopt de pipeline: er is dan
-geen toetsingsafstand en dus geen ruimtelijke analyse mogelijk. In alle andere gevallen rekent zij
+De handmatige afstand is geen aanname van de pipeline maar een vaststelling van de
+vergunningverlener, bijvoorbeeld uit het geluidsrapport van een buitenlands toestel; het rapport
+maakt dat onderscheid zichtbaar.
+
+Blijft er geen enkel luchtvaartuig met een herleidbare norm over (bijvoorbeeld alleen buitenlandse
+registraties), dan stopt de pipeline **niet**. Ook dan neemt zij geen norm aan: zij inventariseert
+de omgeving tot de ruimste norm uit de NLR-tabel (500 m + toeslag), zodat niets buiten beeld blijft,
+en trekt geen conclusie. Het rapport meldt in rood bovenaan dat de afstandsnorm niet is vastgesteld,
+de adressenlijst heet dan een inventarisatie en geen toetsing, en de run eindigt met exitcode 2.
+Een kenmerk zonder `PH-` wordt niet in het ILT-register gezocht nadat het daar niet in bleek te
+staan: het register kent alleen Nederlandse registraties, en een mislukte verversing zou de toetsing
+anders onvolledig maken. In alle andere gevallen rekent zij
 door met de luchtvaartuigen die wél een norm hebben, en vermeldt het rapport expliciet welke
 luchtvaartuigen niet zijn meegewogen. De vergunningverlener bepaalt vervolgens — op basis van het
 geluidsrapport van het betreffende toestel — welke norm geldt, of houdt het toestel buiten de
@@ -673,7 +718,7 @@ ontheffing.
 
 | Zone | Berekening | Waarvoor |
 |---|---|---|
-| Toetsingsafstand | Maatgevende norm + 10 m | Geluidgevoelige gebouwen, begraafplaatsen, kinderopvang, scholen |
+| Toetsingsafstand | Maatgevende norm + toeslag (standaard 10 m, `toeslag_m`) | Geluidgevoelige gebouwen, begraafplaatsen, kinderopvang, scholen |
 | Margeband | Toetsingsafstand + 150 m | Gevelcontrole en signalering op de kaart; niet in de adressenlijst |
 | Aandachtsgebied maneges | Toetsingsafstand + 375 m | Manegesignalering; de margeband telt hier niet bovenop |
 | Signaleringszone natuur | Toetsingsafstand + 500 m | Natura 2000 en NNN |
@@ -738,7 +783,28 @@ paardenhouderij, hippique), omdat de API geen OR-zoekopdracht en geen filter op 
 | Grens | Afstand | Gevolg |
 |---|---|---|
 | Wettelijke minimumafstand | 1.000 m | Niet toegestaan |
-| Signaleringsmarge | 2.000 m | Signalering |
+| Signaleringsmarge | 5.000 m | Signalering |
+
+**Bronnen.** Luchthavens komen uit twee bronnen, die elk de toetsing afbreken als ze uitvallen:
+
+1. **BRT Top10NL** (`functioneel_gebied_vlak`) levert de terreinen als vlak: vliegvelden,
+   zweefvliegvelden en helikopterlandingsterreinen, ook over de provinciegrens (Teuge, Hoogeveen).
+   De API filtert niet op type; de code selecteert `vliegveld, luchthaven`, `zweefvliegveldterrein`
+   en `helikopterlandingsterrein`. Vlakken die elkaar raken, zoals het vliegveld en het
+   zweefvliegveld van Twente, worden één terrein.
+2. **GeoPortaal Overijssel** (`B6_Luchthaven_puntlocaties`) levert de provinciale
+   luchthavenregelingen als punt, met naam en gebruik. Die laag bevat alleen regelingen
+   (helihavens, zweefvliegterrein Lemelerveld), géén vliegvelden met een luchthavenbesluit zoals
+   Twente. Een regelingspunt binnen 250 m van een Top10NL-terrein geeft dat terrein zijn naam;
+   anders telt het als eigen luchthaven.
+
+**Afstand tot de rand.** De afstand is die van de dichtstbijzijnde puntlocatie tot de rand van het
+terrein — 0 m als de puntlocatie erbinnen ligt — en niet tot een middelpunt; bij een terrein van
+ruim 380 ha scheelt dat kilometers. Top10NL is een topografische registratie en niet de juridische
+grens uit een luchthavenbesluit, maar het terreinvlak ligt ruim om start- en landingsbaan.
+Helikopterlandingsterreinen hebben in Top10NL geen naam; zonder provinciale regeling krijgen ze
+het dichtstbijzijnde adres als naam. MLA- en ultralightterreinen en tijdelijke TUG-terreinen staan
+in geen van beide bronnen.
 
 ### 15.7 Natura 2000 en Natuurnetwerk Nederland
 
@@ -771,7 +837,7 @@ bevraging is afgelopen. Dat register komt in de state, het rapport en de exitcod
 
 | Bron | Bij uitval |
 |---|---|
-| BAG-verblijfsobjecten, BAG-panden voor de gevelcheck, Natura 2000, luchthavens, ILT-register | **Toetsing afgebroken**, geen rapport. Deze bronnen bepalen de adressenlijst, de natuurtoets, het luchthavenverbod en de toetsingsafstand |
+| BAG-verblijfsobjecten, BAG-panden voor de gevelcheck, Natura 2000, luchthavens en luchthaventerreinen, ILT-register | **Toetsing afgebroken**, geen rapport. Deze bronnen bepalen de adressenlijst, de natuurtoets, het luchthavenverbod en de toetsingsafstand |
 | NNN, begraafplaatsen, kinderopvang, scholen, maneges | Rapport met rode melding en **geen conclusie** voor die bron; exitcode 2 |
 | Adresaanvulling, gevelcontouren op de kaart, kaarttegels | Gemeld als weergaveprobleem; geen invloed op de toetsing |
 
@@ -793,7 +859,8 @@ Daarboven geldt de bron als uitgevallen. Een half ververste kopie wordt nooit we
 | PDOK Location API | Begraafplaatsen, maneges | Direct | — | — |
 | BRT Top10NL OGC API | Dodenakkervlakken, gebouw- en gebiedspolygonen | Direct | — | — |
 | Natura 2000 WFS (PDOK/RVO) | Natura 2000-gebieden | Direct | — | — |
-| GeoPortaal Overijssel WFS | Luchthavenpuntlocaties | Direct | — | — |
+| GeoPortaal Overijssel WFS | Luchthavenregelingen (punten) | Direct | — | — |
+| BRT Top10NL `functioneel_gebied_vlak` | Luchthaventerreinen (vlakken) | Direct | — | — |
 
 ### 16.1 ILT Luchtvaartuigregister
 
@@ -854,6 +921,7 @@ BRT Top10NL          https://api.pdok.nl/brt/top10nl/ogc/v1_0/collections/terrei
 Natura 2000          https://service.pdok.nl/rvo/natura2000/wfs/v1_0  (laag natura2000:natura2000)
 NNN (ATOM)           https://service.pdok.nl/provincies/natuurnetwerk-nederland/atom/downloads/inspire-pv-ps.nlps-nnn.gml
 Luchthavens          https://services.geodataoverijssel.nl/geoserver/B64_nutsvoorzieningen/wfs
+Luchthaventerreinen  https://api.pdok.nl/brt/top10nl/ogc/v1_0/collections/functioneel_gebied_vlak/items
 Kaarttegels          https://service.pdok.nl/hwh/luchtfotorgb/... en https://service.pdok.nl/brt/achtergrondkaart/...
 ```
 
@@ -949,7 +1017,11 @@ Beide bestanden komen in `output/`:
 | Bestand | Inhoud |
 |---|---|
 | `tug_rapport_{naam}_{timestamp}.pdf` | Proceslogboek in twaalf paragrafen, adressenlijst, en situatie- en omgevingskaart — elk zowel als luchtfoto als topografisch, dus vier kaartpagina's |
-| `tug_kaart_{naam}_{timestamp}.html` | Interactieve kaart op luchtfoto met alle geïnventariseerde objecten en zones |
+| `tug_kaart_{naam}_{timestamp}.html` | Interactieve kaart met alle geïnventariseerde objecten en zones; luchtfoto als ondergrond, omschakelbaar naar de topografische kaart |
+
+Op alle kaarten staat rond elke puntlocatie een lichtblauwe cirkel met de marge rond de puntlocatie (standaard 10 m,
+zie `toeslag_m`) die bij de Lden-afstand wordt opgeteld; bij een toeslag van 0 m vervalt de cirkel. Op de omgevingskaart is die cirkel op kaartschaal kleiner dan het
+kruissymbool; daar wordt hij met een minimale doorsnede getekend, zodat hij zichtbaar blijft.
 
 `{naam}` is het `naam`-veld uit de aanvraag, teruggebracht tot bestandsnaamveilige tekens en maximaal
 zestig posities. Ontbreekt het veld, dan vervalt dat deel van de bestandsnaam.
@@ -1036,7 +1108,11 @@ vereist bevroren voorbeeldresponsen.
 puntlocatieregels, de indientermijn, de toetsingsafstand en het zoomniveau, de bestandsnaam-slug, de
 featuresleutel, en de classificatie van verblijfsobjecten in wettelijk relevant, margeband en
 overig — inclusief de begraafplaatsuitsluiting en de aanname dat een Natura 2000-treffer ook een
-NNN-treffer is.
+NNN-treffer is. Verder: de onderlinge afstand tussen puntlocaties (melding boven 100 m), de
+handmatige geluidsafstand en haar schemagrenzen, de instelbare marge rond de puntlocatie, het
+doorrekenen zonder herleidbare norm, en de luchthaventerreinen (samenvoegen van overlappende
+vlakken, afstand tot de rand, koppeling met de provinciale regeling, naamgeving) op een
+nagebootste bron.
 
 Eén groep tests bewaakt daarbij iets dat eerder is misgegaan: dat de PDF-tabel, de HTML-markers en
 de PNG-kaart **hetzelfde oordeel** laten zien. Alle drie lezen het oordeel dat

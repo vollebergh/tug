@@ -100,6 +100,16 @@ class TestRendering:
         img = render(Bevindingen())
         assert img.size == (800, 600)
 
+    def test_toeslagcirkel_rond_puntlocatie(self):
+        """B20: de toeslag rond de puntlocatie staat op de kaart."""
+        context = _bouw_classificatie_context(Bevindingen())
+        img = kaart._render_kaart(
+            LON, LAT, 19, 800, 600, 510.0, bev=Bevindingen(), oordelen=context["oordelen"],
+            toon_legenda=False, log=lambda _regel: None, punten=[(LAT, LON)],
+            bronnen=Bronregister())
+        kleuren = {kleur for _n, kleur in img.getcolors(maxcolors=100_000)}
+        assert kaart.KLEUR_TOESLAG in kleuren
+
     @pytest.mark.parametrize("achtergrond", ["satelliet", "topografisch"])
     def test_beide_achtergronden(self, alles, achtergrond):
         assert render(alles, achtergrond=achtergrond).size == (800, 600)

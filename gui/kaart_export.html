@@ -26,15 +26,17 @@
             padding:0!important;}
   .cirlabel span{font-size:12px;font-weight:bold;white-space:nowrap;
                 text-shadow:1px 1px 2px #fff,-1px -1px 2px #fff,1px -1px 2px #fff,-1px 1px 2px #fff;}
-  #onvolledig{position:absolute;top:10px;left:60px;right:10px;z-index:1000;background:#b00020;
-              color:#fff;padding:8px 12px;border-radius:4px;font-size:13px;font-weight:bold;
-              box-shadow:0 1px 5px rgba(0,0,0,.35);}
+  #meldingen{position:absolute;top:10px;left:60px;right:10px;z-index:1000;}
+  #onvolledig,#puntafstand{color:#fff;padding:8px 12px;border-radius:4px;font-size:13px;
+              font-weight:bold;box-shadow:0 1px 5px rgba(0,0,0,.35);margin-bottom:6px;}
+  #onvolledig{background:#b00020;}
+  #puntafstand{background:#b35900;}
   [hidden]{display:none!important;}
 </style>
 </head>
 <body>
 <div id="map"></div>
-<div id="onvolledig" hidden></div>
+<div id="meldingen"><div id="onvolledig" hidden></div><div id="puntafstand" hidden></div></div>
 <script>
 __DATA__
 var map = L.map('map').setView([CENTER_LAT, CENTER_LON], 15);
@@ -42,16 +44,29 @@ var map = L.map('map').setView([CENTER_LAT, CENTER_LON], 15);
 // Onvolledige toetsing: zelfde melding als bovenaan het PDF-rapport.
 if (ONVOLLEDIG.length) {
   var banner = document.getElementById('onvolledig');
-  banner.textContent = '⚠ Onvolledige toetsing — niet (volledig) geraadpleegd: '
-    + ONVOLLEDIG.join('; ') + '. Wat hier ontbreekt is niet getoetst; zie het PDF-rapport.';
+  banner.textContent = '⚠ Onvolledige toetsing — ' + ONVOLLEDIG.join('; ')
+    + '. Wat hier ontbreekt of niet is vastgesteld, is niet getoetst; zie het PDF-rapport.';
   banner.hidden = false;
 }
+// Puntlocaties verder uit elkaar dan de richtlijn (B14): melding, geen afbreken.
+if (PUNTAFSTAND_TE_GROOT) {
+  var puntBanner = document.getElementById('puntafstand');
+  puntBanner.textContent = '⚠ ' + PUNTAFSTAND;
+  puntBanner.hidden = false;
+}
 
-// Satellietkaart (B04): PDOK luchtfoto, geen API-key nodig
-L.tileLayer('https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg', {
+// Ondergrond: luchtfoto primair (B04), topografisch als keuze (B11). Beide PDOK,
+// dezelfde tegels als de PDF-kaarten; geen API-key nodig.
+var luchtfoto = L.tileLayer('https://service.pdok.nl/hwh/luchtfotorgb/wmts/v1_0/Actueel_orthoHR/EPSG:3857/{z}/{x}/{y}.jpeg', {
   attribution: 'Luchtfoto &copy; <a href="https://www.pdok.nl/">PDOK</a> / Beeldmateriaal Nederland',
   maxNativeZoom: 19, maxZoom: 21
 }).addTo(map);
+var topografisch = L.tileLayer('https://service.pdok.nl/brt/achtergrondkaart/wmts/v2_0/standaard/EPSG:3857/{z}/{x}/{y}.png', {
+  attribution: 'Achtergrond &copy; <a href="https://www.pdok.nl/">PDOK</a> BRT-Achtergrondkaart (Kadaster)',
+  maxNativeZoom: 19, maxZoom: 21
+});
+L.control.layers({'Luchtfoto': luchtfoto, 'Topografisch': topografisch}, null,
+                 {position: 'bottomleft', collapsed: false}).addTo(map);  // rechtsboven valt onder de rode balk
 
 // Toetsings- en aandachtsgebied: omtrek van de cirkels rond alle puntlocaties (B03).
 // Label op het oostelijkste punt van de omtrek.
@@ -83,8 +98,13 @@ function esc(waarde) {
     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[teken];
   });
 }
-tekenGebied(SIGNAAL_RINGS, {color:KLEUR_AANDACHT, weight:2.5, fill:false, interactive:false},
+var aandachtLagen = tekenGebied(SIGNAAL_RINGS, {color:KLEUR_AANDACHT, weight:2.5, fill:false, interactive:false},
   'Aandachtsgebied (+' + MANEGE_SIGNAAL_MARGE + ' m)', KLEUR_AANDACHT, DONKERE_SCHADUW);
+// Geel valt weg op de lichte topografische kaart; daar de oranjetint van de PDF-kaart.
+map.on('baselayerchange', function(e) {
+  var kleur = e.layer === topografisch ? '#ca6f1e' : KLEUR_AANDACHT;
+  aandachtLagen.forEach(function(laag) { laag.setStyle({color: kleur}); });
+});
 var toetsingLagen = tekenGebied(TOETSING_RINGS, {color:KLEUR_TOETSING, weight:3, fill:false, interactive:false},
   TOETSING_LABEL, KLEUR_TOETSING, DONKERE_SCHADUW);
 if (toetsingLagen.length) {
@@ -98,6 +118,15 @@ var kruisIcon = L.divIcon({
       + '<line x1="14" y1="1" x2="14" y2="27" stroke="#c80000" stroke-width="3"/>'
       + '<line x1="1" y1="14" x2="27" y2="14" stroke="#c80000" stroke-width="3"/></svg>',
   iconSize: [28, 28], iconAnchor: [14, 14]
+});
+// Toeslag rond elke puntlocatie (B20): de meters die bij de Lden-afstand worden
+// opgeteld. Onder het kruis, zodat de stijg- en landingsplaats klikbaar blijft.
+var KLEUR_TOESLAG = '#00aae1';  // tug_03_kaart.KLEUR_TOESLAG
+PUNTEN.forEach(function(p) {
+  if (!TOESLAG_M) return;  // geen toeslag, geen cirkel
+  L.circle([p[0], p[1]], {radius: TOESLAG_M, color: KLEUR_TOESLAG, weight: 2,
+                          dashArray: '4 3', fillColor: KLEUR_TOESLAG, fillOpacity: 0.15,
+                          interactive: false}).addTo(map);
 });
 PUNTEN.forEach(function(p, i) {
   var nr = PUNTEN.length > 1 ? ' ' + (i + 1) : '';
@@ -173,6 +202,10 @@ POLYGONEN.forEach(function(p) {
     k     = p.in_straal ? '#006400' : '#228b22';
     label = '<b>' + esc(p.naam) + '</b><br>Natura 2000 — ' +
             (p.in_straal ? 'puntlocatie binnen gebied' : 'nabij puntlocatie');
+  } else if (p.type === 'luchthaven') {
+    k     = p.in_straal ? '#d22800' : '#d25a00';
+    label = '<b>' + esc(p.naam) + '</b><br>Luchthaventerrein — ' + esc(p.afstand_m) + ' m van de puntlocatie'
+          + (p.in_straal ? ' (NIET TOEGESTAAN)' : '');
   } else if (p.type === 'nnn') {
     k     = p.in_straal ? '#3cb33c' : '#66cd66';
     label = '<b>' + esc(p.naam) + '</b><br>Natuurnetwerk Nederland — ' +
@@ -184,7 +217,8 @@ POLYGONEN.forEach(function(p) {
   }
   p.rings.forEach(function(ring) {
     var ll = ring.map(function(c) { return [c[1], c[0]]; });
-    var fo = (p.type === 'n2000') ? (p.in_straal ? 0.35 : 0.20)
+    var fo = (p.type === 'luchthaven') ? (p.in_straal ? 0.30 : 0.15)
+           : (p.type === 'n2000') ? (p.in_straal ? 0.35 : 0.20)
            : (p.type === 'nnn')   ? (p.in_straal ? 0.32 : 0.22)
            : (p.in_straal ? 0.22 : 0.12);
     L.polygon(ll, {color:k, fillColor:k, fillOpacity:fo, weight:1.5})
@@ -201,7 +235,7 @@ legend.onAdd = function() {
     + '<span class="leg-sq" style="background:rgba(220,53,69,.55);border:1px solid #dc3545"></span>Wettelijk relevant (gevelcontour)<br>'
     + '<span class="leg-sq" style="background:rgba(230,126,34,.55);border:1px solid #e67e22"></span>Margeband (gevelcontour)<br>'
     + '<span class="leg-dot" style="background:#800080"></span>Aandachtslocatie<br>'
-    + '<div style="display:inline-block;width:12px;height:12px;background:#d25a00;transform:rotate(45deg);margin-right:6px;vertical-align:middle;border:1px solid #7a2e00"></div>Luchthaven (signalering)<br>'
+    + '<div style="display:inline-block;width:12px;height:12px;background:#d25a00;transform:rotate(45deg);margin-right:6px;vertical-align:middle;border:1px solid #7a2e00"></div>Luchthaven(terrein) — tot ' + esc(LUCHTHAVEN_SIGNAAL_M) + ' m<br>'
     + '<span class="leg-sq" style="background:rgba(160,160,160,.35);border:1px solid #bbb"></span>Overig (gevelcontour)<br>'
     + '<span class="leg-sq" style="background:rgba(184,134,11,.20);border:1px solid #b8860b"></span>Begraafplaats (beschermd)<br>'
     + '<span class="leg-sq" style="background:rgba(255,215,0,.20);border:1px solid #ffd700"></span>Begraafplaats (buiten)<br>'
@@ -210,6 +244,9 @@ legend.onAdd = function() {
     + '<span class="leg-ln" style="background:' + KLEUR_TOETSING + '"></span>' + esc(TOETSING_LABEL) + '<br>'
     + '<span class="leg-ln" style="background:' + KLEUR_AANDACHT + '"></span>Aandachtsgebied<br>'
     + '<span style="color:#c80000;font-weight:bold;font-size:15px;margin-right:6px">+</span>Stijg- en landingsplaats<br>'
+    + (TOESLAG_M ? '<span class="leg-dot" style="background:rgba(0,170,225,.25);border:2px dashed ' + KLEUR_TOESLAG + '"></span>Marge rond puntlocatie (' + esc(TOESLAG_TEKST) + ' m)<br>' : '')
+    + (PUNTEN.length > 1 ? '<span style="font-size:11px">Grootste onderlinge afstand puntlocaties: '
+       + esc(PUNTAFSTAND_M) + ' m</span><br>' : '')
     + '<span style="color:#777;font-size:10px">Workflowversie: ' + esc(WORKFLOW_VERSIE) + '</span>';
   return d;
 };

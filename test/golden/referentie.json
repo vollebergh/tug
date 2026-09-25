@@ -92,8 +92,8 @@
         "aantal": 1
       },
       "te_ver_uit_elkaar": {
-        "ok": false,
-        "fout": "puntlocatie 1 en 2 liggen 11126 m uit elkaar; maximaal 100 m toegestaan"
+        "ok": true,
+        "aantal": 2
       },
       "buiten_nederland": {
         "ok": false,

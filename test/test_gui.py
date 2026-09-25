@@ -24,7 +24,8 @@ from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings  # noqa: 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import tug_gui as gui  # noqa: E402
-from tug_config import MAX_PUNT_AFSTAND_M, MIN_INDIENTERMIJN_DAGEN  # noqa: E402
+from tug_aanvraag import controleer_structuur  # noqa: E402
+from tug_config import MAX_PUNT_AFSTAND_M, MIN_INDIENTERMIJN_DAGEN, TOETSING_TOESLAG_M  # noqa: E402
 from tug_geo import puntlocaties  # noqa: E402
 
 LAT, LON = 52.46126, 6.496964
@@ -83,6 +84,17 @@ class TestLuchtvaartuigen:
         assert len(venster.toestellen.luchtvaartuigen) == 1
         assert "staat al in de lijst" in venster.toestellen.melding.text()
 
+    def test_handmatige_geluidsafstand_in_het_overzicht(self, venster):
+        """B12: in de regel van het overzicht een afstand opgeven; 0 = uit register."""
+        venster.toestellen.veld_registratie.setText("OO-EYP")
+        venster.toestellen.toevoegen()
+        rij = venster.toestellen.lijst.itemAt(0).widget()
+        assert "afstand_m" not in venster.toestellen.velden()["luchtvaartuigen"][0]
+        rij.veld_afstand.setValue(300)
+        assert venster.toestellen.velden()["luchtvaartuigen"][0]["afstand_m"] == 300
+        rij.veld_afstand.setValue(0)
+        assert "afstand_m" not in venster.toestellen.velden()["luchtvaartuigen"][0]
+
     def test_afwijkend_kenmerk_wordt_gemeld_maar_toegevoegd(self, venster):
         venster.toestellen.veld_registratie.setText("XYZ")
         venster.toestellen.toevoegen()
@@ -107,7 +119,21 @@ class TestPuntlocaties:
         venster.locaties.toevoegen(LAT, LON)
         venster.locaties.toevoegen(LAT + 0.01, LON)   # ruim een kilometer verderop
         assert venster.locaties.max_onderlinge_afstand() > MAX_PUNT_AFSTAND_M
-        assert "uit elkaar" in venster.locaties.melding_afstand.text()
+        assert f"meer dan {MAX_PUNT_AFSTAND_M} m" in venster.locaties.melding_afstand.text()
+        assert venster.locaties.melding_afstand.objectName() == "waarschuwing"
+
+    def test_te_ver_uit_elkaar_blokkeert_niet(self, venster):
+        """B14: een melding, geen blokkade — de knop blijft beschikbaar."""
+        vul_volledig(venster)
+        venster.locaties.toevoegen(LAT + 0.01, LON)
+        assert venster.knop_genereer.isEnabled()
+
+    def test_afstand_altijd_zichtbaar_bij_meerdere_punten(self, venster):
+        venster.locaties.toevoegen(LAT, LON)
+        venster.locaties.toevoegen(LAT + 0.0001, LON)   # ruim 10 m
+        tekst = venster.locaties.melding_afstand.text()
+        assert "Grootste onderlinge afstand" in tekst and "meer dan" not in tekst
+        assert venster.locaties.melding_afstand.objectName() == "hulp"
 
     def test_verwijderen_herstelt_de_melding(self, venster):
         venster.locaties.toevoegen(LAT, LON)
@@ -138,13 +164,37 @@ class TestAanvraag:
         assert set(aanvraag) == {
             "naam", "soort_ontheffing", "datum_vlucht", "vlucht_udp", "vlucht_start",
             "vlucht_einde", "aantal_vluchten", "luchtvaartuigen", "coord_lat",
-            "coord_lon", "datum_ondertekening", "tijdstip_ondertekening",
+            "coord_lon", "datum_ondertekening", "tijdstip_ondertekening", "toeslag_m",
         }
+
+    def test_toeslag_standaard_en_aanpasbaar(self, venster):
+        """B21: standaard de vaste toeslag, maar vrij in te stellen."""
+        vul_volledig(venster)
+        assert venster.aanvraag()["toeslag_m"] == TOETSING_TOESLAG_M
+        venster.locaties.veld_toeslag.setValue(25)
+        assert venster.aanvraag()["toeslag_m"] == 25
+        assert controleer_structuur(venster.aanvraag()) == []
 
     def test_de_pipeline_accepteert_de_puntlocaties(self, venster):
         """Wat het venster oplevert, moet de validatiestap zonder klacht inlezen."""
         vul_volledig(venster)
         assert puntlocaties(venster.aanvraag()) == [(LAT, LON)]
+
+    def test_verborgen_velden_leveren_hun_standaardwaarden(self, venster):
+        """B15: niet in beeld, wel in de aanvraag — met de standaardwaarden."""
+        vul_volledig(venster)
+        g, t = venster.gegevens, venster.toestellen
+        if not gui.TOON_AANVULLENDE_VELDEN:
+            for veld in (g.veld_soort, g.veld_aantal, g.veld_tijd, g.veld_udp,
+                         g.veld_start, g.veld_einde, t.veld_type):
+                assert not veld.isVisible()
+        aanvraag = venster.aanvraag()
+        assert aanvraag["soort_ontheffing"] == gui.SOORTEN_ONTHEFFING[0]
+        assert aanvraag["aantal_vluchten"] == gui.STANDAARD_AANTAL_VLUCHTEN
+        assert aanvraag["vlucht_udp"] is True
+        assert aanvraag["tijdstip_ondertekening"]
+        assert all(lv["type"] == gui.TYPEN_LUCHTVAARTUIG[0]
+                   for lv in aanvraag["luchtvaartuigen"])
 
     def test_udp_uit_levert_start_en_eindtijd(self, venster):
         vul_volledig(venster)

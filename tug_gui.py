@@ -37,6 +37,7 @@ if __name__ == "__main__":
     from tug_omgeving import zorg_voor_projectomgeving
     zorg_voor_projectomgeving()
 
+import html
 import json
 import os
 import re
@@ -61,15 +62,16 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDoubleSpinBox,
     QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea,
+    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QToolTip,
     QSpinBox, QSplitter, QTimeEdit, QVBoxLayout, QWidget,
 )
 
 from tug_config import (
     GUI_DIR, KAART_ACHTERGRONDEN, MAX_PUNT_AFSTAND_M, MIN_INDIENTERMIJN_DAGEN,
-    NL_BBOX, OUTPUT_DIR, REGISTRATIE_PATROON, VERSION,
+    NL_BBOX, OUTPUT_DIR, REGISTRATIE_PATROON, TOETSING_TOESLAG_M, VERSION,
 )
-from tug_geo import in_nederland, json_voor_script, naam_slug
+from tug_aanvraag import AFSTAND_BEREIK, TOESLAG_BEREIK
+from tug_geo import in_nederland, json_voor_script, naam_slug, puntafstand_melding
 from tug_opslag import schrijf_state, wis_state
 
 # ──────────────────────────────────────────────
@@ -100,6 +102,12 @@ KAART_START_ZOOM = 11
 # De datumvelden staan op "vanaf heden" (conform specificatie). Zet op False om
 # ook een ondertekening in het verleden te kunnen invoeren.
 ONDERTEKENING_VANAF_HEDEN = True
+
+# Velden die de toetsing niet sturen zijn verborgen (B15): soort ontheffing, aantal
+# vluchten, tijdstip ondertekening, UDP/vluchttijden en het type luchtvaartuig.
+# Ze bestaan wel en hun standaardwaarden gaan nog steeds de aanvraag-JSON in, zodat
+# schema en rapport ongewijzigd blijven. Zet op True om ze weer te tonen.
+TOON_AANVULLENDE_VELDEN = False
 
 STANDAARD_DAGEN_VOORUIT   = 42   # voorgestelde vluchtdatum: ruim buiten de indientermijn
 STANDAARD_AANTAL_VLUCHTEN = 50
@@ -147,15 +155,36 @@ def leeg_layout(layout) -> None:
 # Kleine bouwstenen
 # ──────────────────────────────────────────────
 
+def uitlegtekst(tekst: str) -> str:
+    """Tooltiptekst als opgemaakte tekst: Qt breekt die af over meerdere regels,
+    platte tekst niet (die liep als één regel van het scherm)."""
+    return f"<p>{html.escape(tekst)}</p>"
+
+
 class Info(QLabel):
-    """Klein i-tje met uitleg in een tooltip."""
+    """Klein i-tje met uitleg. De uitleg verschijnt meteen bij hover en bij klik,
+    ook als het venster niet actief is — Qt's eigen tooltip doet dat niet."""
 
     def __init__(self, uitleg: str):
         super().__init__("i")
         self.setObjectName("info")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setToolTip(uitleg)
+        self.setToolTip(uitlegtekst(uitleg))
         self.setCursor(Qt.CursorShape.WhatsThisCursor)
+
+    def _toon(self) -> None:
+        QToolTip.showText(self.mapToGlobal(self.rect().bottomLeft()), self.toolTip(), self)
+
+    def enterEvent(self, event):  # noqa: N802 — Qt-override
+        self._toon()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):  # noqa: N802 — Qt-override
+        QToolTip.hideText()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, _event):  # noqa: N802 — Qt-override
+        self._toon()
 
 
 def sectiekop(tekst: str, uitleg: str | None = None) -> QWidget:
@@ -271,6 +300,7 @@ def app_icoon() -> QIcon:
 
 class LuchtvaartuigRij(QFrame):
     verwijderd = Signal(str)
+    afstand_gewijzigd = Signal(str, int)   # id, meters (0 = uit het register)
 
     def __init__(self, nummer: int, lv: dict):
         super().__init__()
@@ -290,11 +320,31 @@ class LuchtvaartuigRij(QFrame):
         naam.setObjectName("rijTitel")
         lay.addWidget(naam)
 
-        badge = QLabel(lv["type"])
-        badge.setObjectName("badge")
-        lay.addWidget(badge)
+        if TOON_AANVULLENDE_VELDEN:
+            badge = QLabel(lv["type"])
+            badge.setObjectName("badge")
+            lay.addWidget(badge)
 
         lay.addStretch(1)
+
+        # Handmatige geluidsafstand (B12), bijvoorbeeld voor een buitenlandse
+        # registratie die het ILT-register niet kent. 0 = uit het register.
+        self.veld_afstand = QSpinBox()
+        self.veld_afstand.setRange(0, AFSTAND_BEREIK[1])
+        self.veld_afstand.setSingleStep(10)
+        self.veld_afstand.setSuffix(" m")
+        self.veld_afstand.setSpecialValueText("uit register")
+        self.veld_afstand.setValue(lv.get("afstand_m") or 0)
+        self.veld_afstand.setFixedWidth(116)
+        self.veld_afstand.setToolTip(uitlegtekst(
+            "Geluidsafstand handmatig opgeven, bijvoorbeeld voor een buitenlands "
+            "luchtvaartuig dat niet in het ILT-register staat. Laat op 'uit register' "
+            "om de afstand uit het register en de NLR-tabel te halen. Een handmatige "
+            "waarde gaat vóór het register en staat als zodanig in het rapport."
+        ))
+        self.veld_afstand.valueChanged.connect(
+            lambda waarde: self.afstand_gewijzigd.emit(self._id, waarde))
+        lay.addWidget(self.veld_afstand)
 
         weg = QPushButton("✕")
         weg.setObjectName("verwijder")
@@ -658,18 +708,22 @@ class Aanvraagpaneel(QWidget):
         rooster.addWidget(self.veld_naam, rij, 0, 1, 2)
         rij += 1
 
-        # Soort ontheffing + aantal vluchten
-        rooster.addWidget(veldlabel("Soort ontheffing"), rij, 0)
-        rooster.addWidget(veldlabel("Aantal vluchten"), rij, 1)
-        rij += 1
-        self.veld_soort = QComboBox()
+        # Soort ontheffing + aantal vluchten (verborgen tenzij TOON_AANVULLENDE_VELDEN)
+        self.veld_soort = QComboBox(self)
         self.veld_soort.addItems(SOORTEN_ONTHEFFING)
-        rooster.addWidget(self.veld_soort, rij, 0)
-        self.veld_aantal = QSpinBox()
+        self.veld_aantal = QSpinBox(self)
         self.veld_aantal.setRange(1, 999)
         self.veld_aantal.setValue(STANDAARD_AANTAL_VLUCHTEN)
-        rooster.addWidget(self.veld_aantal, rij, 1)
-        rij += 1
+        if TOON_AANVULLENDE_VELDEN:
+            rooster.addWidget(veldlabel("Soort ontheffing"), rij, 0)
+            rooster.addWidget(veldlabel("Aantal vluchten"), rij, 1)
+            rij += 1
+            rooster.addWidget(self.veld_soort, rij, 0)
+            rooster.addWidget(self.veld_aantal, rij, 1)
+            rij += 1
+        else:
+            self.veld_soort.hide()
+            self.veld_aantal.hide()
 
         # Datum vlucht
         rooster.addWidget(veldlabel(
@@ -694,8 +748,9 @@ class Aanvraagpaneel(QWidget):
             f"Hiermee bepalen we of de aanvraag niet te laat is ingediend: bij minder "
             f"dan {MIN_INDIENTERMIJN_DAGEN} dagen vóór de vroegste vluchtdatum volgt "
             f"een waarschuwing in het rapport."
-        ), rij, 0)
-        rooster.addWidget(veldlabel("Tijdstip"), rij, 1)
+        ), rij, 0, 1, 1 if TOON_AANVULLENDE_VELDEN else 2)
+        if TOON_AANVULLENDE_VELDEN:
+            rooster.addWidget(veldlabel("Tijdstip"), rij, 1)
         rij += 1
         self.veld_onder = QDateEdit()
         self.veld_onder.setCalendarPopup(True)
@@ -704,25 +759,30 @@ class Aanvraagpaneel(QWidget):
             self.veld_onder.setMinimumDate(QDate.currentDate())
         self.veld_onder.setDate(QDate.currentDate())
         self.veld_onder.dateChanged.connect(self.gewijzigd)
-        rooster.addWidget(self.veld_onder, rij, 0)
-        self.veld_tijd = QTimeEdit()
+        self.veld_tijd = QTimeEdit(self)
         self.veld_tijd.setDisplayFormat("HH:mm")
         self.veld_tijd.setTime(QTime.currentTime())
-        rooster.addWidget(self.veld_tijd, rij, 1)
+        if TOON_AANVULLENDE_VELDEN:
+            rooster.addWidget(self.veld_onder, rij, 0)
+            rooster.addWidget(self.veld_tijd, rij, 1)
+        else:
+            rooster.addWidget(self.veld_onder, rij, 0, 1, 2)
+            self.veld_tijd.hide()
         rij += 1
 
         vak.addLayout(rooster)
-        vak.addWidget(scheiding())
 
-        # Vluchttijden
-        tijden = QHBoxLayout()
+        # Vluchttijden (verborgen tenzij TOON_AANVULLENDE_VELDEN)
+        tijdenvak = QWidget()
+        tijden = QHBoxLayout(tijdenvak)
+        tijden.setContentsMargins(0, 0, 0, 0)
         tijden.setSpacing(10)
         self.veld_udp = QCheckBox("Vluchten binnen UDP")
         self.veld_udp.setChecked(True)
-        self.veld_udp.setToolTip(
+        self.veld_udp.setToolTip(uitlegtekst(
             "Uniform Daglicht Periode: vluchten vinden plaats tussen zonsopgang en "
             "zonsondergang. Zet uit om een start- en eindtijd op te geven."
-        )
+        ))
         self.veld_udp.toggled.connect(self._udp_gewijzigd)
         tijden.addWidget(self.veld_udp)
         tijden.addStretch(1)
@@ -741,7 +801,11 @@ class Aanvraagpaneel(QWidget):
         self.veld_einde.setEnabled(False)
         self.veld_einde.setFixedWidth(84)
         tijden.addWidget(self.veld_einde)
-        vak.addLayout(tijden)
+        lijn = scheiding()
+        vak.addWidget(lijn)
+        vak.addWidget(tijdenvak)
+        lijn.setVisible(TOON_AANVULLENDE_VELDEN)
+        tijdenvak.setVisible(TOON_AANVULLENDE_VELDEN)
 
         self.melding_datum = QLabel("")
         self.melding_datum.setObjectName("waarschuwing")
@@ -813,7 +877,9 @@ class Luchtvaartuigenpaneel(QWidget):
         vak.addWidget(sectiekop(
             "Luchtvaartuigen",
             "Registratiekenmerken worden opgezocht in het ILT-luchtvaartuigregister; "
-            "daaruit volgt de maatgevende geluidnorm en de toetsingsafstand."
+            "daaruit volgt de maatgevende geluidnorm en de toetsingsafstand. Staat een "
+            "luchtvaartuig er niet in (bijvoorbeeld een buitenlandse registratie), vul "
+            "dan in het overzicht zelf een geluidsafstand in."
         ))
 
         invoer = QHBoxLayout()
@@ -823,10 +889,13 @@ class Luchtvaartuigenpaneel(QWidget):
         self.veld_registratie.returnPressed.connect(self.toevoegen)
         invoer.addWidget(self.veld_registratie, 1)
 
-        self.veld_type = QComboBox()
+        self.veld_type = QComboBox(self)
         self.veld_type.addItems(TYPEN_LUCHTVAARTUIG)
         self.veld_type.setFixedWidth(120)
-        invoer.addWidget(self.veld_type)
+        if TOON_AANVULLENDE_VELDEN:
+            invoer.addWidget(self.veld_type)
+        else:
+            self.veld_type.hide()
 
         plus = QPushButton("+")
         plus.setObjectName("plus")
@@ -891,12 +960,22 @@ class Luchtvaartuigenpaneel(QWidget):
             for nummer, lv in enumerate(self.luchtvaartuigen, 1):
                 rij = LuchtvaartuigRij(nummer, lv)
                 rij.verwijderd.connect(self._verwijderen)
+                rij.afstand_gewijzigd.connect(self._afstand_gewijzigd)
                 self.lijst.addWidget(rij)
         self.gewijzigd.emit()
 
+    def _afstand_gewijzigd(self, lv_id: str, meters: int) -> None:
+        for lv in self.luchtvaartuigen:
+            if lv["id"] == lv_id:
+                lv["afstand_m"] = meters or None
+        self.gewijzigd.emit()
+
     def velden(self) -> dict:
-        return {"luchtvaartuigen": [{"registratie": lv["registratie"], "type": lv["type"]}
-                                    for lv in self.luchtvaartuigen]}
+        return {"luchtvaartuigen": [
+            {"registratie": lv["registratie"], "type": lv["type"]}
+            | ({"afstand_m": lv["afstand_m"]} if lv.get("afstand_m") else {})
+            for lv in self.luchtvaartuigen
+        ]}
 
 
 # ──────────────────────────────────────────────
@@ -924,8 +1003,9 @@ class Puntlocatiespaneel(QWidget):
         lay.addWidget(frame)
         vak.addWidget(sectiekop(
             "Puntlocaties",
-            f"Klik op de kaart om een puntlocatie te plaatsen. Meerdere puntlocaties "
-            f"mogen onderling hooguit {MAX_PUNT_AFSTAND_M} m uit elkaar liggen."
+            f"Klik op de kaart om een puntlocatie te plaatsen. Bij meerdere puntlocaties "
+            f"staat hieronder de grootste onderlinge afstand; boven {MAX_PUNT_AFSTAND_M} m "
+            f"volgt een waarschuwing, ook in het rapport. De toetsing gaat wel door."
         ))
 
         # Handmatige invoer: WGS84 of RD
@@ -982,6 +1062,25 @@ class Puntlocatiespaneel(QWidget):
         self.melding_afstand.setWordWrap(True)
         self.melding_afstand.hide()
         vak.addWidget(self.melding_afstand)
+
+        # Toeslag rond de puntlocatie (B21): opgeteld bij de Lden-afstand van 150/250/500 m.
+        vak.addWidget(scheiding())
+        toeslag = QHBoxLayout()
+        toeslag.setSpacing(10)
+        toeslag.addWidget(veldlabel(
+            "Marge rond puntlocatie",
+            f"Wordt opgeteld bij de geluidsafstand van het luchtvaartuig (150, 250 of "
+            f"500 m) en vormt samen de toetsingsafstand. Standaard {TOETSING_TOESLAG_M} m; "
+            f"afwijken kan, het rapport vermeldt de gebruikte waarde."
+        ), 1)
+        self.veld_toeslag = QSpinBox()
+        self.veld_toeslag.setRange(*TOESLAG_BEREIK)
+        self.veld_toeslag.setSuffix(" m")
+        self.veld_toeslag.setValue(TOETSING_TOESLAG_M)
+        self.veld_toeslag.setFixedWidth(96)
+        self.veld_toeslag.valueChanged.connect(self.gewijzigd)
+        toeslag.addWidget(self.veld_toeslag)
+        vak.addLayout(toeslag)
 
         self._ververs()
 
@@ -1064,13 +1163,16 @@ class Puntlocatiespaneel(QWidget):
                 rij.gekozen.connect(self._tonen)
                 self.lijst.addWidget(rij)
 
-        afstand = self.max_onderlinge_afstand()
-        if afstand > MAX_PUNT_AFSTAND_M:
-            toon_melding(
-                self.melding_afstand,
-                f"De puntlocaties liggen tot {afstand:.0f} m uit elkaar; maximaal "
-                f"{MAX_PUNT_AFSTAND_M} m is toegestaan. De validatiestap breekt hierop af."
-            )
+        # B14: bij meerdere puntlocaties altijd de grootste onderlinge afstand; boven
+        # de richtlijn als waarschuwing. De pipeline breekt er niet meer op af.
+        if len(self.punten) > 1:
+            afstand = self.max_onderlinge_afstand()
+            stijl = "waarschuwing" if afstand > MAX_PUNT_AFSTAND_M else "hulp"
+            if self.melding_afstand.objectName() != stijl:
+                self.melding_afstand.setObjectName(stijl)
+                self.melding_afstand.style().unpolish(self.melding_afstand)
+                self.melding_afstand.style().polish(self.melding_afstand)
+            toon_melding(self.melding_afstand, puntafstand_melding(afstand))
         else:
             self.melding_afstand.hide()
 
@@ -1090,6 +1192,7 @@ class Puntlocatiespaneel(QWidget):
         return {
             "coord_lat": [p["lat"] for p in self.punten],
             "coord_lon": [p["lon"] for p in self.punten],
+            "toeslag_m": self.veld_toeslag.value(),
         }
 
 
@@ -1248,8 +1351,9 @@ class Exportafhandeling(QObject):
                 if code == EXIT_ONVOLLEDIG:
                     self.voltooi.emit(
                         "Voltooid — toetsing ONVOLLEDIG",
-                        f"Niet alle bronnen zijn volledig geraadpleegd; het rapport meldt "
-                        f"welke. {len(verplaatst)} bestand(en) in {map_tekst} — geopend.",
+                        f"Niet alle bronnen zijn volledig geraadpleegd, of voor geen enkel "
+                        f"luchtvaartuig is een afstandsnorm herleidbaar; het rapport meldt "
+                        f"wat. {len(verplaatst)} bestand(en) in {map_tekst} — geopend.",
                         False,
                     )
                     self.status.emit(
@@ -1382,10 +1486,10 @@ class Hoofdvenster(QMainWindow):
         self.knop_genereer = QPushButton("Genereer")
         self.knop_genereer.setObjectName("genereer")
         self.knop_genereer.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.knop_genereer.setToolTip(
+        self.knop_genereer.setToolTip(uitlegtekst(
             "Schrijft de aanvraag-JSON, start de pipeline en vraagt daarna waar de "
             "HTML- en PDF-export moeten worden opgeslagen."
-        )
+        ))
         self.knop_genereer.clicked.connect(self._genereer)
         lay.addWidget(self.knop_genereer)
 
@@ -1459,16 +1563,6 @@ class Hoofdvenster(QMainWindow):
         return {**self.gegevens.velden(), **self.toestellen.velden(), **self.locaties.velden()}
 
     def _genereer(self) -> None:
-        afstand = self.locaties.max_onderlinge_afstand()
-        if afstand > MAX_PUNT_AFSTAND_M:
-            QMessageBox.warning(
-                self, "Puntlocaties te ver uit elkaar",
-                f"De puntlocaties liggen tot {afstand:.0f} m uit elkaar. De validatiestap "
-                f"staat maximaal {MAX_PUNT_AFSTAND_M} m toe en breekt hierop af.\n\n"
-                f"Verwijder of verplaats een puntlocatie."
-            )
-            return
-
         aanvraag = self.aanvraag()
         TMP_DIR.mkdir(parents=True, exist_ok=True)
         stempel  = datetime.now().strftime("%Y%m%d_%H%M%S")

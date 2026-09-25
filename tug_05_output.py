@@ -31,17 +31,19 @@ from reportlab.pdfgen import canvas as rl_canvas
 
 from tug_config import (
     VERSION, MODEL_LABEL, OUTPUT_DIR, GUI_DIR,
-    MARGE_M, TOETSING_TOESLAG_M, toetsing_label, MANEGE_SIGNAAL_MARGE,
+    MARGE_M, MAX_PUNT_AFSTAND_M, TOETSING_TOESLAG_M, meters, toetsing_label,
+    MANEGE_SIGNAAL_MARGE,
     N2000_SIGNAAL_MARGE, NNN_SIGNAAL_MARGE, NNN_TTL_DAGEN,
-    LUCHTHAVEN_GRENS_M, LUCHTHAVEN_SIGNAAL_M,
+    LUCHTHAVEN_GRENS_M, LUCHTHAVEN_KOPPEL_M, LUCHTHAVEN_SIGNAAL_M,
     LRK_CACHE_DAYS,
     MANEGE_ZOEKTERMEN,
     _PDF_MARGIN_MM, _PDF_PAGE_W_MM, _PDF_PAGE_H_MM,
 )
 from tug_bronstatus import (
-    BRONNEN, CACHE, MISLUKT, beschrijf, is_volledig, onvolledige_toetsing, uitkomsten_uit_state,
+    BRONNEN, CACHE, MISLUKT, beschrijf, is_volledig, kort, onvolledige_toetsing,
+    uitkomsten_uit_state,
 )
-from tug_geo import json_voor_script, naam_slug
+from tug_geo import json_voor_script, naam_slug, puntafstand_melding
 from tug_logging import LogAccumulator, setup_logging
 from tug_opslag import schrijf_state
 
@@ -170,6 +172,7 @@ class _ProcesLogBuilder:
         self.lat        = self.ruimtelijk.get("lat", 0)
         self.lon        = self.ruimtelijk.get("lon", 0)
         self.punten     = self.ruimtelijk.get("punten") or [[self.lat, self.lon]]
+        self.toeslag    = self.ruimtelijk.get("toeslag_m", TOETSING_TOESLAG_M)
         self.straal     = self.ruimtelijk.get("straal", 0)
         self.datum_l    = self.ruimtelijk.get("datum_leesbaar", "")
         self.rlog       = self.ruimtelijk.get("log_regels", [])
@@ -342,7 +345,10 @@ class _ProcesLogBuilder:
             vluchtdata = [vluchtdata]
         lv_lijst = self.aanvraag.get("luchtvaartuigen", [])
         lv_str = ", ".join(
-            f"{lv.get('registratie','?')} (type: {lv.get('type','?')})" for lv in lv_lijst
+            f"{lv.get('registratie','?')} (type: {lv.get('type','?')}"
+            + (f", geluidsafstand {lv['afstand_m']} m handmatig" if lv.get("afstand_m") else "")
+            + ")"
+            for lv in lv_lijst
         )
         self.regel(f"Soort ontheffing: {self.aanvraag.get('soort_ontheffing', '—')}")
         vluchtdata_str = ', '.join(vluchtdata) if vluchtdata else "— ONBEKEND —"
@@ -407,6 +413,7 @@ class _ProcesLogBuilder:
             "fallback_150m":          "niet in NLR-tabel, beleidsregel 150 m toegepast",
             "niet_in_register":       "niet gevonden in ILT luchtvaartregister",
             "geen_registratie":       "registratiekenmerk ontbreekt in de aanvraag",
+            "handmatig":              "handmatig opgegeven in de aanvraag",
         }
         zonder_norm = []
         for lv in lv_resultaten:
@@ -424,10 +431,13 @@ class _ProcesLogBuilder:
                     rood=True,
                 )
                 continue  # toelichting volgt in het rode blok hieronder
-            self.regel(
-                f"{kenmerk}: ICAO {icao} "
-                f"→ Appendix {cat} → norm {norm} m ({bron_s})"
-            )
+            if bron == "handmatig":
+                self.regel(f"{kenmerk}: geluidsafstand {norm} m ({bron_s})")
+            else:
+                self.regel(
+                    f"{kenmerk}: ICAO {icao} "
+                    f"→ Appendix {cat} → norm {norm} m ({bron_s})"
+                )
             for sig in lv.get("signalen", []):
                 self.regel(f"Signalering: {sig}", rood=True, ind=12)
         self.lege()
@@ -455,7 +465,7 @@ class _ProcesLogBuilder:
                 self.regel(reden, rood=True, ind=8)
             self.regel(
                 "Voor deze luchtvaartuigen is géén afstandsnorm aangenomen; zij zijn buiten "
-                "de toetsingsafstand en de ruimtelijke analyse gelaten. De vergunningverlener "
+                "de toetsingsafstand gelaten. De vergunningverlener "
                 "bepaalt of deze luchtvaartuigen in de ontheffing worden opgenomen en, zo ja, "
                 "welke norm daarvoor geldt.",
                 rood=True, ind=8,
@@ -463,15 +473,27 @@ class _ProcesLogBuilder:
             self.lege()
 
         norm_toep  = self.classif.get("norm_toepassing")
-        maatgevend = [lv["registratie"] for lv in lv_resultaten if lv.get("norm_m") == norm_toep]
-        self.regel(
-            f"Maatgevende toetsingsstraal: {norm_toep} m "
-            f"(maatgevend: {', '.join(maatgevend)})."
-            + (
-                f" Niet meegewogen: {', '.join(k for k, *_ in zonder_norm)}."
-                if zonder_norm else ""
+        if self.classif.get("norm_herleidbaar", True):
+            maatgevend = [lv["registratie"] for lv in lv_resultaten
+                          if lv.get("norm_m") == norm_toep]
+            self.regel(
+                f"Maatgevende toetsingsstraal: {norm_toep} m "
+                f"(maatgevend: {', '.join(maatgevend)})."
+                + (
+                    f" Niet meegewogen: {', '.join(k for k, *_ in zonder_norm)}."
+                    if zonder_norm else ""
+                )
             )
-        )
+        else:
+            self.regel(
+                f"Geen maatgevende toetsingsstraal: voor geen enkel luchtvaartuig is een "
+                f"afstandsnorm herleidbaar. De omgeving is geïnventariseerd tot de ruimste "
+                f"norm uit de NLR-tabel ({norm_toep} m), zodat niets buiten beeld blijft. "
+                f"Dit is géén toetsing: de adressenlijst en de kaarten tonen alles binnen "
+                f"{norm_toep} m, ook wat bij de werkelijke norm buiten de toetsingsafstand "
+                f"valt. De vergunningverlener bepaalt de norm en beoordeelt de lijst daarop.",
+                rood=True,
+            )
         reg_datum = self.classif.get("register_datum", "")
         if reg_datum:
             try:
@@ -505,10 +527,14 @@ class _ProcesLogBuilder:
                 "van de cirkels rond alle puntlocaties; afstanden gelden tot de "
                 "dichtstbijzijnde locatie."
             )
+            afstand = self.ruimtelijk.get("max_onderlinge_afstand_m", 0)
+            self.regel(puntafstand_melding(afstand), rood=afstand > MAX_PUNT_AFSTAND_M)
         self.regel(
             f"Toetsingsafstand:  {self.straal:.0f} m  "
-            f"(Lden-afstand {self.straal - TOETSING_TOESLAG_M:.0f} m + "
-            f"toeslag {TOETSING_TOESLAG_M} m)"
+            f"(Lden-afstand {self.straal - self.toeslag:.0f} m + "
+            f"marge {meters(self.toeslag)} m rond de puntlocatie"
+            + (", afwijkend van de standaard"
+               if self.toeslag != TOETSING_TOESLAG_M else "") + ")"
         )
         self.regel(
             f"Margeband:  {self.straal + MARGE_M:.0f} m  "
@@ -734,16 +760,22 @@ class _ProcesLogBuilder:
     def _h11_luchthavens(self):
         self.kop("11. Luchthavens")
         self.schrijf(
-            f"Luchthavens worden on-the-fly opgehaald via de WFS-dienst van GeoPortaal "
-            f"Overijssel "
-            f"(https://services.geodataoverijssel.nl/geoserver/B64_nutsvoorzieningen/wfs, "
-            f"laag: B64_nutsvoorzieningen:B6_Luchthaven_puntlocaties). "
+            f"Luchthaventerreinen (vliegvelden, zweefvliegvelden en "
+            f"helikopterlandingsterreinen) worden on-the-fly als vlak opgehaald uit BRT "
+            f"Top10NL (PDOK OGC API, functioneel_gebied_vlak), ook over de provinciegrens. "
+            f"Aanvullend komen de provinciale luchthavenregelingen als punt uit de WFS-dienst "
+            f"van GeoPortaal Overijssel (laag B64_nutsvoorzieningen:B6_Luchthaven_puntlocaties); "
+            f"een regeling binnen {LUCHTHAVEN_KOPPEL_M} m van een terrein geeft dat terrein "
+            f"zijn naam. De afstand wordt gemeten van de puntlocatie tot de rand van het "
+            f"terrein (0 m als de puntlocatie erbinnen ligt). Top10NL is een topografische "
+            f"registratie en niet de juridische grens uit een luchthavenbesluit. "
             f"Luchthavens binnen {LUCHTHAVEN_GRENS_M} m van de aanvraaglocatie zijn "
             f"NIET TOEGESTAAN. Luchthavens op {LUCHTHAVEN_GRENS_M}–{LUCHTHAVEN_SIGNAAL_M} m "
             f"worden als signalering opgenomen."
         )
+        self.bronregels("luchthaventerreinen")
         self.bronregels("luchthavens")
-        if self.niet_getoetst("luchthavens"):
+        if self.niet_getoetst("luchthaventerreinen") or self.niet_getoetst("luchthavens"):
             self.geen_conclusie("de afstand tot luchthavens")
         self.logregels(["Stap 10b", "Luchthaven"], stop_markers=["Stap 11"])
 
@@ -765,7 +797,8 @@ class _ProcesLogBuilder:
             "Op basis van de bovenstaande inventarisatie zijn de adressen gecategoriseerd "
             "en opgenomen in de adressenlijst. De resultaten zijn verwerkt in een PDF-rapport "
             "(adressenlijst + situatie- en omgevingskaart, elk als luchtfoto en als "
-            "topografische kaart) en een interactieve HTML-kaart op luchtfoto. "
+            "topografische kaart) en een interactieve HTML-kaart op luchtfoto, "
+            "omschakelbaar naar de topografische kaart. "
             "De tijdelijke procesdata (tug_state.json) wordt na voltooiing gewist "
             "in het kader van dataveiligheid."
         )
@@ -780,8 +813,8 @@ class _ProcesLogBuilder:
         if self.onvolledig:
             self.lege()
             self.regel(
-                "Toetsing onvolledig — niet (volledig) geraadpleegd: "
-                + "; ".join(u.get("label", u.get("sleutel", "?")) for u in self.onvolledig)
+                "Toetsing onvolledig — "
+                + "; ".join(kort(u) for u in self.onvolledig)
                 + ". Zie het rode blok bovenaan dit rapport.",
                 rood=True,
             )
@@ -922,7 +955,10 @@ def _pdf_adressen_pagina(c, datum_leesbaar, lat, lon, straal,
         check_pagina(LINE_H * 4)
         c.setFont(FONT_BOLD, 9)
         c.setFillColorRGB(*_ROOD)
-        c.drawString(x, y(), "⚠ Onvolledige toetsing — deze lijst is mogelijk niet compleet")
+        kop = ("⚠ Onvolledige toetsing — deze lijst is mogelijk niet compleet"
+               if any(u.get("sleutel") != "afstandsnorm" for u in onvolledig)
+               else "⚠ Geen afstandsnorm — deze lijst is een inventarisatie, geen toetsing")
+        c.drawString(x, y(), kop)
         set_y(y() - LINE_H)
         c.setFont(FONT, FS)
         for uitkomst in onvolledig:
@@ -1081,6 +1117,8 @@ def genereer_html(state, log):
     markers        = ruimtelijk.get("html_markers", [])
     polygonen      = ruimtelijk.get("html_polygonen", [])
     signaal_straal = straal + MANEGE_SIGNAAL_MARGE
+    puntafstand    = ruimtelijk.get("max_onderlinge_afstand_m", 0)
+    toeslag        = ruimtelijk.get("toeslag_m", TOETSING_TOESLAG_M)
 
     naam           = state.get("aanvraag", {}).get("naam", "")
     slug           = naam_slug(naam)
@@ -1096,18 +1134,23 @@ def genereer_html(state, log):
         "CENTER_LAT":           lat,
         "CENTER_LON":           lon,
         "STRAAL":               straal,
-        "TOETSING_LABEL":       toetsing_label(straal),
+        "TOETSING_LABEL":       toetsing_label(straal, toeslag),
         "SIGNAAL_STRAAL":       signaal_straal,
+        "TOESLAG_M":            toeslag,
+        "TOESLAG_TEKST":        meters(toeslag),
         "PUNTEN":               ruimtelijk.get("punten") or [[lat, lon]],
         "TOETSING_RINGS":       ruimtelijk.get("toetsing_rings", []),
         "SIGNAAL_RINGS":        ruimtelijk.get("signaal_rings", []),
         "WORKFLOW_VERSIE":      VERSION,
         "MANEGE_SIGNAAL_MARGE": MANEGE_SIGNAAL_MARGE,
+        "LUCHTHAVEN_SIGNAAL_M": LUCHTHAVEN_SIGNAAL_M,
         "DATUM":                datum_leesbaar,
         "MARKERS":              markers,
         "POLYGONEN":            polygonen,
-        "ONVOLLEDIG":           [u.get("label", u.get("sleutel", "?"))
-                                 for u in onvolledige_toetsing(state)],
+        "ONVOLLEDIG":           [kort(u) for u in onvolledige_toetsing(state)],
+        "PUNTAFSTAND_M":        puntafstand,
+        "PUNTAFSTAND":          puntafstand_melding(puntafstand),
+        "PUNTAFSTAND_TE_GROOT": puntafstand > MAX_PUNT_AFSTAND_M,
     }
     data_js = "".join(f"var {naam}={json_voor_script(waarde)};\n"
                       for naam, waarde in waarden.items())

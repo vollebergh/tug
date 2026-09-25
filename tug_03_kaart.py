@@ -24,6 +24,8 @@ from tug_config import (
     MANEGE_SIGNAAL_MARGE,
     LUCHTHAVEN_GRENS_M,
     LUCHTHAVEN_SIGNAAL_M,
+    TOETSING_TOESLAG_M,
+    meters,
     toetsing_label,
     _TILE_URL,
     _TILE_SIZE,
@@ -37,6 +39,10 @@ from tug_http import BronFout, haal
 # geopend, zodat een gemanipuleerde tegel geen van de overige beeldparsers van
 # Pillow bereikt (EPS, JPEG 2000 e.a.).
 _TEGEL_FORMATEN = ["PNG", "JPEG"]
+
+# Toeslagcirkel rond de puntlocatie (B20): lichtblauw, los van het rood van het
+# kruis en het donkerblauw van de toetsingsafstand; zelfde tint als de HTML-kaart.
+KLEUR_TOESLAG = (0, 170, 225)
 
 
 # ──────────────────────────────────────────────
@@ -118,7 +124,7 @@ def _teken_kruis(draw, cx, cy, size, color, breedte=3):
     draw.line([cx, cy - size, cx, cy + size], fill=color, width=breedte)
 
 
-def _teken_legenda(img, straal):
+def _teken_legenda(img, straal, toeslag=TOETSING_TOESLAG_M):
     map_w, map_h = img.size
     try:
         font      = ImageFont.truetype("arial.ttf", 17)
@@ -147,11 +153,15 @@ def _teken_legenda(img, straal):
         ("ruit",      (210, 90, 0),    f"Luchthaven (signalering ≤ {LUCHTHAVEN_SIGNAAL_M} m)"),
         ("ruit_conf", (210, 40, 0),    f"Luchthaven (CONFLICT < {LUCHTHAVEN_GRENS_M} m)"),
         ("kruis",     (200, 0, 0),     "Stijg- en landingsplaats"),
+        ("cirkel",    KLEUR_TOESLAG,   f"Marge rond puntlocatie ({meters(toeslag)} m)"),
         ("vlak",      (0, 100, 0),    "Natura 2000-gebied"),
         ("vlak",      (60, 179, 60),  "Natuurnetwerk Nederland"),
-        ("lijn_vol",  (26, 82, 118),   toetsing_label(straal)),
+        ("lijn_vol",  (26, 82, 118),   toetsing_label(straal, toeslag)),
         ("lijn_vol",  (202, 111, 30),  f"Aandachtsgebied (+{MANEGE_SIGNAAL_MARGE} m)"),
     ]
+
+    if not toeslag:
+        regels = [r for r in regels if r[0] != "cirkel"]  # geen toeslag, geen cirkel
 
     # Breedte volgt de langste regel, zodat lange labels niet buiten het kader lopen.
     tekst_w = max(font.getlength(t) for _, _, t in regels)
@@ -199,6 +209,11 @@ def _teken_legenda(img, straal):
         elif soort == "kruis":
             draw.line([rx, mid_y, rx + DOT_R * 2, mid_y], fill=kleur, width=2)
             draw.line([rx + DOT_R, mid_y - DOT_R, rx + DOT_R, mid_y + DOT_R], fill=kleur, width=2)
+            draw.text((rx + TEXT_X, ry), tekst, fill=(20, 20, 20), font=font)
+        elif soort == "cirkel":
+            draw.ellipse([rx, mid_y - DOT_R, rx + DOT_R * 2, mid_y + DOT_R],
+                         fill=tuple(int(c * 0.25 + 255 * 0.75) for c in kleur),
+                         outline=kleur, width=2)
             draw.text((rx + TEXT_X, ry), tekst, fill=(20, 20, 20), font=font)
         elif soort == "lijn_vol":
             draw.line([rx, mid_y, rx + DOT_R * 2, mid_y], fill=kleur, width=3)
@@ -254,7 +269,7 @@ def _render_kaart(clon, clat, zoom, map_w, map_h, straal,
                   bev, oordelen, toon_legenda, log,
                   achtergrond="satelliet",
                   punten=None, toetsing_rings=None, signaal_rings=None, *,
-                  bronnen: Bronregister):
+                  bronnen: Bronregister, toeslag: float = TOETSING_TOESLAG_M):
     """Render één kaartuitsnede.
 
     `bev` is het Bevindingen-record van de bronstap, `oordelen` het oordeel per
@@ -371,6 +386,11 @@ def _render_kaart(clon, clat, zoom, map_w, map_h, straal,
         pts = [(px, py - r), (px + r, py), (px, py + r), (px - r, py)]
         draw.polygon(pts, fill=fill, outline=outline)
 
+    # Luchthaventerreinen als vlak (B23), onder het ruitsymbool.
+    for item in bev.luchthavens_in_signaal:
+        _teken_poly_rings(draw, item.get("poly_rings", []), (210, 90, 0, 40), (160, 60, 0, 200))
+    for item in bev.luchthavens_in_straal:
+        _teken_poly_rings(draw, item.get("poly_rings", []), (210, 40, 0, 70), (140, 0, 0, 255))
     for item in bev.luchthavens_in_signaal:
         px, py = ll2px(item["lon"], item["lat"])
         _teken_diamant(draw, px, py, 9, (210, 90, 0, 120), (160, 60, 0, 200))
@@ -391,17 +411,32 @@ def _render_kaart(clon, clat, zoom, map_w, map_h, straal,
             rechts = max(pix, key=lambda p: p[0])
             if sleutel not in label_anker or rechts[0] > label_anker[sleutel][0]:
                 label_anker[sleutel] = rechts
-    for p_lat, p_lon in (punten or [(clat, clon)]):
-        px, py = ll2px(p_lon, p_lat)
+    # Toeslag rond elke puntlocatie (B20): de meters die bij de Lden-afstand worden
+    # opgeteld. Vlak onder het kruis, rand erboven: zo blijft de ring zichtbaar ook
+    # waar hij op kaartschaal kleiner is dan het kruissymbool (minimaal 6 px).
+    punt_px = [ll2px(p_lon, p_lat) for p_lat, p_lon in (punten or [(clat, clon)])]
+    r_toeslag = max(6, m2px(toeslag)) if toeslag else 0
+
+    def _vak(px, py):
+        return [px - r_toeslag, py - r_toeslag, px + r_toeslag, py + r_toeslag]
+
+    for px, py in punt_px:
+        if r_toeslag:
+            draw.ellipse(_vak(px, py), fill=(*KLEUR_TOESLAG, 60))
+    for px, py in punt_px:
         _teken_kruis(draw, int(px), int(py), 15, (255, 255, 255, 230), breedte=7)
         _teken_kruis(draw, int(px), int(py), 14, (200, 0, 0, 255), breedte=3)
+    for px, py in (punt_px if r_toeslag else []):
+        draw.ellipse(_vak(px, py), outline=(255, 255, 255, 220), width=4)
+        draw.ellipse(_vak(px, py), outline=(*KLEUR_TOESLAG, 255), width=2)
 
     img = Image.alpha_composite(img, overlay).convert("RGB")
     if toon_legenda:
-        img = _teken_legenda(img, straal)
+        img = _teken_legenda(img, straal, toeslag)
     if "toetsing" in label_anker:
         ax, ay = label_anker["toetsing"]
-        img = _teken_cirkel_label(img, int(ax), int(ay), 0, toetsing_label(straal), (26, 82, 118))
+        img = _teken_cirkel_label(img, int(ax), int(ay), 0, toetsing_label(straal, toeslag),
+                                   (26, 82, 118))
     if "signaal" in label_anker:
         ax, ay = label_anker["signaal"]
         img = _teken_cirkel_label(img, int(ax), int(ay), 0,

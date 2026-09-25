@@ -10,12 +10,13 @@ Per bron ligt vast of een storing de toetsing **afbreekt** (fail-closed) of
 **zichtbaar** blijft (fail-visible):
 
 - Afbreken: de BAG-verblijfsobjecten en de gevelcheck (de adressenlijst zelf),
-  Natura 2000, de luchthavens (het verbod binnen 1.000 m) en het ILT-register
+  Natura 2000, de luchthavens en luchthaventerreinen (het verbod binnen 1.000 m) en het ILT-register
   (de toetsingsafstand). Zonder deze bronnen is er geen rapport te maken dat
   klopt; de run is binnen minuten te herhalen.
-- Zichtbaar: de overige bronnen. Het rapport trekt voor zo'n bron geen conclusie
-  maar meldt in rood dat zij niet (volledig) is geraadpleegd, en de run eindigt
-  met exitcode 2.
+- Zichtbaar: de overige bronnen, en de afstandsnorm van de luchtvaartuigen
+  als die voor geen enkel luchtvaartuig herleidbaar is. Het rapport trekt voor
+  zo'n bron geen conclusie maar meldt in rood dat zij niet (volledig) is
+  geraadpleegd, en de run eindigt met exitcode 2.
 
 Bronnen die alleen de weergave raken (kaarttegels, gevelcontouren op de kaart,
 aanvulling van straatnaam en woonplaats) worden gemeld maar tellen niet mee voor
@@ -45,10 +46,15 @@ class Bron:
 
 BRONNEN: dict[str, Bron] = {
     "ilt_register":         Bron("ILT-luchtvaartuigregister", True, True),
+    # Geen externe bron, maar wel een uitkomst waar de conclusie van afhangt:
+    # zonder herleidbare norm wordt ruim geïnventariseerd, zonder oordeel (B13).
+    "afstandsnorm":         Bron("Afstandsnorm luchtvaartuigen (ILT-register en NLR-tabel)",
+                                 True, False),
     "bag_verblijfsobjecten": Bron("BAG-verblijfsobjecten (PDOK WFS)", True, True),
     "bag_gevelcheck":       Bron("BAG-panden voor de gevelcheck (PDOK WFS)", True, True),
     "natura2000":           Bron("Natura 2000 (PDOK WFS)", True, True),
     "luchthavens":          Bron("Luchthavens (GeoPortaal Overijssel WFS)", True, True),
+    "luchthaventerreinen":  Bron("Luchthaventerreinen (BRT Top10NL, PDOK)", True, True),
     "nnn":                  Bron("Natuurnetwerk Nederland (PDOK ATOM, lokale cache)", True, False),
     "begraafplaatsen":      Bron("Begraafplaatsen (PDOK Location API en BRT)", True, False),
     "lrk":                  Bron("Kinderopvang (Landelijk Register Kinderopvang)", True, False),
@@ -155,12 +161,13 @@ def onvolledige_toetsing(state: dict[str, Any]) -> list[dict[str, Any]]:
             if u.get("toetsingsrelevant", True) and not is_volledig(u)]
 
 
-def beschrijf(uitkomst: dict[str, Any]) -> str:
-    """Eén regel voor rapport en runlog: bron, wat er misging en hoe oud de cache is."""
+def kort(uitkomst: dict[str, Any]) -> str:
+    """Bron en uitkomst, zonder de technische melding (voor kaartbanner en synthese)."""
     status = uitkomst.get("status")
-    melding = uitkomst.get("melding") or ""
     dagen = uitkomst.get("ouderdom_dagen")
-    if status == MISLUKT:
+    if status == MISLUKT and uitkomst.get("sleutel") == "afstandsnorm":
+        kern = "niet vastgesteld"
+    elif status == MISLUKT:
         kern = "niet (volledig) geraadpleegd"
     elif status == VEROUDERD:
         kern = f"verouderde lokale kopie gebruikt ({dagen} dagen oud)"
@@ -168,5 +175,10 @@ def beschrijf(uitkomst: dict[str, Any]) -> str:
         kern = f"lokale kopie ({dagen} dagen oud)"
     else:
         kern = "geraadpleegd"
-    return f"{uitkomst.get('label', uitkomst.get('sleutel'))}: {kern}" + (
-        f" — {melding}" if melding else "")
+    return f"{uitkomst.get('label', uitkomst.get('sleutel'))}: {kern}"
+
+
+def beschrijf(uitkomst: dict[str, Any]) -> str:
+    """Eén regel voor rapport en runlog: bron, wat er misging en hoe oud de cache is."""
+    melding = uitkomst.get("melding") or ""
+    return kort(uitkomst) + (f" — {melding}" if melding else "")

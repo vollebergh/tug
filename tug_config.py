@@ -75,10 +75,16 @@ REGISTRATIE_PATROON = r"^[A-Z0-9]{1,2}-[A-Z0-9]{2,5}$"
 NAAM_SLUG_MAX = 60
 
 
-def toetsing_label(straal: float) -> str:
+def meters(waarde: float) -> str:
+    """Meters zonder overbodige decimalen: 10 → '10', 12.5 → '12,5'."""
+    return f"{waarde:g}".replace(".", ",")
+
+
+def toetsing_label(straal: float, toeslag: float = TOETSING_TOESLAG_M) -> str:
     """Kaartlabel voor de toetsingsafstand, met de Lden-afstand en de toeslag apart zichtbaar."""
-    lden = straal - TOETSING_TOESLAG_M
-    return f"Toetsingsafstand TUG ({lden:.0f} m + {TOETSING_TOESLAG_M} m = {straal:.0f} m)"
+    lden = straal - toeslag
+    return (f"Toetsingsafstand TUG ({lden:.0f} m + {meters(toeslag)} m = "
+            f"{meters(round(straal, 1))} m)")
 
 
 # ──────────────────────────────────────────────
@@ -161,13 +167,29 @@ NNN_TTL_DAGEN     = 180  # herdownload pas na 180 dagen
 NNN_SIGNAAL_MARGE = 500  # m buiten toetsingsafstand voor NNN-signalering
 
 # ──────────────────────────────────────────────
-# Luchthavens (Overijssel WFS)
+# Luchthavens (Overijssel WFS en BRT Top10NL)
 # ──────────────────────────────────────────────
 
 LUCHTHAVEN_WFS       = "https://services.geodataoverijssel.nl/geoserver/B64_nutsvoorzieningen/wfs"
 LUCHTHAVEN_WFS_LAYER = "B64_nutsvoorzieningen:B6_Luchthaven_puntlocaties"
 LUCHTHAVEN_GRENS_M   = 1000  # wettelijke minimumafstand puntlocatie → luchthaven
-LUCHTHAVEN_SIGNAAL_M = 2000  # signaleringmarge voor luchthaven
+LUCHTHAVEN_SIGNAAL_M = 5000  # signaleringmarge voor luchthaven (B17)
+
+# Luchthaventerreinen als vlak (B23). De provinciale laag hierboven bevat alleen
+# luchthavenregelingen (helihavens, zweefvliegterrein); vliegvelden met een
+# luchthavenbesluit, zoals Twente, ontbreken. BRT Top10NL heeft ze als vlak. De API
+# filtert niet op type; dat gebeurt in de code. Top10NL is topografisch, niet de
+# juridische grens van het luchthavenbesluit, maar ligt ruim om start- en landingsbaan.
+LUCHTHAVEN_BRT_URL       = ("https://api.pdok.nl/brt/top10nl/ogc/v1_0/collections/"
+                            "functioneel_gebied_vlak/items")
+LUCHTHAVEN_BRT_TYPEN     = {
+    "vliegveld, luchthaven":     "vliegveld",
+    "zweefvliegveldterrein":     "zweefvliegveld",
+    "helikopterlandingsterrein": "helikopterlandingsterrein",
+}
+LUCHTHAVEN_BRT_PAGE_SIZE = 1000
+LUCHTHAVEN_BRT_MAX_PAGES = 10
+LUCHTHAVEN_KOPPEL_M      = 250   # provinciaal punt ↔ Top10NL-terrein: zelfde luchthaven
 
 # ──────────────────────────────────────────────
 # Maneges (BRT zoektermen)

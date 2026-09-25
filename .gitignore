@@ -44,3 +44,7 @@ venv/
 .vscode/
 .idea/
 *.swp
+
+# Lokale GUI-starters (machinespecifiek)
+TUG-GUI.sh
+TUG-GUI.desktop

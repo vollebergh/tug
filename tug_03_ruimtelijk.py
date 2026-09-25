@@ -34,18 +34,20 @@ from shapely.geometry import MultiPoint
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform as shapely_transform, unary_union
 
+from tug_aanvraag import toeslag_van
 from tug_bronstatus import BRONNEN, Bronregister, ToetsingAfgebroken, beschrijf
 from tug_logging import LogAccumulator, setup_logging
 from tug_opslag import schrijf_state
 from tug_config import (
-    KAART_ACHTERGRONDEN, TOETSING_TOESLAG_M, VERSION, MODEL_LABEL, OUTPUT_DIR,
+    KAART_ACHTERGRONDEN, VERSION, MODEL_LABEL, OUTPUT_DIR, meters,
     MARGE_M, MANEGE_SIGNAAL_MARGE, KDV_BBOX_EXTRA,
-    LUCHTHAVEN_SIGNAAL_M, LUCHTHAVEN_GRENS_M,
+    LUCHTHAVEN_GRENS_M,
     _ZOOM_FILL_FRAC, _LOC_CX_FRAC, _LOC_CY_FRAC,
     _PDF_MARGIN_MM, _PDF_DPI, _PDF_PAGE_W_MM, _PDF_PAGE_H_MM,
 )
 from tug_geo import (
-    puntlocaties, make_transformer, wgs84_to_rd, circle_in_rd, naam_slug,
+    puntlocaties, max_onderlinge_afstand, make_transformer, wgs84_to_rd, circle_in_rd,
+    naam_slug,
     feature_sleutel, extract_adres, extract_lon_lat, _datum_leesbaar,
     _geom_rings_wgs84, transform_geom_to_rd, shapely_from_geojson_geom,
 )
@@ -65,8 +67,9 @@ from tug_03_kaart import _render_kaart, _bereken_zoom
 
 _logger = logging.getLogger("tug.03_ruimtelijk")
 
-# Bronnen die deze stap altijd raadpleegt (of expliciet als niet nodig meldt).
-_VERWACHTE_BRONNEN = tuple(s for s in BRONNEN if s != "ilt_register")
+# Bronnen die deze stap altijd raadpleegt (of expliciet als niet nodig meldt);
+# het ILT-register en de afstandsnorm meldt de classificatiestap.
+_VERWACHTE_BRONNEN = tuple(s for s in BRONNEN if s not in ("ilt_register", "afstandsnorm"))
 
 
 # ──────────────────────────────────────────────
@@ -240,8 +243,12 @@ def _luchthaven_gebruiksdoel(item: Signalering) -> str:
             if item.get("omschrijving") else f"luchthaven – {naam}")
 
 
-def _luchthaven_extra() -> str:
-    return f"Aanvraaglocatie + {LUCHTHAVEN_SIGNAAL_M:,} meter".replace(",", ".")
+def _luchthaven_extra(item: Signalering) -> str:
+    """Afstand tot het luchthaventerrein; binnen de wettelijke grens met het verbod."""
+    afstand = f"{item['afstand_m']:,} m van de puntlocatie".replace(",", ".")
+    if item["afstand_m"] <= LUCHTHAVEN_GRENS_M:
+        return f"{afstand} (< {LUCHTHAVEN_GRENS_M:,} m — NIET TOEGESTAAN)".replace(",", ".")
+    return afstand
 
 
 # ──────────────────────────────────────────────
@@ -293,7 +300,7 @@ def _bouw_adresrijen(
             "adres":        item["adres"] or "—",
             "pc_wpl":       "",
             "gebruiksdoel": _luchthaven_gebruiksdoel(item),
-            "extra":        _luchthaven_extra(),
+            "extra":        _luchthaven_extra(item),
         })
     for item in bev.begraafplaatsen_buiten_straal:
         overig.append({"adres": item["adres"] or "—", "pc_wpl": item.get("pc_wpl", ""),
@@ -446,9 +453,8 @@ def _bouw_html_markers(
             "lat": item["lat"], "lon": item["lon"], "categorie": "luchthaven",
             "adres": item["adres"] or item["naam"],
             "pc_wpl": "",
-            "gebruiksdoel": f"luchthaven – {item['naam']}",
-            "extra": (f"Aanvraaglocatie + {LUCHTHAVEN_SIGNAAL_M} meter "
-                      f"(< {LUCHTHAVEN_GRENS_M} m — NIET TOEGESTAAN)"),
+            "gebruiksdoel": _luchthaven_gebruiksdoel(item),
+            "extra": _luchthaven_extra(item),
         })
 
     for item in bev.luchthavens_in_signaal:
@@ -456,8 +462,8 @@ def _bouw_html_markers(
             "lat": item["lat"], "lon": item["lon"], "categorie": "luchthaven",
             "adres": item["adres"] or item["naam"],
             "pc_wpl": "",
-            "gebruiksdoel": f"luchthaven – {item['naam']}",
-            "extra": f"Aanvraaglocatie + {LUCHTHAVEN_SIGNAAL_M} meter",
+            "gebruiksdoel": _luchthaven_gebruiksdoel(item),
+            "extra": _luchthaven_extra(item),
         })
 
     for item in bev.maneges_buiten_straal:
@@ -468,6 +474,15 @@ def _bouw_html_markers(
             "gebruiksdoel": f"manege – {item['naam']}",
             "extra": f"{item['afstand_m']} m",
         })
+
+    for gebieden, in_straal in ((bev.luchthavens_in_signaal, False),
+                                (bev.luchthavens_in_straal, True)):
+        for item in gebieden:
+            if item.get("poly_rings"):
+                polygonen.append({
+                    "naam": item["naam"], "type": "luchthaven", "in_straal": in_straal,
+                    "rings": item["poly_rings"], "afstand_m": item["afstand_m"],
+                })
 
     for item in bev.begraafplaatsen_in_straal:
         polygonen.append({
@@ -605,7 +620,7 @@ def _verzamel_bevindingen(
     log("\nStap 10: Maneges — PDOK Location API (BRT) ...")
     maneges = haal_maneges_pdok(circle_rd, straal, log, punten_rd=punten_rd, bronnen=bronnen)
 
-    log("\nStap 10b: Luchthavens — GeoPortaal Overijssel WFS (on-the-fly) ...")
+    log("\nStap 10b: Luchthavens — BRT Top10NL en GeoPortaal Overijssel WFS (on-the-fly) ...")
     luchthavens = signaleer_luchthavens(circle_rd, log, punten_rd=punten_rd, bronnen=bronnen)
 
     log("\nStap 11: Natura 2000 — PDOK WFS (on-the-fly) ...")
@@ -670,7 +685,7 @@ def _render_kaarten(
     bev: Bevindingen, context: ContextDict, lon: float, lat: float,
     zooms: dict[str, int], straal: float,
     punten: list[tuple[float, float]], toetsing_rings: list, signaal_rings: list,
-    naam_infix: str, timestamp: str, log: LogFn, bronnen: Bronregister,
+    naam_infix: str, timestamp: str, log: LogFn, bronnen: Bronregister, toeslag: float,
 ) -> list[dict[str, str]]:
     """Render de vier kaarten (twee uitsneden × twee achtergronden) en sla ze op."""
     map_w_px, map_h_px = _kaartformaat()
@@ -682,7 +697,7 @@ def _render_kaarten(
                 bev=bev, oordelen=context["oordelen"], toon_legenda=True, log=log,
                 achtergrond=achtergrond, punten=punten,
                 toetsing_rings=toetsing_rings, signaal_rings=signaal_rings,
-                bronnen=bronnen,
+                bronnen=bronnen, toeslag=toeslag,
             )
             pad = OUTPUT_DIR / f"tug_kaart_{soort}_{achtergrond}{naam_infix}_{timestamp}.png"
             img.rotate(90, expand=True).save(pad, format="PNG")
@@ -697,7 +712,8 @@ def _render_kaarten(
 # ──────────────────────────────────────────────
 
 def _straal_uit_state(state: dict) -> tuple[float, float]:
-    """Lden-afstand uit de classificatiestap plus de vaste toeslag.
+    """Lden-afstand uit de classificatiestap plus de toeslag uit de aanvraag (B21;
+    standaard TOETSING_TOESLAG_M).
 
     De afstand komt uitsluitend uit de classificatie. Er is geen handmatige
     override: een afstand die niet uit het register en de NLR-tabel volgt, is
@@ -712,7 +728,7 @@ def _straal_uit_state(state: dict) -> tuple[float, float]:
         )
         sys.exit(1)
     straal_lden = float(straal)
-    return straal_lden, straal_lden + TOETSING_TOESLAG_M
+    return straal_lden, straal_lden + toeslag_van(state.get("aanvraag", {}))
 
 
 def _log_kop(log: LogFn, state: dict, punten, straal_lden: float, straal: float,
@@ -736,7 +752,7 @@ def _log_kop(log: LogFn, state: dict, punten, straal_lden: float, straal: float,
     for i, (p_lat, p_lon) in enumerate(punten, 1):
         log(f"Input: puntlocatie {i}: lat={p_lat:.6f}, lon={p_lon:.6f}")
     log(f"Input: {len(punten)} puntlocatie(s), straal={straal:.0f} m "
-        f"(Lden-afstand {straal_lden:.0f} m + toeslag {TOETSING_TOESLAG_M} m)")
+        f"(Lden-afstand {straal_lden:.0f} m + toeslag {meters(straal - straal_lden)} m)")
     if alle_lv:
         log(f"  Luchtvaartuigen: {', '.join(alle_lv)}")
         if maatgevend:
@@ -846,6 +862,7 @@ def run(state_pad: str | Path) -> None:
     kaarten_png = _render_kaarten(
         bev, context, lon, lat, zooms, straal,
         punten, toetsing_rings, signaal_rings, naam_infix, timestamp, log, bronnen,
+        toeslag=straal - straal_lden,
     )
 
     try:
@@ -874,7 +891,9 @@ def run(state_pad: str | Path) -> None:
         "naam":               aanvraag.get("naam", ""),
         "straal":             straal,
         "straal_lden":        straal_lden,
+        "toeslag_m":          straal - straal_lden,
         "punten":             [list(pt) for pt in punten],
+        "max_onderlinge_afstand_m": round(max_onderlinge_afstand(punten)),
         "toetsing_rings":     toetsing_rings,
         "signaal_rings":      signaal_rings,
         "workflow_versie":    VERSION,
@@ -894,11 +913,13 @@ def run(state_pad: str | Path) -> None:
         "nnn_in_straal":      _zonder_geometrie(bev.nnn_in_straal, met_punten=True),
         "nnn_in_signaal":     _zonder_geometrie(bev.nnn_in_signaal),
         "luchthavens_in_straal":  [
-            {"naam": i["naam"], "afstand_m": i["afstand_m"], "omschrijving": i["omschrijving"]}
+            {"naam": i["naam"], "afstand_m": i["afstand_m"], "omschrijving": i["omschrijving"],
+             "bron": i.get("bron", "")}
             for i in bev.luchthavens_in_straal
         ],
         "luchthavens_in_signaal": [
-            {"naam": i["naam"], "afstand_m": i["afstand_m"], "omschrijving": i["omschrijving"]}
+            {"naam": i["naam"], "afstand_m": i["afstand_m"], "omschrijving": i["omschrijving"],
+             "bron": i.get("bron", "")}
             for i in bev.luchthavens_in_signaal
         ],
         "statistieken":       bev.statistieken(),

@@ -31,7 +31,10 @@ from tug_03_ruimtelijk import (  # noqa: E402
     _nnn_via_n2000,
 )
 from tug_config import MAX_PUNT_AFSTAND_M, TOETSING_TOESLAG_M, toetsing_label  # noqa: E402
-from tug_geo import feature_sleutel, naam_slug, puntlocaties, wgs84_to_rd  # noqa: E402
+from tug_geo import (  # noqa: E402
+    feature_sleutel, max_onderlinge_afstand, naam_slug, puntafstand_melding, puntlocaties,
+    wgs84_to_rd,
+)
 from tug_types import Bevindingen  # noqa: E402
 
 
@@ -126,16 +129,18 @@ class TestPuntlocaties:
         with pytest.raises(ValueError, match="niet in Nederland"):
             puntlocaties({"coord_lat": BASIS_LON, "coord_lon": BASIS_LAT})
 
-    def test_punten_te_ver_uit_elkaar(self):
-        # ~0,01 graad breedte is ruim 1 km, dus ver buiten de toegestane afstand.
-        with pytest.raises(ValueError, match="uit elkaar"):
-            puntlocaties({
-                "coord_lat": [BASIS_LAT, BASIS_LAT + 0.01],
-                "coord_lon": [BASIS_LON, BASIS_LON],
-            })
+    def test_punten_ver_uit_elkaar_zijn_geen_fout(self):
+        """B14: ruim 1 km uit elkaar levert een melding op, geen fout."""
+        punten = puntlocaties({
+            "coord_lat": [BASIS_LAT, BASIS_LAT + 0.01],
+            "coord_lon": [BASIS_LON, BASIS_LON],
+        })
+        afstand = max_onderlinge_afstand(punten)
+        assert 1000 < afstand < 1200
+        assert f"meer dan {MAX_PUNT_AFSTAND_M} m" in puntafstand_melding(afstand)
 
     def test_grens_ligt_op_max_punt_afstand(self):
-        """Net binnen de grens mag; dit bewaakt dat de grens niet verschuift."""
+        """Net binnen de grens geen waarschuwing; dit bewaakt dat de grens niet verschuift."""
         graden_per_meter = 1 / 111_320
         net_binnen = (MAX_PUNT_AFSTAND_M - 5) * graden_per_meter
         punten = puntlocaties({
@@ -143,6 +148,10 @@ class TestPuntlocaties:
             "coord_lon": [BASIS_LON, BASIS_LON],
         })
         assert len(punten) == 2
+        assert "meer dan" not in puntafstand_melding(max_onderlinge_afstand(punten))
+
+    def test_een_punt_heeft_afstand_nul(self):
+        assert max_onderlinge_afstand([(BASIS_LAT, BASIS_LON)]) == 0.0
 
 
 # ──────────────────────────────────────────────
@@ -454,3 +463,176 @@ class TestNatuurnetwerkAanname:
 
     def test_zonder_n2000_treffer_gebeurt_er_niets(self):
         assert _nnn_via_n2000([], []) == []
+
+
+# ──────────────────────────────────────────────
+# B13 — geen herleidbare norm breekt de toetsing niet af
+# ──────────────────────────────────────────────
+
+class TestNormToepassing:
+
+    def _resultaat(self, registratie, norm):
+        return {"registratie": registratie, "norm_m": norm}
+
+    def test_maximum_over_herleidbare_normen(self):
+        from tug_02_classificatie import bepaal_norm_toepassing
+        from tug_bronstatus import Bronregister
+        bronnen = Bronregister()
+        norm, herleidbaar = bepaal_norm_toepassing(
+            [self._resultaat("PH-A", 150), self._resultaat("OO-B", None),
+             self._resultaat("PH-C", 250)], lambda _: None, bronnen)
+        assert (norm, herleidbaar) == (250, True)
+        assert bronnen.status("afstandsnorm").volledig
+
+    def test_zonder_norm_ruimste_inventarisatie_en_onvolledig(self):
+        """Alleen buitenlandse toestellen: doorrekenen tot de ruimste norm, zonder
+        conclusie — onvolledig (exitcode 2), niet afgebroken."""
+        from tug_02_classificatie import INVENTARISATIE_NORM_M, NLR_TABEL, bepaal_norm_toepassing
+        from tug_bronstatus import Bronregister, onvolledige_toetsing
+        bronnen = Bronregister()
+        norm, herleidbaar = bepaal_norm_toepassing(
+            [self._resultaat("OO-EYP", None), self._resultaat("D-ABCD", None)],
+            lambda _: None, bronnen)
+        assert herleidbaar is False
+        assert norm == INVENTARISATIE_NORM_M == max(n for _, n in NLR_TABEL.values() if n)
+        state = {"classificatie": {"bronstatus": bronnen.naar_state()}}
+        assert [u["sleutel"] for u in onvolledige_toetsing(state)] == ["afstandsnorm"]
+
+
+def test_luchthavensignalering_tot_5000_m():
+    """B17."""
+    from tug_config import LUCHTHAVEN_GRENS_M, LUCHTHAVEN_SIGNAAL_M
+    assert LUCHTHAVEN_SIGNAAL_M == 5000 > LUCHTHAVEN_GRENS_M
+
+
+# ──────────────────────────────────────────────
+# B12 — handmatige geluidsafstand; B21 — instelbare toeslag
+# ──────────────────────────────────────────────
+
+class TestHandmatigeAfstand:
+
+    def _register(self, norm, bron="niet_in_register"):
+        return {"registratie": "OO-EYP", "norm_m": norm, "norm_bron": bron,
+                "signalen": ["✗ niet gevonden"]}
+
+    def test_handmatig_gaat_voor_het_register(self):
+        from tug_02_classificatie import pas_handmatige_afstand_toe
+        r = pas_handmatige_afstand_toe({"registratie": "OO-EYP", "afstand_m": 300.0},
+                                       self._register(None), lambda _: None)
+        assert (r["norm_m"], r["norm_bron"], r["norm_register_m"]) == (300, "handmatig", None)
+        assert not any(s.startswith("✗") for s in r["signalen"])
+
+    def test_afwijking_van_het_register_wordt_gemeld(self):
+        from tug_02_classificatie import pas_handmatige_afstand_toe
+        r = pas_handmatige_afstand_toe({"registratie": "PH-ECE", "afstand_m": 150},
+                                       self._register(250, "nlr_tabel"), lambda _: None)
+        assert r["norm_m"] == 150 and "250 m" in r["signalen"][0]
+
+    def test_zonder_afstand_ongewijzigd(self):
+        from tug_02_classificatie import pas_handmatige_afstand_toe
+        oud = self._register(None)
+        assert pas_handmatige_afstand_toe({"registratie": "OO-EYP"}, oud, lambda _: None) is oud
+
+    @pytest.mark.parametrize("afstand, fout", [(0, True), (2001, True), ("300", True),
+                                               (True, True), (300, False), (12.5, False)])
+    def test_schema_grenzen(self, afstand, fout):
+        from tug_aanvraag import controleer_structuur
+        aanvraag = {"luchtvaartuigen": [{"registratie": "OO-EYP", "afstand_m": afstand}]}
+        assert bool(controleer_structuur(aanvraag)) is fout
+
+
+class TestToeslag:
+
+    @pytest.mark.parametrize("toeslag, fout", [(-1, True), (501, True), ("10", True),
+                                               (0, False), (25, False), (12.5, False)])
+    def test_schema_grenzen(self, toeslag, fout):
+        from tug_aanvraag import controleer_structuur
+        assert bool(controleer_structuur({"toeslag_m": toeslag})) is fout
+
+    def test_standaard_en_opgegeven(self):
+        from tug_aanvraag import toeslag_van
+        assert toeslag_van({}) == TOETSING_TOESLAG_M
+        assert toeslag_van({"toeslag_m": 25}) == 25.0
+
+    def test_straal_telt_opgegeven_toeslag_op(self):
+        import tug_03_ruimtelijk as ruimtelijk
+        state = {"aanvraag": {"toeslag_m": 25}, "classificatie": {"norm_toepassing": 250}}
+        assert ruimtelijk._straal_uit_state(state) == (250.0, 275.0)
+        assert toetsing_label(275.0, 25) == "Toetsingsafstand TUG (250 m + 25 m = 275 m)"
+
+
+# ──────────────────────────────────────────────
+# B23 — luchthaventerreinen als vlak
+# ──────────────────────────────────────────────
+
+class TestLuchthaventerreinen:
+    """Afstand tot de rand van het terrein, samenvoegen en koppelen, zonder netwerk."""
+
+    @staticmethod
+    def _vierkant(lon, lat, d=0.01):
+        return {"type": "Polygon", "coordinates": [[[lon, lat], [lon + d, lat],
+                [lon + d, lat + d], [lon, lat + d], [lon, lat]]]}
+
+    def _draai(self, monkeypatch, terreinen, regelingen, punt, adres=("Weg 1", "1234 AB Plaats")):
+        import tug_bronnen_brt as brt
+        from shapely.geometry import MultiPoint
+        from tug_bronstatus import Bronregister
+
+        def nep_json(url, **_kw):
+            if "functioneel_gebied_vlak" in url:
+                return {"features": terreinen, "links": []}
+            return {"features": regelingen}
+        monkeypatch.setattr(brt, "haal_json", nep_json)
+        monkeypatch.setattr(brt, "reverse_geocode_adres_wpl", lambda *_a, **_k: adres)
+        x, y = wgs84_to_rd(punt[1], punt[0])
+        return brt.signaleer_luchthavens(MultiPoint([(x, y)]).buffer(10), lambda _: None,
+                                         punten_rd=MultiPoint([(x, y)]), bronnen=Bronregister())
+
+    def test_punt_op_het_terrein_is_afstand_nul_en_overlap_is_een_terrein(self, monkeypatch):
+        lon, lat = 6.88, 52.27
+        terreinen = [
+            {"properties": {"typefunctioneelgebied": "vliegveld, luchthaven", "naamnl": "Twente"},
+             "geometry": self._vierkant(lon, lat, 0.03)},
+            {"properties": {"typefunctioneelgebied": "zweefvliegveldterrein", "naamnl": "Twente"},
+             "geometry": self._vierkant(lon + 0.005, lat + 0.005, 0.005)},
+            {"properties": {"typefunctioneelgebied": "sportterrein", "naamnl": "Veld"},
+             "geometry": self._vierkant(lon + 0.05, lat, 0.005)},
+        ]
+        res = self._draai(monkeypatch, terreinen, [{"properties": {"NAAM": "Ver"},
+                          "geometry": {"type": "Point", "coordinates": [5.0, 53.0]}}],
+                          (lat + 0.015, lon + 0.015))
+        assert [(i["naam"], i["afstand_m"]) for i in res["in_straal"]] == [("Twente", 0)]
+        assert "zweefvliegveld" in res["in_straal"][0]["omschrijving"]
+        assert res["in_straal"][0]["poly_rings"]
+
+    def test_afstand_tot_de_rand_niet_tot_het_midden(self, monkeypatch):
+        """300 m buiten een groot terrein: binnen 1.000 m, ook al ligt het midden kilometers weg."""
+        lon, lat = 6.88, 52.27
+        terrein = [{"properties": {"typefunctioneelgebied": "vliegveld, luchthaven",
+                                   "naamnl": "Groot"}, "geometry": self._vierkant(lon, lat, 0.04)}]
+        res = self._draai(monkeypatch, terrein, [{"properties": {"NAAM": "Ver"},
+                          "geometry": {"type": "Point", "coordinates": [5.0, 53.0]}}],
+                          (lat - 300 / 111_320, lon + 0.02))
+        assert len(res["in_straal"]) == 1
+        assert 280 <= res["in_straal"][0]["afstand_m"] <= 320
+
+    def test_regeling_geeft_naamloos_terrein_een_naam(self, monkeypatch):
+        lon, lat = 6.89, 52.215
+        heli = [{"properties": {"typefunctioneelgebied": "helikopterlandingsterrein"},
+                 "geometry": self._vierkant(lon, lat, 0.0003)}]
+        regeling = [{"properties": {"NAAM": "Helihaven MCT", "OMSCHRIJVING": "helihaven"},
+                     "geometry": {"type": "Point", "coordinates": [lon + 0.0001, lat + 0.0001]}}]
+        res = self._draai(monkeypatch, heli, regeling, (lat + 0.02, lon))
+        alle = res["in_straal"] + res["in_signaal"]
+        assert [i["naam"] for i in alle] == ["Helihaven MCT"]
+        assert alle[0]["bron"] == "BRT Top10NL + provincie Overijssel"
+
+    def test_naamloos_terrein_krijgt_het_adres(self, monkeypatch):
+        lon, lat = 6.64, 52.336
+        heli = [{"properties": {"typefunctioneelgebied": "helikopterlandingsterrein"},
+                 "geometry": self._vierkant(lon, lat, 0.0003)}]
+        res = self._draai(monkeypatch, heli, [{"properties": {"NAAM": "Ver"},
+                          "geometry": {"type": "Point", "coordinates": [5.0, 53.0]}}],
+                          (lat + 0.02, lon), adres=("Leemslagenweg 40", "7609 PN Almelo"))
+        naam = res["in_signaal"][0]["naam"]
+        assert naam.startswith("Helikopterlandingsterrein bij Leemslagenweg 40")

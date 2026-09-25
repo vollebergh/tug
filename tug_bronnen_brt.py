@@ -3,7 +3,8 @@ tug_bronnen_brt.py -- PDOK Location API + Overijssel WFS-bronnen
 
 Bevat signaleringsfuncties voor begraafplaatsen, maneges en luchthavens.
 Begraafplaatsen en maneges worden opgespoord via de PDOK Locatieserver (BRT-dataset);
-luchthavens via de WFS van GeoPortaal Overijssel.
+luchthavens als terreinvlak via BRT Top10NL, aangevuld met de provinciale
+luchthavenregelingen uit de WFS van GeoPortaal Overijssel.
 
 Elke functie meldt in het bronregister hoe de bevraging is afgelopen. Een
 mislukte zoekterm of polygoon laat de rest van de detectie doorlopen, maar de
@@ -16,7 +17,8 @@ import logging
 
 from shapely.geometry import Point
 from shapely.geometry.base import BaseGeometry
-from shapely.ops import unary_union
+from shapely.ops import transform as shapely_transform
+from shapely.ops import nearest_points, unary_union
 
 from tug_bronnen_geocode import pdok_location_haal_polygoon, reverse_geocode_adres_wpl
 from tug_bronstatus import Bronregister
@@ -26,7 +28,12 @@ from tug_config import (
     BRT_TERREIN_MAX_PAGES,
     BRT_TERREIN_PAGE_SIZE,
     BRT_TERREIN_VLK_URL,
+    LUCHTHAVEN_BRT_MAX_PAGES,
+    LUCHTHAVEN_BRT_PAGE_SIZE,
+    LUCHTHAVEN_BRT_TYPEN,
+    LUCHTHAVEN_BRT_URL,
     LUCHTHAVEN_GRENS_M,
+    LUCHTHAVEN_KOPPEL_M,
     LUCHTHAVEN_SIGNAAL_M,
     LUCHTHAVEN_WFS,
     LUCHTHAVEN_WFS_LAYER,
@@ -442,25 +449,79 @@ def haal_maneges_pdok(
 # Luchthavens — GeoPortaal Overijssel WFS
 # ──────────────────────────────────────────────
 
-def signaleer_luchthavens(
-    circle_rd: BaseGeometry, log: LogFn, punten_rd: BaseGeometry | None = None,
-    *, bronnen: Bronregister,
-) -> SignaalResultaat:
-    """Haalt luchthavenpuntlocaties op via GeoPortaal Overijssel WFS (on-the-fly, geen cache).
+def _haal_luchthaventerreinen(
+    zoek_rd: BaseGeometry, log: LogFn, bronnen: Bronregister,
+) -> list[dict]:
+    """Luchthaventerreinen als vlak uit BRT Top10NL (functioneel_gebied_vlak), B23.
 
-    Retourneert {'in_straal': [...], 'in_signaal': [...]}
-      in_straal  — aanvraaglocatie binnen LUCHTHAVEN_GRENS_M (1.000 m) van luchthaven
-                   → puntlocatie NIET toegestaan
-      in_signaal — aanvraaglocatie op 1.000–2.000 m van luchthaven
-                   → signalering
-
-    De laag bevat alle luchthavens van de provincie. Een mislukte bevraging, en
-    ook een antwoord zonder één enkele luchthaven, breekt de toetsing af: het
-    verbod binnen 1.000 m is dan niet getoetst.
+    Geeft per terrein {naam, typen, geom_rd}. Overlappende vlakken (Twente is zowel
+    'vliegveld, luchthaven' als 'zweefvliegveldterrein') worden één terrein. Een
+    mislukte bevraging, en een zoekrechthoek zonder één functioneel gebied, breekt
+    de toetsing af: het verbod binnen 1.000 m is dan niet getoetst.
     """
-    punt_rd  = punten_rd if punten_rd is not None else circle_rd.centroid
-    t_to_rd  = make_transformer("EPSG:4326", "EPSG:28992")
+    lon_min, lat_min, lon_max, lat_max = circle_bbox_wgs84(zoek_rd)
+    params: dict | None = {"f": "json", "bbox": f"{lon_min},{lat_min},{lon_max},{lat_max}",
+                           "limit": LUCHTHAVEN_BRT_PAGE_SIZE}
+    url: str | None = LUCHTHAVEN_BRT_URL
+    features: list[dict] = []
+    pagina = 0
+    while url:
+        if pagina == LUCHTHAVEN_BRT_MAX_PAGES:
+            bronnen.mislukt("luchthaventerreinen",
+                            f"meer dan {LUCHTHAVEN_BRT_MAX_PAGES} pagina's in de zoekrechthoek")
+        try:
+            data = haal_json(url, params=params, timeout=30, max_bytes=MAX_BYTES_API,
+                             toegestane_hosts=_BRT_HOSTS)
+        except BronFout as fout:
+            log(f"  FOUT: BRT functioneel_gebied_vlak (pagina {pagina + 1}) niet opgehaald: {fout}")
+            bronnen.mislukt("luchthaventerreinen", f"pagina {pagina + 1}: {fout}")
+            raise
+        features += data.get("features", [])
+        url = next((lnk.get("href") for lnk in data.get("links", [])
+                    if lnk.get("rel") == "next"), None)
+        params = None
+        pagina += 1
+    if not features:
+        bronnen.mislukt("luchthaventerreinen",
+                        "nul functionele gebieden in de zoekrechthoek — laag leeg of gewijzigd")
 
+    kandidaten = []
+    for feat in features:
+        props = feat.get("properties") or {}
+        soort = LUCHTHAVEN_BRT_TYPEN.get(props.get("typefunctioneelgebied") or "")
+        if soort and feat.get("geometry"):
+            geom_rd = transform_geom_to_rd(shapely_from_geojson_geom(feat["geometry"]))
+            kandidaten.append((geom_rd, props.get("naamnl") or "", soort))
+    log(f"  BRT functioneel_gebied_vlak: {len(features)} gebieden, "
+        f"{len(kandidaten)} luchthaventerrein-vlak(ken).")
+
+    # Overlappende of rakende vlakken samenvoegen (union-find, klein aantal).
+    ouder = list(range(len(kandidaten)))
+
+    def wortel(k: int) -> int:
+        while ouder[k] != k:
+            k = ouder[k]
+        return k
+
+    for a in range(len(kandidaten)):
+        for b in range(a + 1, len(kandidaten)):
+            if kandidaten[a][0].buffer(5).intersects(kandidaten[b][0]):
+                ouder[wortel(a)] = wortel(b)
+    groepen: dict[int, list] = {}
+    for k, kandidaat in enumerate(kandidaten):
+        groepen.setdefault(wortel(k), []).append(kandidaat)
+    terreinen = []
+    for leden in groepen.values():
+        namen = list(dict.fromkeys(n for _, n, _ in leden if n))
+        typen = list(dict.fromkeys(t for _, _, t in leden))
+        terreinen.append({"naam": " / ".join(namen), "typen": typen,
+                          "geom_rd": unary_union([g for g, _, _ in leden])})
+    bronnen.geraadpleegd("luchthaventerreinen")
+    return terreinen
+
+
+def _haal_luchthavenregelingen(log: LogFn, bronnen: Bronregister) -> list[dict]:
+    """De provinciale luchthavenregelingen als punt (GeoPortaal Overijssel WFS)."""
     log(f"  Luchthavens: WFS opvragen ({LUCHTHAVEN_WFS_LAYER}) ...")
     params = {
         "SERVICE":      "WFS",
@@ -483,53 +544,104 @@ def signaleer_luchthavens(
         log("  FOUT: de luchthavenlaag bevat geen enkele locatie — laag leeg of gewijzigd.")
         bronnen.mislukt("luchthavens", "de WFS-laag gaf nul luchthavens terug")
 
-    in_straal  = []
-    in_signaal = []
-
+    t_to_rd = make_transformer("EPSG:4326", "EPSG:28992")
+    regelingen = []
     for feat in features:
         props = feat.get("properties", {}) or {}
         geom  = feat.get("geometry", {}) or {}
-        if geom.get("type") != "Point":
+        coords = geom.get("coordinates", [])
+        if geom.get("type") != "Point" or len(coords) < 2:
             continue
-        coords  = geom.get("coordinates", [])
-        if len(coords) < 2:
-            continue
-        lon_lh, lat_lh = coords[0], coords[1]
-        lh_x, lh_y     = t_to_rd.transform(lon_lh, lat_lh)
-        lh_pt_rd       = Point(lh_x, lh_y)
-        afstand        = round(punt_rd.distance(lh_pt_rd))
+        regelingen.append({
+            "naam":         props.get("NAAM") or "Onbekend",
+            "omschrijving": props.get("OMSCHRIJVING") or "",
+            "gebruik":      props.get("GEBRUIK") or "",
+            "beperking":    props.get("BEPERKING") or "",
+            "exploitant":   props.get("EXPLOITANT") or "",
+            "adres":        props.get("ADRES") or "",
+            "geom_rd":      Point(*t_to_rd.transform(coords[0], coords[1])),
+        })
+    bronnen.geraadpleegd("luchthavens")
+    return regelingen
 
-        naam         = props.get("NAAM") or "Onbekend"
-        omschrijving = props.get("OMSCHRIJVING") or ""
-        gebruik      = props.get("GEBRUIK") or ""
-        beperking    = props.get("BEPERKING") or ""
-        exploitant   = props.get("EXPLOITANT") or ""
-        adres_lh     = props.get("ADRES") or ""
 
-        item = {
-            "naam":         naam,
-            "omschrijving": omschrijving,
-            "gebruik":      gebruik,
-            "beperking":    beperking,
-            "exploitant":   exploitant,
-            "adres":        adres_lh,
-            "afstand_m":    afstand,
-            "lat":          lat_lh,
-            "lon":          lon_lh,
-        }
+def signaleer_luchthavens(
+    circle_rd: BaseGeometry, log: LogFn, punten_rd: BaseGeometry | None = None,
+    *, bronnen: Bronregister,
+) -> SignaalResultaat:
+    """Luchthavens rond de aanvraaglocatie, gemeten tot het terrein (B23).
 
-        if afstand <= LUCHTHAVEN_GRENS_M:
-            log(f"  LUCHTHAVEN CONFLICT: '{naam}' op {afstand} m van aanvraaglocatie "
-                f"(< {LUCHTHAVEN_GRENS_M} m — NIET TOEGESTAAN).")
-            in_straal.append(item)
-        elif afstand <= LUCHTHAVEN_SIGNAAL_M:
-            log(f"  Luchthaven signalering: '{naam}' op {afstand} m van aanvraaglocatie "
-                f"(< {LUCHTHAVEN_SIGNAAL_M} m).")
-            in_signaal.append(item)
+    Twee bronnen, beide afbrekend: de luchthaventerreinen als vlak uit BRT Top10NL
+    (vliegvelden, zweefvliegvelden, helikopterlandingsterreinen — ook over de
+    provinciegrens) en de provinciale luchthavenregelingen als punt (naam, gebruik,
+    exploitant). Een regelingspunt binnen LUCHTHAVEN_KOPPEL_M van een terrein hoort
+    bij dat terrein; anders telt het als eigen luchthaven.
+
+    De afstand is die van de dichtstbijzijnde puntlocatie tot de rand van het
+    terrein (0 als de puntlocatie erbinnen ligt), niet tot een middelpunt: bij een
+    terrein van 387 ha scheelt dat kilometers.
+
+    Retourneert {'in_straal': [...], 'in_signaal': [...]}
+      in_straal  — binnen LUCHTHAVEN_GRENS_M (1.000 m) → puntlocatie NIET toegestaan
+      in_signaal — binnen LUCHTHAVEN_SIGNAAL_M → signalering
+    """
+    punt_rd  = punten_rd if punten_rd is not None else circle_rd.centroid
+    t_to_wgs = make_transformer("EPSG:28992", "EPSG:4326")
+
+    log(f"  Luchthaventerreinen: BRT Top10NL opvragen (tot {LUCHTHAVEN_SIGNAAL_M} m) ...")
+    terreinen  = _haal_luchthaventerreinen(punt_rd.buffer(LUCHTHAVEN_SIGNAAL_M), log, bronnen)
+    regelingen = _haal_luchthavenregelingen(log, bronnen)
+
+    objecten = []
+    for terrein in terreinen:
+        objecten.append({"naam": terrein["naam"], "omschrijving": ", ".join(terrein["typen"]),
+                         "gebruik": "", "beperking": "", "exploitant": "", "adres": "",
+                         "geom_rd": terrein["geom_rd"], "bron": "BRT Top10NL"})
+    for regeling in regelingen:
+        eigen = min((o for o in objecten if o["bron"].startswith("BRT")),
+                    key=lambda o: o["geom_rd"].distance(regeling["geom_rd"]), default=None)
+        if eigen and eigen["geom_rd"].distance(regeling["geom_rd"]) <= LUCHTHAVEN_KOPPEL_M:
+            # Zelfde luchthaven: de regeling levert naam en gegevens, Top10NL het terrein.
+            eigen.update({k: regeling[k] for k in
+                          ("naam", "omschrijving", "gebruik", "beperking", "exploitant", "adres")})
+            eigen["bron"] = "BRT Top10NL + provincie Overijssel"
         else:
-            log(f"  Luchthaven buiten signaalgebied: '{naam}' op {afstand} m.")
+            objecten.append({**regeling, "bron": "provincie Overijssel"})
+
+    in_straal  = []
+    in_signaal = []
+    for obj in objecten:
+        geom_rd = obj.pop("geom_rd")
+        afstand = round(punt_rd.distance(geom_rd))
+        if afstand > LUCHTHAVEN_SIGNAAL_M:
+            continue
+        # Marker op het punt van het terrein dat het dichtst bij de aanvraag ligt.
+        if geom_rd.geom_type == "Point":
+            dichtst = geom_rd
+        elif afstand == 0:
+            dichtst = geom_rd.representative_point()
+        else:
+            dichtst = nearest_points(geom_rd, punt_rd)[0]
+        lon_lh, lat_lh = t_to_wgs.transform(dichtst.x, dichtst.y)
+        item = {**obj, "afstand_m": afstand, "lat": lat_lh, "lon": lon_lh,
+                "poly_rings": ([] if geom_rd.geom_type == "Point" else
+                               _geom_rings_wgs84(shapely_transform(t_to_wgs.transform, geom_rd)))}
+        if not item["naam"]:
+            # Top10NL geeft helikopterlandingsterreinen geen naam: dichtstbijzijnd adres.
+            adres, pc_wpl = reverse_geocode_adres_wpl(lat_lh, lon_lh, log, bronnen=bronnen)
+            item["adres"] = adres
+            item["naam"] = (f"{item['omschrijving'].capitalize()} bij {adres}, {pc_wpl}"
+                            if adres else item["omschrijving"].capitalize())
+        if afstand <= LUCHTHAVEN_GRENS_M:
+            log(f"  LUCHTHAVEN CONFLICT: '{item['naam']}' op {afstand} m van aanvraaglocatie "
+                f"(< {LUCHTHAVEN_GRENS_M} m — NIET TOEGESTAAN; bron: {item['bron']}).")
+            in_straal.append(item)
+        else:
+            log(f"  Luchthaven signalering: '{item['naam']}' op {afstand} m van aanvraaglocatie "
+                f"(< {LUCHTHAVEN_SIGNAAL_M} m; bron: {item['bron']}).")
+            in_signaal.append(item)
 
     log(f"  Luchthavens: {len(in_straal)} binnen {LUCHTHAVEN_GRENS_M} m | "
-        f"{len(in_signaal)} binnen {LUCHTHAVEN_SIGNAAL_M} m.")
-    bronnen.geraadpleegd("luchthavens")
+        f"{len(in_signaal)} binnen {LUCHTHAVEN_SIGNAAL_M} m "
+        f"({len(terreinen)} terrein(en) uit Top10NL, {len(regelingen)} provinciale regeling(en)).")
     return {"in_straal": in_straal, "in_signaal": in_signaal}

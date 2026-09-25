@@ -5,8 +5,12 @@ Versie: zie git (workflowversie = korte commit-hash, zie tug_config.VERSION)
 Stap 3a: PH-code → Luchtvaartregister ILT → ICAO-code
 Stap 3b: ICAO-code → NLR-tabel → Appendix Categorie + Afstandsnorm
 Stap 3c: PM-categorieën (013/015/016/017) → geen norm; rode signalering in het rapport
+Stap 3c': Handmatige geluidsafstand (afstand_m in de aanvraag) gaat vóór het register
+         en de NLR-tabel; bron 'handmatig', met de registeruitkomst ernaast (B12).
 Stap 3d: Meerdere luchtvaartuigen → norm_toepassing = maximum over de luchtvaartuigen
-         waarvoor wel een norm herleidbaar is
+         waarvoor wel een norm herleidbaar is. Heeft geen enkel luchtvaartuig een
+         norm, dan wordt geïnventariseerd tot de ruimste norm uit de NLR-tabel,
+         zonder conclusie: rode melding en exitcode 2 (B13).
 
 Invoer : tug_state.json  (aanvraag.luchtvaartuigen)
 Uitvoer: tug_state.json  (sectie classificatie gevuld)
@@ -91,6 +95,11 @@ NLR_TABEL = {
     # Appendix 017 — PM
     "NH90": ("017", None),
 }
+
+# Ruimste norm uit de tabel. Geldt als inventarisatiestraal wanneer voor geen
+# enkel luchtvaartuig een norm herleidbaar is: dan blijft niets buiten beeld,
+# maar trekt het rapport geen conclusie (B13).
+INVENTARISATIE_NORM_M = max(norm for _, norm in NLR_TABEL.values() if norm is not None)
 
 NLR_TYPEN = {
     "A119": ["AGUSTA A-119 Koala"],
@@ -499,6 +508,77 @@ def _classificeer_luchtvaartuig(lv, df, log):
 # Hoofdfunctie
 # ──────────────────────────────────────────────
 
+def pas_handmatige_afstand_toe(lv, resultaat: dict, log) -> dict:
+    """Zet een in de aanvraag opgegeven geluidsafstand (afstand_m) in de plaats van
+    de registeruitkomst (B12).
+
+    Bedoeld voor luchtvaartuigen die het ILT-register niet kent, zoals buitenlandse
+    registraties; de vergunningverlener stelt de afstand vast, bijvoorbeeld uit het
+    geluidsrapport van het toestel. Geldt ook als het register wel een norm geeft —
+    dan staat die ernaast, zodat een afwijking zichtbaar is. Het bereik is bij het
+    inlezen al gecontroleerd (tug_aanvraag.AFSTAND_BEREIK).
+    """
+    afstand = lv.get("afstand_m") if isinstance(lv, dict) else None
+    if not isinstance(afstand, int | float) or isinstance(afstand, bool):
+        return resultaat
+    afstand = int(afstand) if float(afstand).is_integer() else float(afstand)
+    uit_register = resultaat["norm_m"]
+    kenmerk = resultaat["registratie"] or "(geen kenmerk)"
+    signaal = (f"Geluidsafstand {afstand} m voor {kenmerk} handmatig opgegeven in de "
+               f"aanvraag; niet afgeleid uit het ILT-register en de NLR-tabel")
+    if uit_register is None:
+        signaal += " (die leveren voor dit luchtvaartuig geen norm)."
+    elif uit_register == afstand:
+        signaal += f" (die geven dezelfde {uit_register} m)."
+    else:
+        signaal += f" — let op: register en NLR-tabel geven {uit_register} m."
+    log(f"  → {kenmerk}: handmatige geluidsafstand {afstand} m gaat vóór het register "
+        f"(register/NLR: {uit_register if uit_register is not None else 'geen norm'}); "
+        f"luchtvaartuig telt mee in de toetsing.")
+    return {
+        **resultaat,
+        "norm_m":            afstand,
+        "norm_bron":         "handmatig",
+        "norm_register_m":   uit_register,
+        "norm_bron_register": resultaat["norm_bron"],
+        "signalen":          [signaal],
+    }
+
+
+def bepaal_norm_toepassing(
+    resultaten: list[dict], log, bronnen: Bronregister,
+) -> tuple[int, bool]:
+    """Maatgevende norm over de luchtvaartuigen, en of die herleidbaar was.
+
+    Zonder één herleidbare norm breekt de toetsing niet af (B13): de ruimtelijke
+    stap inventariseert dan tot INVENTARISATIE_NORM_M, en het bronregister meldt
+    de afstandsnorm als niet vastgesteld — rode melding in het rapport, geen
+    conclusie, exitcode 2.
+    """
+    normen = [r["norm_m"] for r in resultaten if r["norm_m"] is not None]
+    if normen:
+        norm = max(normen)
+        maatgevend = [r["registratie"] for r in resultaten if r["norm_m"] == norm]
+        log(f"\nStap 3d: norm_toepassing = {norm} m "
+            f"(maatgevend luchtvaartuig: {', '.join(maatgevend)})")
+        bronnen.geraadpleegd("afstandsnorm")
+        return norm, True
+
+    zonder = ", ".join(r["registratie"] or "(geen kenmerk)" for r in resultaten)
+    log(
+        f"\n✗ Stap 3d: voor geen enkel opgegeven luchtvaartuig is een afstandsnorm "
+        f"herleidbaar ({zonder}). De omgeving wordt geïnventariseerd tot de ruimste "
+        f"norm ({INVENTARISATIE_NORM_M} m); het rapport trekt geen conclusie."
+    )
+    bronnen.mislukt(
+        "afstandsnorm",
+        f"voor geen enkel luchtvaartuig herleidbaar ({zonder}); geïnventariseerd tot "
+        f"de ruimste norm van {INVENTARISATIE_NORM_M} m — de vergunningverlener "
+        f"bepaalt de norm",
+    )
+    return INVENTARISATIE_NORM_M, False
+
+
 def run(state_pad: str | Path) -> None:
     state_pad = Path(state_pad)
     state     = json.loads(state_pad.read_text(encoding="utf-8"))
@@ -537,7 +617,8 @@ def run(state_pad: str | Path) -> None:
         lv_type = lv.get("type", "onbekend") if isinstance(lv, dict) else "onbekend"
         log(f"\n  Verwerken: {ph_code or '(geen kenmerk)'} (type: {lv_type})")
         if not ph_code:
-            resultaten.append(_classificeer_luchtvaartuig(lv, df, log))
+            resultaten.append(pas_handmatige_afstand_toe(
+                lv, _classificeer_luchtvaartuig(lv, df, log), log))
             continue
 
         # Snelle pre-check: staat ph_code in het al geladen register?
@@ -549,7 +630,11 @@ def run(state_pad: str | Path) -> None:
         else:
             in_register = False
 
-        if not in_register and not register_ververst:
+        if not in_register and not ph_code.startswith("PH-"):
+            # Het ILT-register kent alleen Nederlandse kenmerken; verversen helpt
+            # niet en zou bij een storing de hele toetsing onvolledig maken.
+            log(f"  {ph_code}: geen PH-kenmerk — niet in het ILT-register te verwachten.")
+        elif not in_register and not register_ververst:
             log(f"  {ph_code}: niet in lokaal register — register verversen ...")
             try:
                 df, meta = _download_register(log, force=True, bronnen=bronnen)
@@ -558,25 +643,12 @@ def run(state_pad: str | Path) -> None:
                 sys.exit(1)
             register_ververst = True
 
-        resultaten.append(_classificeer_luchtvaartuig(lv, df, log))
+        resultaten.append(pas_handmatige_afstand_toe(
+            lv, _classificeer_luchtvaartuig(lv, df, log), log))
 
     # Stap 3d: norm_toepassing = maximum over de luchtvaartuigen met een herleidbare norm
     zonder_norm = [r["registratie"] for r in resultaten if r["norm_m"] is None]
-    normen = [r["norm_m"] for r in resultaten if r["norm_m"] is not None]
-    if not normen:
-        log(
-            "\nFOUT: Voor geen enkel opgegeven luchtvaartuig is een afstandsnorm "
-            f"herleidbaar ({', '.join(zonder_norm)}). "
-            "De ruimtelijke toetsing kan niet worden uitgevoerd."
-        )
-        schrijf_state(state_pad, state)
-        sys.exit(1)
-
-    norm_toepassing = max(normen)
-    maatgevend = [r["registratie"] for r in resultaten if r["norm_m"] == norm_toepassing]
-
-    log(f"\nStap 3d: norm_toepassing = {norm_toepassing} m "
-        f"(maatgevend luchtvaartuig: {', '.join(maatgevend)})")
+    norm_toepassing, norm_herleidbaar = bepaal_norm_toepassing(resultaten, log, bronnen)
     if zonder_norm:
         log(
             f"  ✗ Buiten de toetsing gelaten (geen herleidbare norm): "
@@ -597,6 +669,7 @@ def run(state_pad: str | Path) -> None:
     state["classificatie"] = {
         "luchtvaartuigen":   resultaten,
         "norm_toepassing":   norm_toepassing,
+        "norm_herleidbaar":  norm_herleidbaar,
         "zonder_norm":       zonder_norm,
         "register_bestand":  REGISTER_ODS_PAD.name,
         "register_datum":    meta.get("download_datum", ""),
