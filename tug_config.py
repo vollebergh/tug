@@ -138,6 +138,7 @@ BAG_PAGE_SIZE         = 1000
 PDOK_LOCATION_API     = "https://api.pdok.nl/kadaster/location-api/v1/search"
 LOCATIESERVER_REVERSE = "https://api.pdok.nl/bzk/locatieserver/search/v3_1/reverse"
 LOCATIESERVER_FREE    = "https://api.pdok.nl/bzk/locatieserver/search/v3_1/free"
+LOCATIESERVER_SUGGEST = "https://api.pdok.nl/bzk/locatieserver/search/v3_1/suggest"  # GUI-zoeker
 
 # BRT top10nl OGC API — terrein_vlak (begraafplaats-detectie via 'dodenakker')
 BRT_TERREIN_VLK_URL       = "https://api.pdok.nl/brt/top10nl/ogc/v1_0/collections/terrein_vlak/items"

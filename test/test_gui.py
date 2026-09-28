@@ -6,8 +6,10 @@ aanvraag opleveren en dezelfde grenzen bewaken als de pipeline erachter. Draait
 zonder scherm (offscreen); zonder PySide6 wordt de suite overgeslagen.
 """
 
+import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,7 @@ from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings  # noqa: 
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import tug_gui as gui  # noqa: E402
+from tug_http import BronFout  # noqa: E402
 from tug_aanvraag import controleer_structuur  # noqa: E402
 from tug_config import MAX_PUNT_AFSTAND_M, MIN_INDIENTERMIJN_DAGEN, TOETSING_TOESLAG_M  # noqa: E402
 from tug_geo import puntlocaties  # noqa: E402
@@ -231,6 +234,42 @@ class TestKaartBeveiliging:
         assert not pagina.acceptNavigationRequest(QUrl("https://leafletjs.com/"), klik, True)
         assert not pagina.acceptNavigationRequest(QUrl("file:///etc/passwd"), klik, True)
         assert geopend == ["https://leafletjs.com/"]
+
+
+class TestAdreszoeker:
+    """B18: zoeken op adres loopt via Python; de kaartpagina doet zelf geen verzoeken."""
+
+    def _wacht_op_resultaat(self, app, brug, tekst):
+        ontvangen = []
+        brug.zoekResultaat.connect(lambda nr, js: ontvangen.append((nr, json.loads(js))))
+        brug.zoekAdres(7, tekst)
+        for _ in range(200):
+            app.processEvents()
+            if ontvangen:
+                break
+            time.sleep(0.01)
+        return ontvangen
+
+    def test_treffers_komen_terug_met_volgnummer(self, app, monkeypatch):
+        treffer = {"naam": "Denekamp", "soort": "woonplaats", "lat": 52.39, "lon": 7.01, "zoom": 13}
+        monkeypatch.setattr(gui, "zoek_locatie",
+                            lambda tekst: [treffer] if tekst == "Denekamp" else [])
+        ontvangen = self._wacht_op_resultaat(app, gui.Brug(), "Denekamp")
+        assert ontvangen == [(7, {"treffers": [treffer]})]
+
+    def test_bronfout_wordt_een_melding(self, app, monkeypatch):
+        def mislukt(_tekst):
+            raise BronFout("api.pdok.nl/bzk: time-out")
+        monkeypatch.setattr(gui, "zoek_locatie", mislukt)
+        ontvangen = self._wacht_op_resultaat(app, gui.Brug(), "Denekamp")
+        assert ontvangen == [(7, {"fout": "api.pdok.nl/bzk: time-out"})]
+
+    def test_kaartpagina_doet_geen_eigen_netwerkverzoeken(self):
+        pagina = (gui.GUI_DIR / "kaart.html").read_text(encoding="utf-8")
+        for verboden in ("fetch(", "XMLHttpRequest", "WebSocket", "pdok.nl/bzk"):
+            assert verboden not in pagina
+        # Namen uit de bron gaan als tekst de pagina in, niet als HTML.
+        assert "createTextNode(t.naam)" in pagina
 
 
 class TestOpruimen:

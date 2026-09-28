@@ -636,3 +636,42 @@ class TestLuchthaventerreinen:
                           (lat + 0.02, lon), adres=("Leemslagenweg 40", "7609 PN Almelo"))
         naam = res["in_signaal"][0]["naam"]
         assert naam.startswith("Helikopterlandingsterrein bij Leemslagenweg 40")
+
+
+class TestZoekLocatie:
+    """B18: de adreszoeker van de GUI-kaart, zonder netwerk."""
+
+    def test_treffers_krijgen_punt_en_zoom_en_onbruikbare_vallen_weg(self, monkeypatch):
+        import tug_bronnen_geocode as geo
+        gevraagd = {}
+
+        def nep_json(url, *, params, **_kw):
+            gevraagd.update(params)
+            return {"response": {"docs": [
+                {"type": "adres", "weergavenaam": "Stationsplein 13A-1, Zwolle",
+                 "centroide_ll": "POINT(6.09080195 52.50599301)"},
+                {"type": "woonplaats", "weergavenaam": "Denekamp, Dinkelland, Overijssel",
+                 "centroide_ll": "POINT(7.01310677 52.3889973)"},
+                {"type": "perceel", "weergavenaam": "X", "centroide_ll": "POINT(6 52)"},
+                {"type": "adres", "weergavenaam": "Zonder punt"},
+            ]}}
+        monkeypatch.setattr(geo, "haal_json", nep_json)
+        treffers = geo.zoek_locatie("  stationsplein \n zwolle ")
+        assert gevraagd["q"] == "stationsplein zwolle"
+        assert [t["soort"] for t in treffers] == ["adres", "woonplaats"]
+        assert treffers[0]["lat"] == pytest.approx(52.50599301)
+        assert treffers[0]["lon"] == pytest.approx(6.09080195)
+        assert treffers[0]["zoom"] > treffers[1]["zoom"]
+
+    def test_te_korte_invoer_bevraagt_niets(self, monkeypatch):
+        import tug_bronnen_geocode as geo
+        monkeypatch.setattr(geo, "haal_json", lambda *_a, **_k: pytest.fail("bevraagd"))
+        assert geo.zoek_locatie(" a ") == []
+
+    def test_invoer_wordt_ingekort(self, monkeypatch):
+        import tug_bronnen_geocode as geo
+        gevraagd = {}
+        monkeypatch.setattr(geo, "haal_json",
+                            lambda _u, *, params, **_k: gevraagd.update(params) or {})
+        geo.zoek_locatie("a" * 500)
+        assert len(gevraagd["q"]) == geo.ZOEK_MAX_TEKENS

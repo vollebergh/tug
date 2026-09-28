@@ -1,7 +1,8 @@
 """
-tug_bronnen_geocode.py -- Reverse geocoding via PDOK Locatieserver
+tug_bronnen_geocode.py -- Geocoding via PDOK Locatieserver
 
-Bevat de functies die coördinaten omzetten naar een adres of woonplaats, en de
+Bevat de functies die coördinaten omzetten naar een adres of woonplaats, de
+adreszoekfunctie van de kaart in de grafische schil (`zoek_locatie`), en de
 generieke polygoon-opvraging via de `href` van een Location API-treffer. Wordt
 gebruikt door BAG-postprocessing en de PDOK Location API-bronnen (begraafplaatsen,
 maneges).
@@ -19,7 +20,7 @@ from typing import Any
 from pyproj import Transformer
 
 from tug_bronstatus import Bronregister
-from tug_config import LOCATIESERVER_REVERSE, MAX_BYTES_API
+from tug_config import LOCATIESERVER_REVERSE, LOCATIESERVER_SUGGEST, MAX_BYTES_API
 from tug_geo import extract_lon_lat
 from tug_http import BronFout, haal_json
 from tug_types import FeatureList, LogFn
@@ -71,6 +72,53 @@ def reverse_geocode_adres_wpl(
         else:
             adres = weergave
     return adres or "—", pc_wpl
+
+
+# ──────────────────────────────────────────────
+# Zoeken op adres (kaart in de grafische schil)
+# ──────────────────────────────────────────────
+
+# Soorten treffers waarop de kaart kan inzoomen, met het zoomniveau per soort.
+ZOEK_ZOOM = {"adres": 18, "postcode": 17, "weg": 16, "woonplaats": 13, "gemeente": 12}
+ZOEK_MAX_TEKENS = 100
+_POINT = re.compile(r"^POINT\(\s*(-?[\d.]+)\s+(-?[\d.]+)\s*\)$")
+
+
+def zoek_locatie(tekst: str, *, rijen: int = 8) -> list[dict[str, Any]]:
+    """Zoek adressen, postcodes, straten en plaatsen bij een vrije zoektekst.
+
+    Geeft per treffer `naam`, `soort`, `lat`, `lon` en `zoom`. Te korte invoer
+    geeft een lege lijst zonder bevraging; treffers zonder bruikbaar punt vallen
+    weg. Een mislukte bevraging is een BronFout voor de aanroeper.
+    """
+    tekst = " ".join(tekst.split())[:ZOEK_MAX_TEKENS]
+    if len(tekst) < 2:
+        return []
+    # /suggest i.p.v. /free: die zet een exact huisnummer bovenaan ("Stationsplein 1"
+    # vóór "Stationsplein 13A-1") en levert met `fl` ook het punt mee.
+    soorten = " OR ".join(ZOEK_ZOOM)
+    data = haal_json(
+        LOCATIESERVER_SUGGEST,
+        params={"q": tekst, "rows": rijen, "fq": f"type:({soorten})",
+                "fl": "weergavenaam,type,centroide_ll"},
+        timeout=10, max_bytes=MAX_BYTES_API,
+    )
+    treffers = []
+    for doc in data.get("response", {}).get("docs", []):
+        if not isinstance(doc, dict):
+            continue
+        m = _POINT.match(str(doc.get("centroide_ll", "")))
+        soort = doc.get("type")
+        if not m or soort not in ZOEK_ZOOM:
+            continue
+        treffers.append({
+            "naam": str(doc.get("weergavenaam", ""))[:200],
+            "soort": soort,
+            "lat": float(m.group(2)),
+            "lon": float(m.group(1)),
+            "zoom": ZOEK_ZOOM[soort],
+        })
+    return treffers
 
 
 # ──────────────────────────────────────────────

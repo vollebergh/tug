@@ -223,7 +223,9 @@ grafische schil gebruikt een meegeleverde kopie en maakt die verbinding niet.
 
 Wat die bronnen te zien krijgen is per bevraging een **bounding box of coördinaat rond de
 aanvraaglocatie**, en bij begraafplaatsen en maneges een zoekterm. Gegevens over de aanvrager of de
-aanvraag zelf verlaten de machine niet.
+aanvraag zelf verlaten de machine niet. De adreszoeker op de kaart van de grafische schil stuurt de
+ingetypte zoektekst naar de PDOK Locatieserver (`api.pdok.nl`); wat daar wordt ingetypt, verlaat de
+machine dus wél. De tekst wordt nergens bewaard.
 
 ### 5.4 Opslag en verwijdering
 
@@ -505,12 +507,16 @@ start daarmee `tug_run.py`, dat de enige uitvoerder blijft.
 | Luchtvaartuigen | Registratiekenmerk invoeren en toevoegen met `+` of Enter; het overzicht eronder groeit mee en heeft per regel een veld voor een handmatige geluidsafstand en een verwijderknop |
 | Puntlocaties | Klikken op de kaart plaatst een pin, klikken op een pin verwijdert hem. Handmatige invoer in WGS84 of RD. Elke pin verschijnt in het overzicht met beide coördinaatstelsels |
 | Kaart | Dezelfde Leaflet-opzet en dezelfde PDOK-tegels als de export, zodat er geen tweede kaartimplementatie uit de pas kan lopen. Schakelbaar tussen topografisch en luchtfoto; startbeeld midden-Overijssel op zoomniveau 11 |
+| Zoeken op adres | Zoekveld linksboven op de kaart: adres, postcode, straat of plaats. Na een korte typpauze verschijnen tot acht treffers (PDOK Locatieserver, `suggest`); pijltjes en Enter of een klik kiezen er één. De kaart vliegt ernaartoe en zet een oranje markering, maar plaatst **geen** puntlocatie — dat blijft een klik op de kaart. Escape wist het veld en de markering |
 
 **De kaart is afgeschermd.** Leaflet komt uit `gui/vendor/leaflet` (dezelfde versie en inhoud als de
 vastgepinde versie in de HTML-export; een test bewaakt dat) en wordt in de pagina ingevoegd; de
 pagina laadt geen externe scripts en kan geen lokale bestanden lezen. Klikken op een link, zoals de
 bronvermelding, opent de systeembrowser: de kaartweergave zelf navigeert nergens heen, zodat geen
-externe pagina bij de koppeling met Python kan.
+externe pagina bij de koppeling met Python kan. Ook de adreszoeker verandert daar niets aan: de pagina geeft de zoektekst
+via de koppeling aan Python, dat de Locatieserver bevraagt via `tug_http` (alleen https, vaste
+hostlijst, begrensde omvang) en de treffers terugstuurt. De pagina doet zelf geen netwerkverzoeken
+en zet namen uit het antwoord als tekst in de lijst, nooit als HTML.
 
 **Genereren** schrijft de aanvraag naar `tmp/<omschrijving>_<timestamp>.json`, start `tug_run.py`
 daarmee en vraagt daarná pas om een exportmap — de pipeline wacht dus niet op de gebruiker. Tijdens

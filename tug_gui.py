@@ -51,7 +51,8 @@ from typing import Any
 from pyproj import Transformer
 
 from PySide6.QtCore import (
-    QDate, QObject, QSettings, QStandardPaths, Qt, QThread, QTime, QUrl, Signal, Slot,
+    QDate, QObject, QSettings, QStandardPaths, Qt, QThread, QThreadPool, QTime, QUrl, Signal,
+    Slot,
 )
 from PySide6.QtGui import (
     QColor, QDesktopServices, QIcon, QPainter, QPainterPath, QPen, QPixmap,
@@ -71,7 +72,9 @@ from tug_config import (
     NL_BBOX, OUTPUT_DIR, REGISTRATIE_PATROON, TOETSING_TOESLAG_M, VERSION,
 )
 from tug_aanvraag import AFSTAND_BEREIK, TOESLAG_BEREIK
+from tug_bronnen_geocode import zoek_locatie
 from tug_geo import in_nederland, json_voor_script, naam_slug, puntafstand_melding
+from tug_http import BronFout
 from tug_opslag import schrijf_state, wis_state
 
 # ──────────────────────────────────────────────
@@ -407,8 +410,9 @@ class Brug(QObject):
     """Tweerichtingsverbinding tussen de Leaflet-kaart en Python."""
 
     # Python → JavaScript
-    pinsGezet  = Signal(str)
-    focusGezet = Signal(float, float)
+    pinsGezet     = Signal(str)
+    focusGezet    = Signal(float, float)
+    zoekResultaat = Signal(int, str)    # volgnummer, JSON {"treffers": [...]} of {"fout": ...}
 
     # JavaScript → Python
     puntGevraagd    = Signal(float, float)
@@ -426,6 +430,27 @@ class Brug(QObject):
     @Slot()
     def gereed(self) -> None:
         self.kaartGereed.emit()
+
+    @Slot(int, str)
+    def zoekAdres(self, volgnummer: int, tekst: str) -> None:
+        """Zoek op adres buiten de GUI-thread; het antwoord komt via zoekResultaat.
+
+        De kaartpagina doet zelf geen netwerkverzoeken buiten de tegels: de
+        bevraging loopt hier, via tug_http, naar de PDOK Locatieserver. Het
+        volgnummer laat de pagina verouderde antwoorden negeren.
+        """
+        def zoek() -> None:
+            antwoord: dict[str, Any]
+            try:
+                antwoord = {"treffers": zoek_locatie(tekst)}
+            except BronFout as fout:
+                antwoord = {"fout": str(fout)}
+            except Exception as fout:  # noqa: BLE001 — anders blijft de pagina op 'zoeken…' staan
+                antwoord = {"fout": f"onverwachte fout ({fout.__class__.__name__})"}
+            # Signalen naar een object in de GUI-thread worden in de wachtrij gezet.
+            self.zoekResultaat.emit(volgnummer, json.dumps(antwoord))
+
+        QThreadPool.globalInstance().start(zoek)
 
 
 class KaartPagina(QWebEnginePage):

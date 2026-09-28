@@ -50,6 +50,21 @@
   }
   .uitlezing b{color:var(--tekst);font-weight:600;}
 
+  /* ── Zoeken op adres ────────────────────────────────────── */
+  .zoek{width:300px;}
+  .zoek input{
+    all:unset; box-sizing:border-box; width:100%; padding:9px 12px;
+    font-size:12.5px; color:var(--tekst);
+  }
+  .zoek input::placeholder{color:var(--zwak);}
+  .zoek ul{list-style:none;margin:0;padding:0 4px 4px;max-height:280px;overflow-y:auto;
+           border-top:1px solid var(--rand);}
+  .zoek ul:empty{display:none;}
+  .zoek li{padding:6px 8px;border-radius:6px;font-size:12px;color:var(--tekst);cursor:pointer;}
+  .zoek li.melding{color:var(--zwak);cursor:default;}
+  .zoek li.gekozen,.zoek li:not(.melding):hover{background:var(--accent-zacht);}
+  .zoek li .soort{float:right;color:var(--zwak);font-size:11px;margin-left:8px;}
+
   /* ── Pins ───────────────────────────────────────────────── */
   .pin{position:relative;width:30px;height:40px;cursor:pointer;
        filter:drop-shadow(0 3px 5px rgba(0,0,0,.55));transition:transform .12s;}
@@ -123,6 +138,100 @@ var Schakelaar = L.Control.extend({
   }
 });
 kaart.addControl(new Schakelaar());
+
+// ── Zoeken op adres ───────────────────────────────────────
+// Het zoeken zelf gebeurt in Python (Brug.zoekAdres → PDOK Locatieserver);
+// deze pagina doet geen eigen netwerkverzoeken. Een treffer verschuift alleen
+// het kaartbeeld en zet een tijdelijke markering: een puntlocatie plaatsen
+// blijft een bewuste klik op de kaart.
+var zoekLaag = L.layerGroup().addTo(kaart);
+var zoekVeld, zoekLijst, zoekTreffers = [], zoekKeuze = -1, zoekNr = 0, zoekTimer = null;
+var SOORT = {adres:'adres', postcode:'postcode', weg:'straat', woonplaats:'plaats', gemeente:'gemeente'};
+
+function zoekMelding(tekst){
+  zoekLijst.textContent = '';
+  var li = L.DomUtil.create('li', 'melding', zoekLijst);
+  li.textContent = tekst;
+}
+function toonTreffers(treffers){
+  zoekTreffers = treffers; zoekKeuze = -1;
+  zoekLijst.textContent = '';
+  if (!treffers.length){ zoekMelding('geen treffers'); return; }
+  treffers.forEach(function(t, i){
+    var li = L.DomUtil.create('li', '', zoekLijst);
+    var soort = L.DomUtil.create('span', 'soort', li);
+    soort.textContent = SOORT[t.soort] || t.soort;
+    li.appendChild(document.createTextNode(t.naam));   // tekst uit de bron: nooit als HTML
+    L.DomEvent.on(li, 'mousedown', function(e){ L.DomEvent.stop(e); kiesTreffer(i); });
+  });
+}
+function markeerKeuze(){
+  Array.prototype.forEach.call(zoekLijst.children, function(li, i){
+    li.classList.toggle('gekozen', i === zoekKeuze);
+  });
+}
+function kiesTreffer(i){
+  var t = zoekTreffers[i];
+  if (!t) return;
+  zoekVeld.value = t.naam;
+  zoekLijst.textContent = '';
+  zoekLaag.clearLayers();
+  L.circleMarker([t.lat, t.lon], {
+    radius:9, color:'#ffffff', weight:2, fillColor:'#ff9f1a', fillOpacity:.9, interactive:false
+  }).addTo(zoekLaag);
+  kaart.flyTo([t.lat, t.lon], t.zoom, {duration:.8});
+}
+function zoek(){
+  var tekst = zoekVeld.value.trim();
+  if (tekst.length < 2 || !window.brug){ zoekLijst.textContent = ''; zoekTreffers = []; return; }
+  zoekNr += 1;
+  zoekMelding('zoeken…');
+  window.brug.zoekAdres(zoekNr, tekst);
+}
+
+var Zoeker = L.Control.extend({
+  options:{position:'topleft'},
+  onAdd:function(){
+    var d = L.DomUtil.create('div', 'paneel zoek');
+    zoekVeld = L.DomUtil.create('input', '', d);
+    zoekVeld.type = 'search';
+    zoekVeld.placeholder = 'Zoek adres, postcode of plaats';
+    zoekVeld.maxLength = 100;
+    zoekVeld.setAttribute('aria-label', 'Zoek adres, postcode of plaats');
+    zoekLijst = L.DomUtil.create('ul', '', d);
+    L.DomEvent.on(zoekVeld, 'input', function(){
+      clearTimeout(zoekTimer);
+      zoekTimer = setTimeout(zoek, 300);
+    });
+    L.DomEvent.on(zoekVeld, 'keydown', function(e){
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp'){
+        if (!zoekTreffers.length) return;
+        e.preventDefault();
+        var n = zoekTreffers.length;
+        if (e.key === 'ArrowDown') zoekKeuze = (zoekKeuze + 1) % n;
+        else zoekKeuze = zoekKeuze <= 0 ? n - 1 : zoekKeuze - 1;
+        markeerKeuze();
+      } else if (e.key === 'Enter'){
+        e.preventDefault();
+        if (zoekTreffers.length) kiesTreffer(Math.max(zoekKeuze, 0));
+        else { clearTimeout(zoekTimer); zoek(); }
+      } else if (e.key === 'Escape'){
+        zoekVeld.value = ''; zoekLijst.textContent = ''; zoekTreffers = [];
+        zoekLaag.clearLayers(); zoekVeld.blur();
+      }
+    });
+    L.DomEvent.on(zoekVeld, 'blur', function(){
+      setTimeout(function(){ zoekLijst.textContent = ''; }, 150);
+    });
+    L.DomEvent.on(zoekVeld, 'focus', function(){
+      if (zoekTreffers.length) toonTreffers(zoekTreffers);
+    });
+    L.DomEvent.disableClickPropagation(d);
+    L.DomEvent.disableScrollPropagation(d);
+    return d;
+  }
+});
+kaart.addControl(new Zoeker());
 
 // ── Gebruikshint ──────────────────────────────────────────
 var Hint = L.Control.extend({
@@ -201,6 +310,12 @@ new QWebChannel(qt.webChannelTransport, function(channel){
   window.brug.pinsGezet.connect(function(json){ tekenPins(JSON.parse(json)); });
   window.brug.focusGezet.connect(function(lat, lon){
     kaart.flyTo([lat, lon], Math.max(kaart.getZoom(), 16), {duration:.6});
+  });
+  window.brug.zoekResultaat.connect(function(nr, json){
+    if (nr !== zoekNr) return;          // verouderd antwoord op een eerdere invoer
+    var a = JSON.parse(json);
+    if (a.fout) zoekMelding('zoeken mislukt: ' + a.fout);
+    else toonTreffers(a.treffers);
   });
   window.brug.gereed();
 });
