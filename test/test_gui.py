@@ -277,8 +277,7 @@ class TestAdreszoeker:
 class TestBugRapporteren:
     """B22: knop met insect-icoon; mailto met e-mailclient, kopieervenster zonder."""
 
-    def _klik(self, venster, monkeypatch, gelukt, betrouwbaar=True):
-        monkeypatch.setattr(gui, "MAILTO_MELDT_MISLUKKEN", betrouwbaar)
+    def _klik(self, venster, monkeypatch, gelukt):
         geopend = []
         monkeypatch.setattr(gui.QDesktopServices, "openUrl",
                             lambda url: geopend.append(url) or gelukt)
@@ -289,7 +288,7 @@ class TestBugRapporteren:
         assert "Bug rapporteren" in venster.knop_bug.text()
         assert not venster.knop_bug.icon().isNull()
 
-    def test_met_emailclient_opent_een_ingevuld_concept(self, venster, monkeypatch):
+    def test_opent_een_ingevuld_concept(self, venster, monkeypatch):
         geopend = self._klik(venster, monkeypatch, gelukt=True)
         assert len(geopend) == 1
         url = geopend[0]
@@ -299,26 +298,26 @@ class TestBugRapporteren:
             f"bugreport Workflow TUG-ontheffingen Overijssel - {VERSION}"]
         assert "Wat deed je?" in velden["body"][0]
         assert f"Workflowversie: {VERSION}" in velden["body"][0]
-        assert not hasattr(venster, "bug_venster")
+
+    def test_kopieervenster_verschijnt_ook_als_openen_lijkt_te_lukken(self, venster, monkeypatch):
+        """openUrl slaagt ook als de mailreader daarna faalt (Linux) of Windows een
+        keuzevenster toont; kopiëren moet dus altijd kunnen."""
+        self._klik(venster, monkeypatch, gelukt=True)
+        dlg = venster.bug_venster
+        assert dlg.isVisible()
+        assert "Er is geprobeerd" in dlg.findChild(gui.QLabel, "hulp").text()
+        dlg.close()
 
     def test_zonder_emailclient_verschijnt_het_kopieervenster(self, app, venster, monkeypatch):
         self._klik(venster, monkeypatch, gelukt=False)
         dlg = venster.bug_venster
         assert dlg.isVisible()
+        assert "geen e-mailprogramma gevonden" in dlg.findChild(gui.QLabel, "hulp").text()
         assert dlg.velden["Aan"].text() == "vollebergh@fdle.eu"
         assert VERSION in dlg.velden["Onderwerp"].text()
         assert "persoonsgegevens" in dlg.velden["Tekst"].toPlainText()
         dlg.knoppen["Onderwerp"].click()
         assert app.clipboard().text() == dlg.velden["Onderwerp"].text()
-        dlg.close()
-
-    def test_linux_toont_het_kopieervenster_ook_na_geslaagd_openen(self, venster, monkeypatch):
-        """xdg-open slaagt ook als de mailreader daarna faalt; dan toch kunnen kopiëren."""
-        geopend = self._klik(venster, monkeypatch, gelukt=True, betrouwbaar=False)
-        assert len(geopend) == 1
-        dlg = venster.bug_venster
-        assert dlg.isVisible()
-        assert VERSION in dlg.velden["Onderwerp"].text()
         dlg.close()
 
     def test_mailto_codeert_spaties_regeleinden_en_speciale_tekens(self):

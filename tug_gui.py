@@ -95,10 +95,6 @@ KAART_BASIS_URL = "https://tug-kaart.invalid/"
 
 # Bugmelding (B22): gaat via de eigen e-mailclient van de gebruiker, nooit automatisch.
 BUG_ADRES = "vollebergh@fdle.eu"
-# Meldt QDesktopServices.openUrl het mislukken van een mailto betrouwbaar? Onder Linux
-# niet: xdg-open slaagt zodra het de handler start, ook als die daarna faalt (XFCE:
-# "Failed to execute default Mail Reader"). Daar verschijnt het kopieervenster dus altijd.
-MAILTO_MELDT_MISLUKKEN = not sys.platform.startswith("linux")
 
 # Hoe lang de schil wacht tot een gestopte pipeline zelf heeft opgeruimd.
 STOP_WACHTTIJD_S = 15
@@ -1764,12 +1760,16 @@ class Hoofdvenster(QMainWindow):
     # ── Bug rapporteren (B22) ─────────────────
 
     def meld_bug(self) -> None:
-        """Open een concept in de e-mailclient, en toon het kopieervenster als dat
-        mislukte — of als mislukken niet te zien is (Linux, zie MAILTO_MELDT_MISLUKKEN)."""
+        """Probeer een concept in de e-mailclient en toon daarna altijd het kopieervenster.
+
+        Of het concept werkelijk opende, is niet vast te stellen: openUrl slaagt zodra het
+        besturingssysteem de mailto-afhandeling start. Onder Linux faalt die daarna soms
+        alsnog (XFCE: "Failed to execute default Mail Reader", exitcode 0); onder
+        Windows 11 zonder ingestelde mail-app volgt een keuzevenster. Het kopieervenster
+        werkt dus altijd; alleen de uitleg hangt af van de uitkomst van openUrl.
+        """
         onderwerp, tekst = bug_onderwerp(), bug_tekst(datetime.now())
         geopend = QDesktopServices.openUrl(mailto_url(BUG_ADRES, onderwerp, tekst))
-        if geopend and MAILTO_MELDT_MISLUKKEN:
-            return
         self.bug_venster = BugVenster(self, BUG_ADRES, onderwerp, tekst, geprobeerd=geopend)
         self.bug_venster.open()
 
