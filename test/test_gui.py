@@ -277,7 +277,8 @@ class TestAdreszoeker:
 class TestBugRapporteren:
     """B22: knop met insect-icoon; mailto met e-mailclient, kopieervenster zonder."""
 
-    def _klik(self, venster, monkeypatch, gelukt):
+    def _klik(self, venster, monkeypatch, gelukt, betrouwbaar=True):
+        monkeypatch.setattr(gui, "MAILTO_MELDT_MISLUKKEN", betrouwbaar)
         geopend = []
         monkeypatch.setattr(gui.QDesktopServices, "openUrl",
                             lambda url: geopend.append(url) or gelukt)
@@ -309,6 +310,15 @@ class TestBugRapporteren:
         assert "persoonsgegevens" in dlg.velden["Tekst"].toPlainText()
         dlg.knoppen["Onderwerp"].click()
         assert app.clipboard().text() == dlg.velden["Onderwerp"].text()
+        dlg.close()
+
+    def test_linux_toont_het_kopieervenster_ook_na_geslaagd_openen(self, venster, monkeypatch):
+        """xdg-open slaagt ook als de mailreader daarna faalt; dan toch kunnen kopiëren."""
+        geopend = self._klik(venster, monkeypatch, gelukt=True, betrouwbaar=False)
+        assert len(geopend) == 1
+        dlg = venster.bug_venster
+        assert dlg.isVisible()
+        assert VERSION in dlg.velden["Onderwerp"].text()
         dlg.close()
 
     def test_mailto_codeert_spaties_regeleinden_en_speciale_tekens(self):

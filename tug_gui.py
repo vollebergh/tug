@@ -95,6 +95,10 @@ KAART_BASIS_URL = "https://tug-kaart.invalid/"
 
 # Bugmelding (B22): gaat via de eigen e-mailclient van de gebruiker, nooit automatisch.
 BUG_ADRES = "vollebergh@fdle.eu"
+# Meldt QDesktopServices.openUrl het mislukken van een mailto betrouwbaar? Onder Linux
+# niet: xdg-open slaagt zodra het de handler start, ook als die daarna faalt (XFCE:
+# "Failed to execute default Mail Reader"). Daar verschijnt het kopieervenster dus altijd.
+MAILTO_MELDT_MISLUKKEN = not sys.platform.startswith("linux")
 
 # Hoe lang de schil wacht tot een gestopte pipeline zelf heeft opgeruimd.
 STOP_WACHTTIJD_S = 15
@@ -1486,7 +1490,8 @@ def mailto_url(aan: str, onderwerp: str, tekst: str) -> QUrl:
 class BugVenster(QDialog):
     """Terugval zonder e-mailclient: de velden als kopieerbare tekst."""
 
-    def __init__(self, ouder: QWidget | None, aan: str, onderwerp: str, tekst: str):
+    def __init__(self, ouder: QWidget | None, aan: str, onderwerp: str, tekst: str,
+                 *, geprobeerd: bool = False):
         super().__init__(ouder)
         self.setWindowTitle("Bug rapporteren")
         self.setWindowIcon(bug_icoon())
@@ -1496,6 +1501,10 @@ class BugVenster(QDialog):
         lay.setSpacing(8)
 
         uitleg = QLabel(
+            "Er is geprobeerd de melding in je e-mailprogramma te openen. Verscheen daar geen "
+            "concept, of kreeg je een foutmelding, kopieer de velden hieronder dan naar je "
+            "eigen e-mailprogramma of webmail en verstuur de melding daar."
+            if geprobeerd else
             "Er is geen e-mailprogramma gevonden om de melding in te openen. Kopieer de velden "
             "hieronder naar je eigen e-mailprogramma of webmail en verstuur de melding daar."
         )
@@ -1755,11 +1764,13 @@ class Hoofdvenster(QMainWindow):
     # ── Bug rapporteren (B22) ─────────────────
 
     def meld_bug(self) -> None:
-        """Open een concept in de e-mailclient; lukt dat niet, dan het kopieervenster."""
+        """Open een concept in de e-mailclient, en toon het kopieervenster als dat
+        mislukte — of als mislukken niet te zien is (Linux, zie MAILTO_MELDT_MISLUKKEN)."""
         onderwerp, tekst = bug_onderwerp(), bug_tekst(datetime.now())
-        if QDesktopServices.openUrl(mailto_url(BUG_ADRES, onderwerp, tekst)):
+        geopend = QDesktopServices.openUrl(mailto_url(BUG_ADRES, onderwerp, tekst))
+        if geopend and MAILTO_MELDT_MISLUKKEN:
             return
-        self.bug_venster = BugVenster(self, BUG_ADRES, onderwerp, tekst)
+        self.bug_venster = BugVenster(self, BUG_ADRES, onderwerp, tekst, geprobeerd=geopend)
         self.bug_venster.open()
 
     # ── Vensterafhandeling ────────────────────
