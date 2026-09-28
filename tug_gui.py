@@ -68,7 +68,7 @@ from PySide6.QtWidgets import (
 )
 
 from tug_config import (
-    GUI_DIR, KAART_ACHTERGRONDEN, MAX_PUNT_AFSTAND_M, MIN_INDIENTERMIJN_DAGEN,
+    GUI_DIR, KAART_ACHTERGRONDEN, MIN_INDIENTERMIJN_DAGEN,
     NL_BBOX, OUTPUT_DIR, REGISTRATIE_PATROON, TOETSING_TOESLAG_M, VERSION,
 )
 from tug_aanvraag import AFSTAND_BEREIK, TOESLAG_BEREIK
@@ -513,7 +513,6 @@ class Kaartpaneel(QWidget):
             "start_lon":  KAART_START_LON,
             "start_zoom": KAART_START_ZOOM,
             "standaard_achtergrond": "topografisch",
-            "max_afstand_m": MAX_PUNT_AFSTAND_M,
             "achtergronden": {
                 sleutel: {"titel": waarde["titel"].capitalize(),
                           "url": waarde["url"],
@@ -1028,9 +1027,9 @@ class Puntlocatiespaneel(QWidget):
         lay.addWidget(frame)
         vak.addWidget(sectiekop(
             "Puntlocaties",
-            f"Klik op de kaart om een puntlocatie te plaatsen. Bij meerdere puntlocaties "
-            f"staat hieronder de grootste onderlinge afstand; boven {MAX_PUNT_AFSTAND_M} m "
-            f"volgt een waarschuwing, ook in het rapport. De toetsing gaat wel door."
+            "Klik op de kaart om een puntlocatie te plaatsen. Bij meerdere puntlocaties "
+            "staat hieronder de grootste onderlinge afstand; de toetsing wordt als geheel "
+            "uitgevoerd op alle puntlocaties."
         ))
 
         # Handmatige invoer: WGS84 of RD
@@ -1083,7 +1082,7 @@ class Puntlocatiespaneel(QWidget):
         vak.addLayout(self.lijst)
 
         self.melding_afstand = QLabel("")
-        self.melding_afstand.setObjectName("waarschuwing")
+        self.melding_afstand.setObjectName("hulp")
         self.melding_afstand.setWordWrap(True)
         self.melding_afstand.hide()
         vak.addWidget(self.melding_afstand)
@@ -1188,16 +1187,10 @@ class Puntlocatiespaneel(QWidget):
                 rij.gekozen.connect(self._tonen)
                 self.lijst.addWidget(rij)
 
-        # B14: bij meerdere puntlocaties altijd de grootste onderlinge afstand; boven
-        # de richtlijn als waarschuwing. De pipeline breekt er niet meer op af.
+        # B14: bij meerdere puntlocaties altijd de grootste onderlinge afstand, zonder
+        # grens. De pipeline breekt er niet op af.
         if len(self.punten) > 1:
-            afstand = self.max_onderlinge_afstand()
-            stijl = "waarschuwing" if afstand > MAX_PUNT_AFSTAND_M else "hulp"
-            if self.melding_afstand.objectName() != stijl:
-                self.melding_afstand.setObjectName(stijl)
-                self.melding_afstand.style().unpolish(self.melding_afstand)
-                self.melding_afstand.style().polish(self.melding_afstand)
-            toon_melding(self.melding_afstand, puntafstand_melding(afstand))
+            toon_melding(self.melding_afstand, puntafstand_melding(self.max_onderlinge_afstand()))
         else:
             self.melding_afstand.hide()
 

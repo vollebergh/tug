@@ -16,7 +16,7 @@ from shapely.geometry import Point, Polygon, shape
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import transform as shapely_transform
 
-from tug_config import MAX_PUNT_AFSTAND_M, NAAM_SLUG_MAX, NL_BBOX, _MAANDEN_NL
+from tug_config import NAAM_SLUG_MAX, NL_BBOX, _MAANDEN_NL
 from tug_types import Feature
 
 
@@ -151,8 +151,8 @@ def puntlocaties(aanvraag: dict[str, Any]) -> list[tuple[float, float]]:
 
     `coord_lat` en `coord_lon` zijn elk een getal (één locatie) of een lijst van
     even lange lengte (meerdere locaties; de n-de lat hoort bij de n-de lon).
-    Liggen meerdere locaties verder dan MAX_PUNT_AFSTAND_M uit elkaar, dan is dat
-    een melding en geen fout (B14): zie max_onderlinge_afstand().
+    De onderlinge afstand is nooit een fout: bij meerdere locaties volgt altijd
+    een melding (B14), zie puntafstand_melding().
     Gooit ValueError bij een ongeldige invoer.
     """
     lat, lon = aanvraag.get("coord_lat"), aanvraag.get("coord_lon")
@@ -181,8 +181,8 @@ def puntlocaties(aanvraag: dict[str, Any]) -> list[tuple[float, float]]:
 def max_onderlinge_afstand(punten: list[tuple[float, float]]) -> float:
     """Grootste onderlinge afstand in meters (RD) tussen puntlocaties (lat, lon).
 
-    0 bij minder dan twee punten. Boven MAX_PUNT_AFSTAND_M volgt een melding in
-    schil en rapport; de toetsing gaat door (B14).
+    0 bij minder dan twee punten. Bij meerdere punten staat de afstand altijd in
+    schil, rapport en HTML-kaart (B14).
     """
     rd = [wgs84_to_rd(lo, la) for la, lo in punten]
     return max((((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2) ** 0.5
@@ -190,13 +190,9 @@ def max_onderlinge_afstand(punten: list[tuple[float, float]]) -> float:
 
 
 def puntafstand_melding(afstand: float) -> str:
-    """Eén zin over de onderlinge afstand, gelijk in schil, rapport en HTML-kaart."""
-    tekst = f"Grootste onderlinge afstand tussen de puntlocaties: {afstand:.0f} m"
-    if afstand > MAX_PUNT_AFSTAND_M:
-        tekst += (f" — meer dan {MAX_PUNT_AFSTAND_M} m. De toetsing is uitgevoerd op de "
-                  f"vereniging van de cirkels rond alle puntlocaties; beoordeel of dit één "
-                  f"samenhangend terrein is")
-    return tekst + "."
+    """De melding bij meerdere puntlocaties, gelijk in schil, rapport en HTML-kaart."""
+    return (f"Grootste onderlinge afstand tussen de puntlocaties: {afstand:.0f} m. "
+            f"De toetsing wordt als geheel uitgevoerd op alle puntlocaties.")
 
 
 # ──────────────────────────────────────────────

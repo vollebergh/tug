@@ -31,7 +31,7 @@ from reportlab.pdfgen import canvas as rl_canvas
 
 from tug_config import (
     VERSION, MODEL_LABEL, OUTPUT_DIR, GUI_DIR,
-    MARGE_M, MAX_PUNT_AFSTAND_M, TOETSING_TOESLAG_M, meters, toetsing_label,
+    MARGE_M, TOETSING_TOESLAG_M, meters, toetsing_label,
     MANEGE_SIGNAAL_MARGE,
     N2000_SIGNAAL_MARGE, NNN_SIGNAAL_MARGE, NNN_TTL_DAGEN,
     LUCHTHAVEN_GRENS_M, LUCHTHAVEN_KOPPEL_M, LUCHTHAVEN_SIGNAAL_M,
@@ -522,13 +522,11 @@ class _ProcesLogBuilder:
             self.regel(f"{nr}GPS (WGS84) lat={p_lat:.6f}, lon={p_lon:.6f}  →  "
                        f"RD (EPSG:28992) {rd_r}")
         if len(self.punten) > 1:
+            self.regel(puntafstand_melding(self.ruimtelijk.get("max_onderlinge_afstand_m", 0)))
             self.regel(
-                "Meerdere puntlocaties: toetsings-, marge- en aandachtsgebied zijn de vereniging "
-                "van de cirkels rond alle puntlocaties; afstanden gelden tot de "
-                "dichtstbijzijnde locatie."
+                "Toetsings-, marge- en aandachtsgebied omvatten de cirkels rond alle "
+                "puntlocaties samen; afstanden gelden tot de dichtstbijzijnde puntlocatie."
             )
-            afstand = self.ruimtelijk.get("max_onderlinge_afstand_m", 0)
-            self.regel(puntafstand_melding(afstand), rood=afstand > MAX_PUNT_AFSTAND_M)
         self.regel(
             f"Toetsingsafstand:  {self.straal:.0f} m  "
             f"(Lden-afstand {self.straal - self.toeslag:.0f} m + "
@@ -1150,7 +1148,6 @@ def genereer_html(state, log):
         "ONVOLLEDIG":           [kort(u) for u in onvolledige_toetsing(state)],
         "PUNTAFSTAND_M":        puntafstand,
         "PUNTAFSTAND":          puntafstand_melding(puntafstand),
-        "PUNTAFSTAND_TE_GROOT": puntafstand > MAX_PUNT_AFSTAND_M,
     }
     data_js = "".join(f"var {naam}={json_voor_script(waarde)};\n"
                       for naam, waarde in waarden.items())

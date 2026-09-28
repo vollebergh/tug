@@ -30,7 +30,7 @@
   #onvolledig,#puntafstand{color:#fff;padding:8px 12px;border-radius:4px;font-size:13px;
               font-weight:bold;box-shadow:0 1px 5px rgba(0,0,0,.35);margin-bottom:6px;}
   #onvolledig{background:#b00020;}
-  #puntafstand{background:#b35900;}
+  #puntafstand{background:#33506e;}
   [hidden]{display:none!important;}
 </style>
 </head>
@@ -48,10 +48,10 @@ if (ONVOLLEDIG.length) {
     + '. Wat hier ontbreekt of niet is vastgesteld, is niet getoetst; zie het PDF-rapport.';
   banner.hidden = false;
 }
-// Puntlocaties verder uit elkaar dan de richtlijn (B14): melding, geen afbreken.
-if (PUNTAFSTAND_TE_GROOT) {
+// Meerdere puntlocaties (B14): altijd de melding met de grootste onderlinge afstand.
+if (PUNTEN.length > 1) {
   var puntBanner = document.getElementById('puntafstand');
-  puntBanner.textContent = '⚠ ' + PUNTAFSTAND;
+  puntBanner.textContent = PUNTAFSTAND;
   puntBanner.hidden = false;
 }
 

@@ -328,7 +328,7 @@ def meet_normtabel():
 
 def meet_config():
     """Afgeleide constanten en labelopmaak."""
-    from tug_config import (toetsing_label, MAX_PUNT_AFSTAND_M, MARGE_M,
+    from tug_config import (toetsing_label, MARGE_M,
                             N2000_SIGNAAL_MARGE, NNN_SIGNAAL_MARGE,
                             TOETSING_TOESLAG_M)
     return {
@@ -336,7 +336,6 @@ def meet_config():
         "toetsing_label_510": toetsing_label(510),
         "toetsing_toeslag_m": TOETSING_TOESLAG_M,
         "marge_m":            MARGE_M,
-        "max_punt_afstand_m": MAX_PUNT_AFSTAND_M,
         "n2000_marge_m":      N2000_SIGNAAL_MARGE,
         "nnn_marge_m":        NNN_SIGNAAL_MARGE,
     }

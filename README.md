@@ -264,7 +264,7 @@ De pipeline breekt op een onvolledige aanvraag niet af, maar wel in twee gevalle
 betrouwbaars is om op door te rekenen: de aanvraag is structureel onverwerkbaar (geen object, een
 onbekend veld, een waarde van het verkeerde type of buiten het bereik, of een puntlocatie buiten
 Nederland, zie [§12](#12-aanvraag-json)); of een bron waar de toetsing niet zonder kan is
-onbereikbaar. Puntlocaties die meer dan 100 m uit elkaar liggen geven een waarschuwing, geen stop. Is voor géén van de luchtvaartuigen een
+onbereikbaar. De onderlinge afstand tussen puntlocaties is nooit een stop. Is voor géén van de luchtvaartuigen een
 afstandsnorm herleidbaar, dan rekent zij door als inventarisatie zonder conclusie (exitcode 2, zie
 [§14](#14-classificatie-van-luchtvaartuigen)).
 
@@ -536,8 +536,8 @@ of aanklikken, ook als het venster niet actief is.
 **Bewaakte invoer.** De knop blijft grijs zolang omschrijving, luchtvaartuig of puntlocatie
 ontbreekt. De omschrijving komt in de bestandsnamen terecht; het veld vraagt daarom om een zaaknummer
 of plaats en datum, niet om een persoonsnaam. De schil waarschuwt bij minder dan 28 dagen tussen ondertekening en vlucht. Bij meerdere
-puntlocaties toont zij de grootste onderlinge afstand, boven 100 m als waarschuwing; genereren
-blijft mogelijk.
+puntlocaties toont zij altijd de melding met de grootste onderlinge afstand en dat de toetsing als
+geheel wordt uitgevoerd op alle puntlocaties; genereren blijft mogelijk.
 
 **Handmatige geluidsafstand.** Elke regel in het overzicht van luchtvaartuigen heeft een veld dat
 op "uit register" staat. Vul daar een afstand in voor een luchtvaartuig dat het ILT-register niet
@@ -628,11 +628,12 @@ validatie als waarschuwing ([§13](#13-validatieregels)).
 | `coord_lat` / `coord_lon` als lijst | Niet leeg, maximaal 20 puntlocaties, alleen getallen |
 | `datum_vlucht` als lijst | Maximaal 366 data, elk als tekst |
 
-**Meerdere puntlocaties.** Bij meerdere locaties vermelden schil, proceslogboek (§3) en HTML-kaart
-(legenda) de grootste onderlinge afstand. Boven 100 m volgt een waarschuwing — in de schil, rood in
-het rapport en als oranje balk op de HTML-kaart — maar de toetsing gaat door; de vergunningverlener
-beoordeelt of het één samenhangend terrein is. Het toetsingsgebied is de vereniging van de cirkels rond alle
-locaties, en er blijft één adressenlijst per aanvraag. Het rapport vermeldt bij een natuurtreffer
+**Meerdere puntlocaties.** Bij twee of meer locaties geven schil, validatielog, proceslogboek (§3) en
+HTML-kaart (balk bovenaan en legenda) altijd dezelfde melding, ongeacht de afstand: *"Grootste
+onderlinge afstand tussen de puntlocaties: … m. De toetsing wordt als geheel uitgevoerd op alle
+puntlocaties."* Er is geen afstandsgrens en de toetsing gaat altijd door. Het toetsingsgebied omvat
+de cirkels rond alle locaties samen, afstanden gelden tot de dichtstbijzijnde locatie, en er blijft
+één adressenlijst per aanvraag. Het rapport vermeldt bij een natuurtreffer
 welke puntlocatie het gebied raakt.
 
 **Batch-invoer** is dezelfde structuur als array:
@@ -662,7 +663,7 @@ zelf afdwingt, verdwijnen deze waarschuwingen in de praktijk vanzelf.
 | Elk luchtvaartuig heeft een `registratie` | Waarschuwing per element; zonder kenmerk krijgt het luchtvaartuig geen norm en blijft het buiten de toetsing |
 | `registratie` heeft de vorm van een kenmerk (bijv. `PH-ECE`) | Waarschuwing; het register bepaalt daarna of het kenmerk bestaat |
 | Puntlocaties: even lange lijsten, binnen Nederland | **Fataal** |
-| Puntlocaties onderling meer dan 100 m uit elkaar | Waarschuwing met de grootste onderlinge afstand; rekent door |
+| Meerdere puntlocaties | Melding met de grootste onderlinge afstand, zonder grens; rekent door |
 
 Alle waarschuwingen komen rood in het proceslogboek van het rapport te staan, en het rapport wordt
 ook bij een onvolledige aanvraag geproduceerd.
@@ -1114,7 +1115,7 @@ vereist bevroren voorbeeldresponsen.
 puntlocatieregels, de indientermijn, de toetsingsafstand en het zoomniveau, de bestandsnaam-slug, de
 featuresleutel, en de classificatie van verblijfsobjecten in wettelijk relevant, margeband en
 overig — inclusief de begraafplaatsuitsluiting en de aanname dat een Natura 2000-treffer ook een
-NNN-treffer is. Verder: de onderlinge afstand tussen puntlocaties (melding boven 100 m), de
+NNN-treffer is. Verder: de melding over de onderlinge afstand tussen puntlocaties (gelijk voor elke afstand), de
 handmatige geluidsafstand en haar schemagrenzen, de instelbare marge rond de puntlocatie, het
 doorrekenen zonder herleidbare norm, en de luchthaventerreinen (samenvoegen van overlappende
 vlakken, afstand tot de rand, koppeling met de provinciale regeling, naamgeving) op een

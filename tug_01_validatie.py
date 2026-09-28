@@ -22,7 +22,7 @@ from pathlib import Path
 
 from tug_aanvraag import controleer_structuur
 from tug_config import (
-    MAX_PUNT_AFSTAND_M, MIN_INDIENTERMIJN_DAGEN, REGISTRATIE_PATROON, VERSION,
+    MIN_INDIENTERMIJN_DAGEN, REGISTRATIE_PATROON, VERSION,
 )
 from tug_geo import max_onderlinge_afstand, puntafstand_melding, puntlocaties
 from tug_logging import LogAccumulator, setup_logging
@@ -259,12 +259,7 @@ def run(state_pad: str | Path) -> None:
             for i, (la, lo) in enumerate(punten, 1):
                 log(f"  ✓ puntlocatie {i}: lat={la:.6f}, lon={lo:.6f}")
             if len(punten) > 1:
-                afstand = max_onderlinge_afstand(punten)
-                if afstand > MAX_PUNT_AFSTAND_M:
-                    waarschuw.append(puntafstand_melding(afstand))
-                    log(f"  ✗ {puntafstand_melding(afstand)}")
-                else:
-                    log(f"  ✓ {puntafstand_melding(afstand)}")
+                log(f"  ✓ {puntafstand_melding(max_onderlinge_afstand(punten))}")
         except ValueError as e:
             fouten.append(str(e))
             log(f"  ✗ {e}")

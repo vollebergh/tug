@@ -28,7 +28,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 import tug_gui as gui  # noqa: E402
 from tug_http import BronFout  # noqa: E402
 from tug_aanvraag import controleer_structuur  # noqa: E402
-from tug_config import MAX_PUNT_AFSTAND_M, MIN_INDIENTERMIJN_DAGEN, TOETSING_TOESLAG_M  # noqa: E402
+from tug_config import MIN_INDIENTERMIJN_DAGEN, TOETSING_TOESLAG_M  # noqa: E402
 from tug_geo import puntlocaties  # noqa: E402
 
 LAT, LON = 52.46126, 6.496964
@@ -118,12 +118,12 @@ class TestPuntlocaties:
         assert abs(punt["lat"] - LAT) < 1e-5
         assert abs(punt["lon"] - LON) < 1e-5
 
-    def test_te_ver_uit_elkaar_wordt_gemeld(self, venster):
+    def test_ver_uit_elkaar_geeft_dezelfde_melding(self, venster):
         venster.locaties.toevoegen(LAT, LON)
         venster.locaties.toevoegen(LAT + 0.01, LON)   # ruim een kilometer verderop
-        assert venster.locaties.max_onderlinge_afstand() > MAX_PUNT_AFSTAND_M
-        assert f"meer dan {MAX_PUNT_AFSTAND_M} m" in venster.locaties.melding_afstand.text()
-        assert venster.locaties.melding_afstand.objectName() == "waarschuwing"
+        tekst = venster.locaties.melding_afstand.text()
+        assert "als geheel uitgevoerd op alle puntlocaties" in tekst
+        assert venster.locaties.melding_afstand.objectName() == "hulp"
 
     def test_te_ver_uit_elkaar_blokkeert_niet(self, venster):
         """B14: een melding, geen blokkade — de knop blijft beschikbaar."""
@@ -135,7 +135,8 @@ class TestPuntlocaties:
         venster.locaties.toevoegen(LAT, LON)
         venster.locaties.toevoegen(LAT + 0.0001, LON)   # ruim 10 m
         tekst = venster.locaties.melding_afstand.text()
-        assert "Grootste onderlinge afstand" in tekst and "meer dan" not in tekst
+        assert "Grootste onderlinge afstand" in tekst
+        assert "als geheel uitgevoerd op alle puntlocaties" in tekst
         assert venster.locaties.melding_afstand.objectName() == "hulp"
 
     def test_verwijderen_herstelt_de_melding(self, venster):

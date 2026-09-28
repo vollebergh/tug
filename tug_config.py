@@ -51,8 +51,6 @@ GUI_DIR    = _ROOT / "gui"   # kaartsjablonen en stijlblad
 
 # Vaste toeslag op de Lden-afstand: toetsingsafstand = Lden-afstand + toeslag.
 TOETSING_TOESLAG_M       = 10
-# Maximale onderlinge afstand tussen de puntlocaties van één aanvraag (B03).
-MAX_PUNT_AFSTAND_M       = 100
 MARGE_M                  = 150   # margeband rond toetsingsafstand (gelijk aan KDV_BBOX_EXTRA)
 MANEGE_SIGNAAL_MARGE     = 375   # aandachtsgebied maneges (boven toetsingsafstand)
 BEGRAAFPLAATS_ZOEK_MARGE = 1500  # extra zoekruimte voor begraafplaats-bbox

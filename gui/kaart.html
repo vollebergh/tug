@@ -265,7 +265,6 @@ kaart.on('mousemove', function(e){
 
 // ── Pins ──────────────────────────────────────────────────
 var pinLaag  = L.layerGroup().addTo(kaart);
-var maxLaag  = L.layerGroup().addTo(kaart);
 
 function pinIcoon(nummer){
   return L.divIcon({
@@ -280,7 +279,6 @@ function pinIcoon(nummer){
 
 function tekenPins(punten){
   pinLaag.clearLayers();
-  maxLaag.clearLayers();
   punten.forEach(function(p, i){
     var m = L.marker([p.lat, p.lon], {icon:pinIcoon(i+1), riseOnHover:true}).addTo(pinLaag);
     m.bindTooltip(
@@ -291,13 +289,6 @@ function tekenPins(punten){
     );
     m.on('click', function(e){ L.DomEvent.stop(e); if (window.brug) window.brug.verwijderPunt(p.id); });
   });
-  // Maximale onderlinge afstand tussen puntlocaties (tug_config.MAX_PUNT_AFSTAND_M)
-  if (punten.length >= 1){
-    L.circle([punten[0].lat, punten[0].lon], {
-      radius: CONFIG.max_afstand_m, color:'#4b93ff', weight:1.2,
-      dashArray:'5 6', fill:false, interactive:false
-    }).addTo(maxLaag);
-  }
 }
 
 kaart.on('click', function(e){

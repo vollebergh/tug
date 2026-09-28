@@ -30,7 +30,7 @@ from tug_03_ruimtelijk import (  # noqa: E402
     _bouw_classificatie_context,
     _nnn_via_n2000,
 )
-from tug_config import MAX_PUNT_AFSTAND_M, TOETSING_TOESLAG_M, toetsing_label  # noqa: E402
+from tug_config import TOETSING_TOESLAG_M, toetsing_label  # noqa: E402
 from tug_geo import (  # noqa: E402
     feature_sleutel, max_onderlinge_afstand, naam_slug, puntafstand_melding, puntlocaties,
     wgs84_to_rd,
@@ -137,18 +137,14 @@ class TestPuntlocaties:
         })
         afstand = max_onderlinge_afstand(punten)
         assert 1000 < afstand < 1200
-        assert f"meer dan {MAX_PUNT_AFSTAND_M} m" in puntafstand_melding(afstand)
+        assert f"{afstand:.0f} m" in puntafstand_melding(afstand)
 
-    def test_grens_ligt_op_max_punt_afstand(self):
-        """Net binnen de grens geen waarschuwing; dit bewaakt dat de grens niet verschuift."""
-        graden_per_meter = 1 / 111_320
-        net_binnen = (MAX_PUNT_AFSTAND_M - 5) * graden_per_meter
-        punten = puntlocaties({
-            "coord_lat": [BASIS_LAT, BASIS_LAT + net_binnen],
-            "coord_lon": [BASIS_LON, BASIS_LON],
-        })
-        assert len(punten) == 2
-        assert "meer dan" not in puntafstand_melding(max_onderlinge_afstand(punten))
+    @pytest.mark.parametrize("afstand", [3, 95, 1100])
+    def test_melding_is_gelijk_voor_elke_afstand(self, afstand):
+        """Geen grens meer: de melding zegt altijd dat alle puntlocaties samen getoetst worden."""
+        melding = puntafstand_melding(afstand)
+        assert melding == (f"Grootste onderlinge afstand tussen de puntlocaties: {afstand} m. "
+                           f"De toetsing wordt als geheel uitgevoerd op alle puntlocaties.")
 
     def test_een_punt_heeft_afstand_nul(self):
         assert max_onderlinge_afstand([(BASIS_LAT, BASIS_LON)]) == 0.0

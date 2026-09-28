@@ -416,7 +416,6 @@
       "toetsing_label_510": "Toetsingsafstand TUG (500 m + 10 m = 510 m)",
       "toetsing_toeslag_m": 10,
       "marge_m": 150,
-      "max_punt_afstand_m": 100,
       "n2000_marge_m": 500,
       "nnn_marge_m": 500
     },
