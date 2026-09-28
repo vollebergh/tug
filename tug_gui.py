@@ -40,6 +40,7 @@ if __name__ == "__main__":
 import html
 import json
 import os
+import platform
 import re
 import shutil
 import signal
@@ -47,6 +48,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from pyproj import Transformer
 
@@ -63,7 +65,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QCheckBox, QComboBox, QDateEdit, QDoubleSpinBox,
     QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QToolTip,
+    QDialog, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QToolTip,
     QSpinBox, QSplitter, QTimeEdit, QVBoxLayout, QWidget,
 )
 
@@ -90,6 +92,9 @@ LEAFLET_DIR  = GUI_DIR / "vendor" / "leaflet"
 # zodat de pagina geen lokale inhoud is: zij krijgt geen toegang tot bestanden en
 # laat de tegels gewoon laden, zonder de LocalContentCanAccess…-uitzonderingen.
 KAART_BASIS_URL = "https://tug-kaart.invalid/"
+
+# Bugmelding (B22): gaat via de eigen e-mailclient van de gebruiker, nooit automatisch.
+BUG_ADRES = "vollebergh@fdle.eu"
 
 # Hoe lang de schil wacht tot een gestopte pipeline zelf heeft opgeruimd.
 STOP_WACHTTIJD_S = 15
@@ -1393,6 +1398,151 @@ class Exportafhandeling(QObject):
 
 
 # ──────────────────────────────────────────────
+# Bug rapporteren (B22)
+# ──────────────────────────────────────────────
+
+def bug_icoon(kleur: str = "#93a1b3", formaat: int = 18) -> QIcon:
+    """Tekent een insect: lijf, kop, voelsprieten en drie paar pootjes."""
+    pm = QPixmap(64, 64)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor(kleur), 4.5)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    poten = QPainterPath()
+    for y, dy in ((30, -6), (40, 0), (50, 6)):
+        poten.moveTo(20, y)
+        poten.lineTo(8, y + dy)
+        poten.moveTo(44, y)
+        poten.lineTo(56, y + dy)
+    poten.moveTo(27, 14)
+    poten.lineTo(20, 4)
+    poten.moveTo(37, 14)
+    poten.lineTo(44, 4)
+    p.drawPath(poten)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(kleur))
+    p.drawEllipse(22, 10, 20, 16)       # kop
+    p.drawEllipse(18, 22, 28, 38)       # lijf
+    p.setPen(QPen(QColor("#151b24"), 3))
+    p.drawLine(32, 26, 32, 58)          # scheiding van de dekschilden
+    p.end()
+    return QIcon(pm.scaled(formaat * 2, formaat * 2, Qt.AspectRatioMode.KeepAspectRatio,
+                           Qt.TransformationMode.SmoothTransformation))
+
+
+def bug_onderwerp() -> str:
+    return f"bugreport Workflow TUG-ontheffingen Overijssel - {VERSION}"
+
+
+def bug_tekst(moment: datetime) -> str:
+    """Invulinstructies voor een bugmelding, met wat de schil zelf al weet."""
+    return f"""Beschrijf hieronder de bug. Hoe vollediger, hoe sneller hij na te bootsen
+en op te lossen is.
+
+1. Wat deed je? Beschrijf de stappen in volgorde.
+-
+
+2. Wat verwachtte je dat er zou gebeuren?
+-
+
+3. Wat gebeurde er in plaats daarvan?
+-
+
+4. Foutmelding of schermafbeelding
+Plak de foutmelding (bijvoorbeeld uit het voortgangsvenster) hieronder,
+of voeg een schermafbeelding toe als bijlage.
+-
+
+5. Bijlagen, als dat kan
+- de aanvraag-JSON uit de map tmp/ (die staat er alleen tijdens een run;
+  de schil leegt tmp/ daarna)
+- het PDF-rapport en/of de HTML-kaart uit output/ of uit de gekozen exportmap
+
+Let op: een aanvraag of export kan persoonsgegevens bevatten, zoals
+adressen van omwonenden. Weeg af of meesturen nodig is, en laat weg wat
+voor het oplossen van de bug niet nodig is.
+
+--- Door de schil ingevuld ---
+Datum en tijdstip: {moment:%Y-%m-%d %H:%M}
+Besturingssysteem: {platform.system()} {platform.release()} ({platform.machine()})
+Workflowversie: {VERSION}
+"""
+
+
+def mailto_url(aan: str, onderwerp: str, tekst: str) -> QUrl:
+    """mailto-URL met onderwerp en tekst volledig gecodeerd (RFC 6068).
+
+    Regeleinden worden CRLF (%0D%0A); spaties, '#', '&' en '?' worden
+    procentgecodeerd, zodat geen teken de URL voortijdig afbreekt.
+    """
+    tekst = tekst.replace("\r\n", "\n").replace("\n", "\r\n")
+    ruw = (f"mailto:{quote(aan, safe='@')}?subject={quote(onderwerp, safe='')}"
+           f"&body={quote(tekst, safe='')}")
+    return QUrl.fromEncoded(ruw.encode("ascii"), QUrl.ParsingMode.StrictMode)
+
+
+class BugVenster(QDialog):
+    """Terugval zonder e-mailclient: de velden als kopieerbare tekst."""
+
+    def __init__(self, ouder: QWidget | None, aan: str, onderwerp: str, tekst: str):
+        super().__init__(ouder)
+        self.setWindowTitle("Bug rapporteren")
+        self.setWindowIcon(bug_icoon())
+        self.resize(640, 640)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(18, 16, 18, 16)
+        lay.setSpacing(8)
+
+        uitleg = QLabel(
+            "Er is geen e-mailprogramma gevonden om de melding in te openen. Kopieer de velden "
+            "hieronder naar je eigen e-mailprogramma of webmail en verstuur de melding daar."
+        )
+        uitleg.setObjectName("hulp")
+        uitleg.setWordWrap(True)
+        lay.addWidget(uitleg)
+
+        self.velden: dict[str, QLineEdit | QPlainTextEdit] = {}
+        self.knoppen: dict[str, QPushButton] = {}
+        for naam, waarde in (("Aan", aan), ("Onderwerp", onderwerp), ("Tekst", tekst)):
+            kop = QHBoxLayout()
+            label = QLabel(naam)
+            label.setObjectName("label")
+            kop.addWidget(label)
+            kop.addStretch(1)
+            knop = QPushButton("Kopiëren")
+            knop.setObjectName("kopieer")
+            knop.setCursor(Qt.CursorShape.PointingHandCursor)
+            kop.addWidget(knop)
+            lay.addLayout(kop)
+
+            veld: QLineEdit | QPlainTextEdit
+            if naam == "Tekst":
+                veld = QPlainTextEdit(waarde)
+                lay.addWidget(veld, 1)
+            else:
+                veld = QLineEdit(waarde)
+                lay.addWidget(veld)
+            veld.setReadOnly(True)
+            self.velden[naam] = veld
+            self.knoppen[naam] = knop
+            knop.clicked.connect(lambda _=False, w=waarde, k=knop: self._kopieer(w, k))
+
+        sluit = QPushButton("Sluiten")
+        sluit.clicked.connect(self.accept)
+        onder = QHBoxLayout()
+        onder.addStretch(1)
+        onder.addWidget(sluit)
+        lay.addLayout(onder)
+
+    @staticmethod
+    def _kopieer(waarde: str, knop: QPushButton) -> None:
+        QApplication.clipboard().setText(waarde)
+        knop.setText("Gekopieerd ✓")
+
+
+# ──────────────────────────────────────────────
 # Hoofdvenster
 # ──────────────────────────────────────────────
 
@@ -1465,6 +1615,16 @@ class Hoofdvenster(QMainWindow):
         lay.addWidget(versie)
 
         lay.addStretch(1)
+
+        self.knop_bug = QPushButton(" Bug rapporteren")
+        self.knop_bug.setObjectName("bugknop")
+        self.knop_bug.setIcon(bug_icoon())
+        self.knop_bug.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.knop_bug.setToolTip(uitlegtekst(
+            "Opent een ingevulde e-mail in je e-mailprogramma, met de workflowversie in het "
+            "onderwerp en invulinstructies in de tekst. Er wordt niets automatisch verstuurd."))
+        self.knop_bug.clicked.connect(self.meld_bug)
+        lay.addWidget(self.knop_bug)
         return kop
 
     def _bouw_linkerkolom(self) -> QWidget:
@@ -1591,6 +1751,16 @@ class Hoofdvenster(QMainWindow):
         self.status.setText("Pipeline draait …")
         self.sluier.start(aanvraag["naam"])
         self.export.start(json_pad)
+
+    # ── Bug rapporteren (B22) ─────────────────
+
+    def meld_bug(self) -> None:
+        """Open een concept in de e-mailclient; lukt dat niet, dan het kopieervenster."""
+        onderwerp, tekst = bug_onderwerp(), bug_tekst(datetime.now())
+        if QDesktopServices.openUrl(mailto_url(BUG_ADRES, onderwerp, tekst)):
+            return
+        self.bug_venster = BugVenster(self, BUG_ADRES, onderwerp, tekst)
+        self.bug_venster.open()
 
     # ── Vensterafhandeling ────────────────────
 

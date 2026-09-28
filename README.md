@@ -225,7 +225,8 @@ Wat die bronnen te zien krijgen is per bevraging een **bounding box of coördina
 aanvraaglocatie**, en bij begraafplaatsen en maneges een zoekterm. Gegevens over de aanvrager of de
 aanvraag zelf verlaten de machine niet. De adreszoeker op de kaart van de grafische schil stuurt de
 ingetypte zoektekst naar de PDOK Locatieserver (`api.pdok.nl`); wat daar wordt ingetypt, verlaat de
-machine dus wél. De tekst wordt nergens bewaard.
+machine dus wél. De tekst wordt nergens bewaard. De knop *Bug rapporteren* verstuurt zelf niets: hij opent een
+concept in het eigen e-mailprogramma, en wat daarin wordt meegestuurd bepaalt de gebruiker.
 
 ### 5.4 Opslag en verwijdering
 
@@ -508,6 +509,7 @@ start daarmee `tug_run.py`, dat de enige uitvoerder blijft.
 | Puntlocaties | Klikken op de kaart plaatst een pin, klikken op een pin verwijdert hem. Handmatige invoer in WGS84 of RD. Elke pin verschijnt in het overzicht met beide coördinaatstelsels |
 | Kaart | Dezelfde Leaflet-opzet en dezelfde PDOK-tegels als de export, zodat er geen tweede kaartimplementatie uit de pas kan lopen. Schakelbaar tussen topografisch en luchtfoto; startbeeld midden-Overijssel op zoomniveau 11 |
 | Zoeken op adres | Zoekveld linksboven op de kaart: adres, postcode, straat of plaats. Na een korte typpauze verschijnen tot acht treffers (PDOK Locatieserver, `suggest`); pijltjes en Enter of een klik kiezen er één. De kaart vliegt ernaartoe en zet een oranje markering, maar plaatst **geen** puntlocatie — dat blijft een klik op de kaart. Escape wist het veld en de markering |
+| Bug rapporteren | Knop met insect-icoon rechtsboven in de kop. Opent in het eigen e-mailprogramma een concept aan de beheerder met de workflowversie in het onderwerp (`bugreport Workflow TUG-ontheffingen Overijssel - <versie>`) en invulinstructies in de tekst: stappen, verwachting, wat er gebeurde, foutmelding of schermafbeelding, bijlagen (aanvraag-JSON, PDF/HTML) met een afweging over persoonsgegevens; datum, besturingssysteem en versie zijn al ingevuld. Er wordt niets automatisch verstuurd. Is er geen e-mailprogramma, dan toont een venster dezelfde velden (Aan, Onderwerp, Tekst) met elk een kopieerknop, om in webmail te plakken |
 
 **De kaart is afgeschermd.** Leaflet komt uit `gui/vendor/leaflet` (dezelfde versie en inhoud als de
 vastgepinde versie in de HTML-export; een test bewaakt dat) en wordt in de pagina ingevoegd; de

@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import time
+from urllib.parse import parse_qs
 from pathlib import Path
 
 import pytest
@@ -28,7 +29,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 import tug_gui as gui  # noqa: E402
 from tug_http import BronFout  # noqa: E402
 from tug_aanvraag import controleer_structuur  # noqa: E402
-from tug_config import MIN_INDIENTERMIJN_DAGEN, TOETSING_TOESLAG_M  # noqa: E402
+from tug_config import MIN_INDIENTERMIJN_DAGEN, TOETSING_TOESLAG_M, VERSION  # noqa: E402
 from tug_geo import puntlocaties  # noqa: E402
 
 LAT, LON = 52.46126, 6.496964
@@ -271,6 +272,55 @@ class TestAdreszoeker:
             assert verboden not in pagina
         # Namen uit de bron gaan als tekst de pagina in, niet als HTML.
         assert "createTextNode(t.naam)" in pagina
+
+
+class TestBugRapporteren:
+    """B22: knop met insect-icoon; mailto met e-mailclient, kopieervenster zonder."""
+
+    def _klik(self, venster, monkeypatch, gelukt):
+        geopend = []
+        monkeypatch.setattr(gui.QDesktopServices, "openUrl",
+                            lambda url: geopend.append(url) or gelukt)
+        venster.knop_bug.click()
+        return geopend
+
+    def test_knop_met_icoon_in_de_kop(self, venster):
+        assert "Bug rapporteren" in venster.knop_bug.text()
+        assert not venster.knop_bug.icon().isNull()
+
+    def test_met_emailclient_opent_een_ingevuld_concept(self, venster, monkeypatch):
+        geopend = self._klik(venster, monkeypatch, gelukt=True)
+        assert len(geopend) == 1
+        url = geopend[0]
+        assert url.scheme() == "mailto" and url.path() == "vollebergh@fdle.eu"
+        velden = parse_qs(url.query(QUrl.ComponentFormattingOption.FullyEncoded))
+        assert velden["subject"] == [
+            f"bugreport Workflow TUG-ontheffingen Overijssel - {VERSION}"]
+        assert "Wat deed je?" in velden["body"][0]
+        assert f"Workflowversie: {VERSION}" in velden["body"][0]
+        assert not hasattr(venster, "bug_venster")
+
+    def test_zonder_emailclient_verschijnt_het_kopieervenster(self, app, venster, monkeypatch):
+        self._klik(venster, monkeypatch, gelukt=False)
+        dlg = venster.bug_venster
+        assert dlg.isVisible()
+        assert dlg.velden["Aan"].text() == "vollebergh@fdle.eu"
+        assert VERSION in dlg.velden["Onderwerp"].text()
+        assert "persoonsgegevens" in dlg.velden["Tekst"].toPlainText()
+        dlg.knoppen["Onderwerp"].click()
+        assert app.clipboard().text() == dlg.velden["Onderwerp"].text()
+        dlg.close()
+
+    def test_mailto_codeert_spaties_regeleinden_en_speciale_tekens(self):
+        tekst = "regel 1\nregel 2 #3 & 50% ?klaar é"
+        url = gui.mailto_url("a@b.nl", "onderwerp met #hash & spatie", tekst)
+        ruw = url.toString(QUrl.ComponentFormattingOption.FullyEncoded)
+        query = ruw.split("?", 1)[1]
+        assert " " not in ruw and "#" not in ruw and "\n" not in ruw
+        assert "%0D%0A" in query and "%23" in query
+        velden = parse_qs(query)
+        assert velden["subject"] == ["onderwerp met #hash & spatie"]
+        assert velden["body"] == [tekst.replace("\n", "\r\n")]
 
 
 class TestOpruimen:
