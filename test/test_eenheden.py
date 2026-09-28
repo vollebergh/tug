@@ -35,6 +35,7 @@ from tug_geo import (  # noqa: E402
     feature_sleutel, max_onderlinge_afstand, naam_slug, puntafstand_melding, puntlocaties,
     wgs84_to_rd,
 )
+from tug_http import BronFout  # noqa: E402
 from tug_types import Bevindingen  # noqa: E402
 
 
@@ -671,3 +672,91 @@ class TestZoekLocatie:
                             lambda _u, *, params, **_k: gevraagd.update(params) or {})
         geo.zoek_locatie("a" * 500)
         assert len(gevraagd["q"]) == geo.ZOEK_MAX_TEKENS
+
+
+class TestIltRegisterVersie:
+    """Elke run de actuele weekversie: publicatiedatum uit de bestandsnaam i.p.v. een TTL."""
+
+    URL = ("https://www.ilent.nl/site/binaries/site-content/collections/documents/lijsten/"
+           "luchtvaart/databestanden/luchtvaartregister-data/"
+           "luchtvaartuigregister-ilt-datas2-{}.ods")
+
+    @pytest.fixture
+    def klas(self, tmp_path, monkeypatch):
+        import tug_02_classificatie as klas
+        monkeypatch.setattr(klas, "GEO_DIR", tmp_path)
+        monkeypatch.setattr(klas, "REGISTER_ODS_PAD", tmp_path / "register.ods")
+        monkeypatch.setattr(klas, "REGISTER_META_PAD", tmp_path / "register.meta.json")
+        return klas
+
+    @staticmethod
+    def _ods(tmp_path, kenmerk):
+        import pandas as pd
+        pad = tmp_path / f"bron_{kenmerk}.ods"
+        pd.DataFrame({"Registration": [kenmerk], "ICAO-code": ["EC35"]}).to_excel(
+            pad, engine="odf", index=False)
+        return pad.read_bytes()
+
+    def _draai(self, klas, monkeypatch, datum, bytes_of_fout):
+        from tug_bronstatus import Bronregister
+        downloads = []
+
+        def nep_haal(url, **_kw):
+            downloads.append(url)
+            if isinstance(bytes_of_fout, Exception):
+                raise bytes_of_fout
+            return bytes_of_fout
+        monkeypatch.setattr(klas, "_zoek_register_url", lambda _log: self.URL.format(datum))
+        monkeypatch.setattr(klas, "haal", nep_haal)
+        r = Bronregister()
+        df, meta = klas._download_register(lambda _: None, bronnen=r)
+        return df, meta, downloads, r.status("ilt_register").status
+
+    def test_publicatiedatum_uit_de_bestandsnaam(self, klas):
+        assert klas._publicatiedatum(self.URL.format("2026-09-28")) == "2026-09-28"
+        assert klas._publicatiedatum(self.URL.format("2026-02-30")) is None
+        assert klas._publicatiedatum("https://www.ilent.nl/iets-anders.ods") is None
+
+    def test_nieuwe_versie_wordt_gedownload_en_daarna_hergebruikt(self, klas, monkeypatch,
+                                                                  tmp_path):
+        df, meta, downloads, status = self._draai(
+            klas, monkeypatch, "2026-09-21", self._ods(tmp_path, "PH-OUD"))
+        assert len(downloads) == 1 and meta["publicatie_datum"] == "2026-09-21"
+        assert status == "geraadpleegd"
+
+        # Zelfde week: niets downloaden, lokale kopie is actueel.
+        df, meta, downloads, status = self._draai(
+            klas, monkeypatch, "2026-09-21", BronFout("mag niet worden aangeroepen"))
+        assert downloads == [] and status == "geraadpleegd"
+        assert list(df["Registration"]) == ["PH-OUD"]
+
+        # Nieuwe week: downloaden, ongeacht hoe kort geleden de vorige download was.
+        df, meta, downloads, _ = self._draai(
+            klas, monkeypatch, "2026-09-28", self._ods(tmp_path, "PH-NIEUW"))
+        assert len(downloads) == 1 and meta["publicatie_datum"] == "2026-09-28"
+        assert list(df["Registration"]) == ["PH-NIEUW"]
+
+    def test_oude_meta_zonder_publicatiedatum_leest_die_uit_de_bron_url(self, klas, monkeypatch,
+                                                                        tmp_path):
+        klas.REGISTER_ODS_PAD.write_bytes(self._ods(tmp_path, "PH-OUD"))
+        klas.REGISTER_META_PAD.write_text(json.dumps({
+            "download_datum": "2026-09-12T16:27:08", "bron_url": self.URL.format("2026-09-07")}))
+        _, meta, downloads, _ = self._draai(
+            klas, monkeypatch, "2026-09-28", self._ods(tmp_path, "PH-NIEUW"))
+        assert len(downloads) == 1 and meta["publicatie_datum"] == "2026-09-28"
+
+    def test_download_mislukt_valt_terug_op_lokale_kopie(self, klas, monkeypatch, tmp_path):
+        from datetime import date, timedelta
+        vorige_week = (date.today() - timedelta(days=7)).isoformat()
+        klas.REGISTER_ODS_PAD.write_bytes(self._ods(tmp_path, "PH-OUD"))
+        klas.REGISTER_META_PAD.write_text(json.dumps({"publicatie_datum": vorige_week}))
+        df, _, _, status = self._draai(klas, monkeypatch, date.today().isoformat(),
+                                       BronFout("time-out"))
+        assert status == "verouderde_cache" and list(df["Registration"]) == ["PH-OUD"]
+
+    def test_te_oude_lokale_kopie_breekt_af(self, klas, monkeypatch, tmp_path):
+        from tug_bronstatus import ToetsingAfgebroken
+        klas.REGISTER_ODS_PAD.write_bytes(self._ods(tmp_path, "PH-OUD"))
+        klas.REGISTER_META_PAD.write_text(json.dumps({"publicatie_datum": "2026-01-01"}))
+        with pytest.raises(ToetsingAfgebroken):
+            self._draai(klas, monkeypatch, "2026-09-28", BronFout("time-out"))

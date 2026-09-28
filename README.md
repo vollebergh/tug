@@ -190,7 +190,7 @@ blijven staan.
 | Pandgeometrie (gevelcontour) | BAG WFS | Kaarten in PDF en HTML | Idem |
 | Kinderopvanglocaties (BAG-koppeling, type opvang) | LRK (open data) | Adressenlijst; volledige landelijke bronbestand in `geo/` | Cache 7 dagen |
 | Schoolvestigingen (naam, adres, verblijfsobject-id) | DUO Open Onderwijsdata | Adressenlijst; voorbewerkt bestand voor Overijssel in `geo/` | Cache 90 dagen |
-| Luchtvaartuigregister (registratie, type, ICAO-code) | ILT | `geo/luchtvaartuigregister_ilt.ods` | Cache 30 dagen |
+| Luchtvaartuigregister (registratie, type, ICAO-code) | ILT | `geo/luchtvaartuigregister_ilt.ods` | Tot de ILT een nieuwe weekversie publiceert |
 | Begraafplaatsen, maneges, luchthavens (naam, geometrie, dichtstbijzijnd adres) | PDOK Location API / BRT Top10NL / GeoPortaal Overijssel | Adressenlijst, kaarten | Niet gecached |
 | Natura 2000-gebieden (naam, geometrie) | PDOK WFS | Proceslogboek, kaarten | Niet gecached |
 | NNN-gebieden (alleen geometrie) | PDOK ATOM-feed | Proceslogboek, kaarten | Cache 180 dagen |
@@ -288,7 +288,7 @@ maneges, en zoekvensters die veel ruimer zijn dan de toetsingsafstand.
 | Begraafplaats onterecht gesignaleerd | Er wordt geen onderscheid gemaakt tussen actieve en gesloten begraafplaatsen | Vals positief | Bewuste keuze; het alternatief (handmatige lijsten van gesloten begraafplaatsen) is niet betrouwbaar bij te houden |
 | NNN-gebied net buiten Overijssel niet gesignaleerd | De NNN-cache bevat alleen de provinciale begrenzing | Vals negatief bij grenslocaties | Alle Natura 2000-gebieden zijn ook NNN: bij een N2000-treffer wordt de NNN-treffer aangenomen |
 | Externe bron valt uit of wijzigt | Registers en API's zijn van hun bronhouders en veranderen zonder aankondiging | Stille onderbreking van een detectielaag | Reëel gebleken risico: het kinderopvangregister weigerde op enig moment de standaard opvraging, en een begraafplaats-collectie was na een refactor stil leeg. Daartegenover: elke bron meldt hoe haar bevraging is afgelopen, en het rapport leest dáárnaar in plaats van naar het aantal treffers. Een uitgevallen kernbron breekt de toetsing af; bij een andere bron trekt het rapport geen conclusie en meldt het de uitval in rood, met exitcode 2. Een luchthavenlaag zonder één luchthaven en een LRK-bestand zonder kinderopvang gelden als uitgevallen, niet als "niets gevonden". Een verouderde lokale kopie wordt tot een vaste grens gebruikt en met haar ouderdom vermeld — zie [§16](#16-gegevensbronnen-en-caching) |
-| Luchtvaartuig pas net geregistreerd | Het registerbestand is tot 30 dagen oud | Onterechte melding "niet in register" | Bij een registratie die niet in de cache voorkomt wordt het register eerst ververst en de opzoeking herhaald |
+| Luchtvaartuig pas net geregistreerd | De ILT publiceert het register wekelijks; een registratie van na de laatste publicatie staat er nog niet in | Onterechte melding "niet in register" | Elke run gebruikt de actuele weekversie (publicatiedatum in de bestandsnaam), dus de achterstand is hooguit een week; daarbinnen kan de vergunningverlener een handmatige geluidsafstand invullen |
 | Bibliotheekversie verandert de uitkomst | Een minor release van de geometrie- of projectiebibliotheken kan een randgeval anders afhandelen; bij een grens van 500 m is het verschil tussen 499 en 501 m het verschil tussen wel en niet melden | Stille verandering in een juridisch document | Exact vastgepinde versies en een regressietest die 67 waarden vergelijkt met een vastgelegde nulmeting — zie [hoofdstuk 19](#19-kwaliteitsborging) |
 | Brondata is onjuist | Registers bevatten fouten | Onjuiste uitkomst | Buiten de invloedssfeer van de pipeline: de bronhouder is verantwoordelijk voor de integriteit van zijn data en die data geldt hier als gegeven. Het proceslogboek benoemt per stap welke bron is geraadpleegd, zodat een fout herleidbaar is tot de bron |
 
@@ -432,7 +432,7 @@ De pipeline maakt `geo/` en `output/` zelf aan en haalt de bronbestanden op zodr
 
 | Bestand | Bron | Grootte | Bewaartermijn |
 |---|---|---|---|
-| `luchtvaartuigregister_ilt.ods` | ILT (link wordt van de bronpagina gelezen) | ± 1,3 MB | 30 dagen |
+| `luchtvaartuigregister_ilt.ods` | ILT (link wordt van de bronpagina gelezen) | ± 1,3 MB | Tot een nieuwe weekversie |
 | `lrk_kinderopvang.csv` | Landelijk Register Kinderopvang | ± 12 MB | 7 dagen |
 | `nnn_gebieden.gpkg` | PDOK ATOM-feed (GML → GeoPackage) | ± 111 MB | 180 dagen |
 | `duo_scholen_po.geojson` | DUO, basisonderwijs, gefilterd op Overijssel | ± 143 KB | 90 dagen |
@@ -675,9 +675,9 @@ ook bij een onvolledige aanvraag geproduceerd.
 Twee opzoekingen achter elkaar, per opgegeven luchtvaartuig:
 
 1. **PH-kenmerk → ICAO-typeaanduiding**, in het ILT Luchtvaartuigregister. Het register wordt
-   automatisch gedownload en 30 dagen gecacheerd. Staat een kenmerk niet in de cache, dan wordt het
-   register eerst ververst en de opzoeking herhaald — een pas geregistreerd toestel levert dus geen
-   onterechte melding op.
+   bij elke run gecontroleerd op een nieuwe weekversie van de ILT en alleen dan opnieuw gedownload;
+   zie [§16.1](#161-ilt-luchtvaartuigregister). Een toestel dat na de laatste publicatie is
+   ingeschreven, staat er dus hooguit een week nog niet in.
 2. **ICAO-typeaanduiding → appendixcategorie → afstandsnorm**, in de NLR-indelingslijst. Die tabel
    staat in de code (`NLR_TABEL` in `tug_02_classificatie.py`) en wordt met de hand bijgewerkt
    wanneer NLR of ILT de lijst wijzigt.
@@ -711,9 +711,8 @@ registraties), dan stopt de pipeline **niet**. Ook dan neemt zij geen norm aan: 
 de omgeving tot de ruimste norm uit de NLR-tabel (500 m + toeslag), zodat niets buiten beeld blijft,
 en trekt geen conclusie. Het rapport meldt in rood bovenaan dat de afstandsnorm niet is vastgesteld,
 de adressenlijst heet dan een inventarisatie en geen toetsing, en de run eindigt met exitcode 2.
-Een kenmerk zonder `PH-` wordt niet in het ILT-register gezocht nadat het daar niet in bleek te
-staan: het register kent alleen Nederlandse registraties, en een mislukte verversing zou de toetsing
-anders onvolledig maken. In alle andere gevallen rekent zij
+Bij een kenmerk zonder `PH-` meldt het logboek dat het niet in het ILT-register te verwachten is:
+het register kent alleen Nederlandse registraties. In alle andere gevallen rekent zij
 door met de luchtvaartuigen die wél een norm hebben, en vermeldt het rapport expliciet welke
 luchtvaartuigen niet zijn meegewogen. De vergunningverlener bepaalt vervolgens — op basis van het
 geluidsrapport van het betreffende toestel — welke norm geldt, of houdt het toestel buiten de
@@ -859,7 +858,7 @@ Daarboven geldt de bron als uitgevallen. Een half ververste kopie wordt nooit we
 
 | Bron | Waarvoor | Bewaartermijn | Noodterugval tot | Cachebestand |
 |---|---|---|---|---|
-| ILT Luchtvaartuigregister | PH-kenmerk → ICAO-code | 30 dagen, plus verversing bij een gemist kenmerk | 90 dagen | `geo/luchtvaartuigregister_ilt.ods` |
+| ILT Luchtvaartuigregister | PH-kenmerk → ICAO-code | Tot de ILT een nieuwe weekversie publiceert (elke run gecontroleerd) | 90 dagen na publicatie | `geo/luchtvaartuigregister_ilt.ods` |
 | DUO Open Onderwijsdata | Scholen PO/SO/VO/MBO/HO | 90 dagen | 365 dagen | `geo/duo_scholen_po.geojson`, `geo/duo_scholen_overig.geojson` |
 | Landelijk Register Kinderopvang | Kinderopvang met bedverblijf | 7 dagen | 30 dagen | `geo/lrk_kinderopvang.csv` |
 | Natuurnetwerk Nederland | NNN-geometrie Overijssel | 180 dagen | 365 dagen | `geo/nnn_gebieden.gpkg` |
@@ -873,15 +872,22 @@ Daarboven geldt de bron als uitgevallen. Een half ververste kopie wordt nooit we
 
 ### 16.1 ILT Luchtvaartuigregister
 
-De ILT plaatst wekelijks een nieuw bestand online onder een wisselende bestandsnaam en zonder
-versie-informatie in de HTTP-headers. De pipeline leest de actuele downloadlink van de
+De ILT plaatst wekelijks een nieuw bestand online, met de publicatiedatum in de bestandsnaam
+(`luchtvaartuigregister-ilt-datas2-JJJJ-MM-DD.ods`). Er is geen API: ook de zoekfunctie op ilent.nl
+leest dit bestand in de browser in. Bij elke run leest de pipeline de actuele downloadlink van de
 [bronpagina](https://www.ilent.nl/documenten/lijsten/luchtvaart/databestanden/luchtvaartregister-data),
 met een terugval die de bestandsnaam op datum reconstrueert. Alleen `https`-adressen op `*.ilent.nl`
 worden geaccepteerd.
 
-Het bestand is een ODS-archief; de tabelnaam wisselt en wordt genegeerd. Omdat het register zelden
-inhoudelijk verandert, wordt een SHA-256-hash van de inhoud gebruikt om onnodige herverwerking te
-voorkomen. Gelezen kolommen: `Registration` en `ICAO-code`.
+Is de publicatiedatum van de lokale kopie (vastgelegd in `geo/luchtvaartregister.meta.json`) gelijk
+aan die van de link, dan wordt de lokale kopie gebruikt; anders wordt de nieuwe versie gedownload.
+Zo werkt elke run met de actuele weekversie en blijft het downloaden beperkt tot eens per week.
+Lukt het opzoeken of downloaden niet, dan volgt de noodterugval (tot 90 dagen na publicatie).
+Het rapport vermeldt publicatie- en downloaddatum.
+
+Het bestand is een ODS-archief; de tabelnaam wisselt en wordt genegeerd. Vóór het opslaan wordt het
+archief gecontroleerd (geldig ODS, uitgepakte omvang begrensd). Gelezen kolommen: `Registration` en
+`ICAO-code`.
 
 ### 16.2 BAG WFS v2.0 (PDOK)
 

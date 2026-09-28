@@ -25,9 +25,9 @@ import logging
 import re
 import sys
 import zipfile
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
 import pandas as pd
 
@@ -44,7 +44,6 @@ from tug_opslag import schrijf_state
 GEO_DIR           = Path(__file__).parent / "geo"
 REGISTER_ODS_PAD  = GEO_DIR / "luchtvaartuigregister_ilt.ods"
 REGISTER_META_PAD = GEO_DIR / "luchtvaartregister.meta.json"
-REGISTER_TTL_DAGEN = 30
 
 ILT_PAGINA_URL = (
     "https://www.ilent.nl/documenten/lijsten/luchtvaart/"
@@ -217,8 +216,30 @@ def _ods_data_hash(ods_bytes):
     return hashlib.sha256(content_xml).hexdigest()
 
 
+_ILT_BESTANDSDATUM = re.compile(r"luchtvaartuigregister-ilt-datas2-(\d{4}-\d{2}-\d{2})\.ods$")
+
+
+def _publicatiedatum(url: str | None) -> str | None:
+    """Publicatiedatum (JJJJ-MM-DD) uit de bestandsnaam die de ILT elke week gebruikt."""
+    m = _ILT_BESTANDSDATUM.search(urlparse(url or "").path)
+    if not m:
+        return None
+    try:
+        return date.fromisoformat(m.group(1)).isoformat()
+    except ValueError:
+        return None
+
+
+def _lokale_publicatiedatum(meta) -> str | None:
+    """Publicatiedatum van de lokale kopie; oudere meta kent alleen de bron-URL."""
+    return meta.get("publicatie_datum") or _publicatiedatum(meta.get("bron_url"))
+
+
 def _ouderdom_register(meta) -> int:
-    """Dagen sinds de laatste geslaagde download (meta), anders sinds de bestandsdatum."""
+    """Dagen sinds de ILT de lokale kopie publiceerde; anders sinds download of bestandsdatum."""
+    publicatie = _lokale_publicatiedatum(meta)
+    if publicatie:
+        return (date.today() - date.fromisoformat(publicatie)).days
     try:
         return (datetime.now() - datetime.fromisoformat(meta["download_datum"])).days
     except (KeyError, TypeError, ValueError):
@@ -264,71 +285,64 @@ def _zoek_register_url(log):
     return None
 
 
-def _noodterugval_register(log, meta, fout, force, bronnen: Bronregister):
-    """Lokaal register gebruiken nu verversen mislukte — of afbreken als dat niet kan."""
+def _noodterugval_register(log, meta, fout, bronnen: Bronregister):
+    """Lokaal register gebruiken nu de actuele versie niet op te halen is — of afbreken."""
     if not REGISTER_ODS_PAD.exists():
         log(f"  FOUT: register niet te downloaden ({fout}) en geen lokaal bestand.")
         bronnen.mislukt("ilt_register", f"niet te downloaden en geen lokaal bestand: {fout}")
     ouderdom = _ouderdom_register(meta)
     if ouderdom > ILT_NOODTERUGVAL_MAX_DAGEN:
-        log(f"  FOUT: register niet te verversen ({fout}); lokaal bestand is {ouderdom} dagen "
-            f"oud (grens {ILT_NOODTERUGVAL_MAX_DAGEN}).")
-        bronnen.mislukt("ilt_register", f"verversen mislukt en lokaal bestand {ouderdom} "
-                                        f"dagen oud: {fout}")
-    reden = ("verversen na een niet-gevonden registratie mislukt" if force
-             else "verversen na verlopen bewaartermijn mislukt")
-    log(f"  FOUT: {reden} ({fout}) — lokaal bestand van {ouderdom} dag(en) gebruikt.")
+        log(f"  FOUT: actuele versie niet op te halen ({fout}); lokaal bestand is {ouderdom} "
+            f"dagen oud (grens {ILT_NOODTERUGVAL_MAX_DAGEN}).")
+        bronnen.mislukt("ilt_register", f"actuele versie niet op te halen en lokaal bestand "
+                                        f"{ouderdom} dagen oud: {fout}")
+    reden = "actuele versie niet op te halen"
+    log(f"  FOUT: {reden} ({fout}) — lokaal bestand van {ouderdom} dag(en) oud gebruikt.")
     bronnen.verouderd("ilt_register", ouderdom, f"{reden}: {fout}")
     df = pd.read_excel(REGISTER_ODS_PAD, engine="odf", header=0, dtype=str)
     return df, meta
 
 
-def _download_register(log, force=False, *, bronnen: Bronregister):
+def _download_register(log, *, bronnen: Bronregister):
     """
-    Laad het luchtvaartregister als pandas DataFrame.
-    Cachelogica:
-      - Binnen TTL en force=False → lokaal bestand hergebruiken.
-      - TTL verlopen of force=True → scrape URL, download, vergelijk hash.
-        - Hash ongewijzigd → update download_datum, hergebruik lokaal bestand.
-        - Hash gewijzigd of geen lokaal bestand → sla nieuw bestand op.
-      - Verversen mislukt → noodterugval op het lokale bestand tot
-        ILT_NOODTERUGVAL_MAX_DAGEN (gemeld als verouderd), daarboven afbreken.
+    Laad het luchtvaartregister als pandas DataFrame, elke run in de actuele weekversie.
+
+      - De ILT-pagina linkt naar het actuele bestand; de publicatiedatum staat in de
+        bestandsnaam (`…-datas2-JJJJ-MM-DD.ods`).
+      - Is de lokale kopie van diezelfde (of een latere) publicatiedatum → lokaal gebruiken.
+      - Anders downloaden, als ODS controleren (zip-bom) en opslaan.
+      - Lukt opzoeken of downloaden niet → noodterugval op het lokale bestand tot
+        ILT_NOODTERUGVAL_MAX_DAGEN na publicatie (gemeld als verouderd), daarboven afbreken.
+
     Retourneert (DataFrame, meta_dict). Gooit ToetsingAfgebroken als er geen
     bruikbaar register is.
     """
     meta = _lees_meta()
 
-    if not force and REGISTER_ODS_PAD.exists():
-        ouderdom = _ouderdom_register(meta)
-        if ouderdom < REGISTER_TTL_DAGEN:
-            log(f"  Register: lokaal bestand gebruikt ({REGISTER_ODS_PAD.name}, "
-                f"{ouderdom} dag(en) oud).")
-            bronnen.cache("ilt_register", ouderdom)
-            df = pd.read_excel(REGISTER_ODS_PAD, engine="odf", header=0, dtype=str)
-            return df, meta
-
     url = _zoek_register_url(log)
     if not url:
-        return _noodterugval_register(log, meta, "geen download-URL gevonden", force, bronnen)
+        return _noodterugval_register(log, meta, "geen download-URL gevonden", bronnen)
 
-    log(f"  Register: downloaden van {url} ...")
-    try:
-        nieuwe_bytes = haal(url, timeout=60, max_bytes=MAX_BYTES_ILT, toegestane_hosts=_ILT_HOSTS)
-        nieuwe_hash  = _ods_data_hash(nieuwe_bytes)
-    except BronFout as fout:
-        return _noodterugval_register(log, meta, fout, force, bronnen)
-
-    if REGISTER_ODS_PAD.exists() and nieuwe_hash == meta.get("data_hash", ""):
-        log("  Register: hash ongewijzigd — lokaal bestand hergebruikt, TTL verlengd.")
+    actueel = _publicatiedatum(url)
+    lokaal  = _lokale_publicatiedatum(meta)
+    if REGISTER_ODS_PAD.exists() and actueel and lokaal and lokaal >= actueel:
+        log(f"  Register: lokale kopie is de actuele versie (gepubliceerd {lokaal}).")
     else:
+        log(f"  Register: nieuwe versie (gepubliceerd {actueel or 'onbekend'}; lokaal "
+            f"{lokaal or 'geen'}) — downloaden van {url} ...")
+        try:
+            nieuwe_bytes = haal(url, timeout=60, max_bytes=MAX_BYTES_ILT,
+                                toegestane_hosts=_ILT_HOSTS)
+            meta["data_hash"] = _ods_data_hash(nieuwe_bytes)   # controleert ook het archief
+        except BronFout as fout:
+            return _noodterugval_register(log, _lees_meta(), fout, bronnen)
         GEO_DIR.mkdir(parents=True, exist_ok=True)
         REGISTER_ODS_PAD.write_bytes(nieuwe_bytes)
         log(f"  Register: nieuw bestand opgeslagen ({REGISTER_ODS_PAD.name}).")
-        meta["data_hash"] = nieuwe_hash
-
-    meta["download_datum"] = datetime.now().isoformat()
-    meta["bron_url"]       = url
-    _schrijf_meta(meta)
+        meta["publicatie_datum"] = actueel or ""
+        meta["download_datum"]   = datetime.now().isoformat()
+        meta["bron_url"]         = url
+        _schrijf_meta(meta)
 
     df = pd.read_excel(REGISTER_ODS_PAD, engine="odf", header=0, dtype=str)
     log(f"  Register: {len(df)} rijen geladen.")
@@ -599,50 +613,25 @@ def run(state_pad: str | Path) -> None:
     log(f"{'=' * 60}")
     log(f"Aantal luchtvaartuigen in aanvraag: {len(luchtvaartuigen)}")
 
-    # Stap 3a: register laden (eerste poging binnen TTL)
+    # Stap 3a: register laden — elke run de actuele weekversie van de ILT
     log("\nStap 3a: Luchtvaartregister laden ...")
     bronnen = Bronregister()
     try:
-        df, meta = _download_register(log, force=False, bronnen=bronnen)
+        df, meta = _download_register(log, bronnen=bronnen)
     except ToetsingAfgebroken as fout:
         log(f"\nFOUT: toetsing afgebroken — {fout}")
         sys.exit(1)
 
-    # Classificeer elk luchtvaartuig; herdownload register bij eerste cache-miss
-    register_ververst = False
+    # Classificeer elk luchtvaartuig. Het register is al de actuele weekversie;
+    # opnieuw verversen bij een niet-gevonden kenmerk levert niets nieuws op.
     resultaten = []
 
     for lv in luchtvaartuigen:
         ph_code = _registratie_van(lv)
         lv_type = lv.get("type", "onbekend") if isinstance(lv, dict) else "onbekend"
         log(f"\n  Verwerken: {ph_code or '(geen kenmerk)'} (type: {lv_type})")
-        if not ph_code:
-            resultaten.append(pas_handmatige_afstand_toe(
-                lv, _classificeer_luchtvaartuig(lv, df, log), log))
-            continue
-
-        # Snelle pre-check: staat ph_code in het al geladen register?
-        reg_kolom, _ = _vind_kolommen(df, log)
-        if reg_kolom:
-            in_register = (
-                df[reg_kolom].astype(str).str.strip().str.upper() == ph_code
-            ).any()
-        else:
-            in_register = False
-
-        if not in_register and not ph_code.startswith("PH-"):
-            # Het ILT-register kent alleen Nederlandse kenmerken; verversen helpt
-            # niet en zou bij een storing de hele toetsing onvolledig maken.
+        if ph_code and not ph_code.startswith("PH-"):
             log(f"  {ph_code}: geen PH-kenmerk — niet in het ILT-register te verwachten.")
-        elif not in_register and not register_ververst:
-            log(f"  {ph_code}: niet in lokaal register — register verversen ...")
-            try:
-                df, meta = _download_register(log, force=True, bronnen=bronnen)
-            except ToetsingAfgebroken as fout:
-                log(f"\nFOUT: toetsing afgebroken — {fout}")
-                sys.exit(1)
-            register_ververst = True
-
         resultaten.append(pas_handmatige_afstand_toe(
             lv, _classificeer_luchtvaartuig(lv, df, log), log))
 
@@ -673,6 +662,7 @@ def run(state_pad: str | Path) -> None:
         "zonder_norm":       zonder_norm,
         "register_bestand":  REGISTER_ODS_PAD.name,
         "register_datum":    meta.get("download_datum", ""),
+        "register_publicatie": _lokale_publicatiedatum(meta) or "",
         "bronstatus":        bronnen.naar_state(),
         "log_regels":        log.lines,
     }

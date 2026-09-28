@@ -498,9 +498,13 @@ class _ProcesLogBuilder:
         if reg_datum:
             try:
                 reg_d = datetime.fromisoformat(reg_datum)
+                publicatie = self.classif.get("register_publicatie", "")
+                gepubliceerd = (f"gepubliceerd door de ILT op "
+                                f"{datetime.fromisoformat(publicatie).strftime('%d-%m-%Y')}, "
+                                if publicatie else "")
                 self.regel(
                     f"ILT-register: {self.classif.get('register_bestand','—')}, "
-                    f"gedownload op {reg_d.strftime('%d-%m-%Y')}."
+                    f"{gepubliceerd}gedownload op {reg_d.strftime('%d-%m-%Y')}."
                 )
             except (ValueError, TypeError):
                 self.regel(f"ILT-register: {self.classif.get('register_bestand', '—')}, "
