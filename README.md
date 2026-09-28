@@ -235,7 +235,7 @@ concept in het eigen e-mailprogramma, en wat daarin wordt meegestuurd bepaalt de
 | Tussentijdse procesdata | `tug_state.json` | Na elke aanvraag overschreven met `{}` — na succes, na een afgebroken stap en ook als de run wordt onderbroken (Ctrl+C, beëindigd). Alleen leesbaar voor de eigen gebruiker |
 | Invoerbestand van de grafische schil | `tmp/` | Geleegd na afloop van elke run, bij het sluiten van de schil (een lopende run wordt dan eerst gestopt) en bij het opstarten. Alleen leesbaar voor de eigen gebruiker |
 | Rapport en kaart | `output/` | Blijven staan tot iemand ze verplaatst of verwijdert; de grafische schil verplaatst ze desgevraagd naar een gekozen map |
-| Bronbestanden | `geo/` | Blijven staan tot de bewaartermijn (TTL) verloopt en het bestand wordt vervangen |
+| Bronbestanden | `geo/` | Blijven staan tot de bewaartermijn verloopt (het ILT-register: tot de ILT een nieuwe weekversie publiceert) en het bestand wordt vervangen |
 | Runlogboek | Terminalvenster | Wordt niet naar een bestand geschreven |
 
 De versiebeheerrepository bevat uitsluitend code: `output/`, `geo/`, `tug_state.json`, `tmp/`,
@@ -289,7 +289,7 @@ maneges, en zoekvensters die veel ruimer zijn dan de toetsingsafstand.
 | NNN-gebied net buiten Overijssel niet gesignaleerd | De NNN-cache bevat alleen de provinciale begrenzing | Vals negatief bij grenslocaties | Alle Natura 2000-gebieden zijn ook NNN: bij een N2000-treffer wordt de NNN-treffer aangenomen |
 | Externe bron valt uit of wijzigt | Registers en API's zijn van hun bronhouders en veranderen zonder aankondiging | Stille onderbreking van een detectielaag | Reëel gebleken risico: het kinderopvangregister weigerde op enig moment de standaard opvraging, en een begraafplaats-collectie was na een refactor stil leeg. Daartegenover: elke bron meldt hoe haar bevraging is afgelopen, en het rapport leest dáárnaar in plaats van naar het aantal treffers. Een uitgevallen kernbron breekt de toetsing af; bij een andere bron trekt het rapport geen conclusie en meldt het de uitval in rood, met exitcode 2. Een luchthavenlaag zonder één luchthaven en een LRK-bestand zonder kinderopvang gelden als uitgevallen, niet als "niets gevonden". Een verouderde lokale kopie wordt tot een vaste grens gebruikt en met haar ouderdom vermeld — zie [§16](#16-gegevensbronnen-en-caching) |
 | Luchtvaartuig pas net geregistreerd | De ILT publiceert het register wekelijks; een registratie van na de laatste publicatie staat er nog niet in | Onterechte melding "niet in register" | Elke run gebruikt de actuele weekversie (publicatiedatum in de bestandsnaam), dus de achterstand is hooguit een week; daarbinnen kan de vergunningverlener een handmatige geluidsafstand invullen |
-| Bibliotheekversie verandert de uitkomst | Een minor release van de geometrie- of projectiebibliotheken kan een randgeval anders afhandelen; bij een grens van 500 m is het verschil tussen 499 en 501 m het verschil tussen wel en niet melden | Stille verandering in een juridisch document | Exact vastgepinde versies en een regressietest die 67 waarden vergelijkt met een vastgelegde nulmeting — zie [hoofdstuk 19](#19-kwaliteitsborging) |
+| Bibliotheekversie verandert de uitkomst | Een minor release van de geometrie- of projectiebibliotheken kan een randgeval anders afhandelen; bij een grens van 500 m is het verschil tussen 499 en 501 m het verschil tussen wel en niet melden | Stille verandering in een juridisch document | Exact vastgepinde versies en een regressietest die 69 waarden vergelijkt met een vastgelegde nulmeting — zie [hoofdstuk 19](#19-kwaliteitsborging) |
 | Brondata is onjuist | Registers bevatten fouten | Onjuiste uitkomst | Buiten de invloedssfeer van de pipeline: de bronhouder is verantwoordelijk voor de integriteit van zijn data en die data geldt hier als gegeven. Het proceslogboek benoemt per stap welke bron is geraadpleegd, zodat een fout herleidbaar is tot de bron |
 
 Twee beperkingen die geen mitigatie kennen en als zodanig gelden: de detectie van
@@ -852,7 +852,8 @@ bevraging is afgelopen. Dat register komt in de state, het rapport en de exitcod
 Een bron die aantoonbaar stuk is, telt als uitgevallen: een luchthavenlaag zonder één luchthaven,
 een LRK-bestand zonder kinderopvang, een DUO-bestand zonder vestigingen in Overijssel.
 
-**Noodterugval op een lokale kopie.** Lukt het verversen van een verlopen cache niet, dan wordt de
+**Noodterugval op een lokale kopie.** Lukt het verversen van een verlopen cache niet (bij het
+ILT-register: het ophalen van een nieuwe weekversie), dan wordt de
 oude kopie nog gebruikt tot een vaste grens en meldt het rapport haar ouderdom in rood (exitcode 2).
 Daarboven geldt de bron als uitgevallen. Een half ververste kopie wordt nooit weggeschreven.
 
@@ -1084,7 +1085,7 @@ beveiligingscontrole vraagt of de afhankelijkheden en de geschiedenis nog schoon
 ```
 
 De test stelt niet vast of de pipeline *werkt*, maar of zij **hetzelfde antwoord geeft** als op het
-moment dat de uitkomst is gecontroleerd. Zij meet zeventig waarden in tien groepen —
+moment dat de uitkomst is gecontroleerd. Zij meet 69 waarden in tien groepen —
 coördinaattransformaties, geometrie, geo-bestandsinvoer met bbox-filter, puntlocatievalidatie,
 datumlogica, de NLR-normtabel, afgeleide constanten, het opzoekmechanisme van het register, de
 afhandeling van luchtvaartuigen zonder norm en de structuur van de natuursignalering — en vergelijkt
@@ -1125,9 +1126,11 @@ featuresleutel, en de classificatie van verblijfsobjecten in wettelijk relevant,
 overig — inclusief de begraafplaatsuitsluiting en de aanname dat een Natura 2000-treffer ook een
 NNN-treffer is. Verder: de melding over de onderlinge afstand tussen puntlocaties (gelijk voor elke afstand), de
 handmatige geluidsafstand en haar schemagrenzen, de instelbare marge rond de puntlocatie, het
-doorrekenen zonder herleidbare norm, en de luchthaventerreinen (samenvoegen van overlappende
+doorrekenen zonder herleidbare norm, de luchthaventerreinen (samenvoegen van overlappende
 vlakken, afstand tot de rand, koppeling met de provinciale regeling, naamgeving) op een
-nagebootste bron.
+nagebootste bron, de adreszoeker (treffers, zoomniveau, ingekorte invoer) en de versiecontrole van
+het ILT-register (publicatiedatum uit de bestandsnaam, downloaden alleen bij een nieuwe weekversie,
+noodterugval en afbreken).
 
 Eén groep tests bewaakt daarbij iets dat eerder is misgegaan: dat de PDF-tabel, de HTML-markers en
 de PNG-kaart **hetzelfde oordeel** laten zien. Alle drie lezen het oordeel dat
@@ -1148,8 +1151,10 @@ wordt geweigerd, en dat de state bij elke afloop — ook Ctrl+C — wordt gewist
 compleet is, dat een dubbel registratiekenmerk wordt geweigerd, dat RD-invoer op dezelfde plek
 uitkomt als GPS-invoer, dat de afstands- en termijnmeldingen verschijnen, en dat de aanvraag die het
 venster oplevert door de validatiestap wordt geaccepteerd. Daarnaast dat de kaart geen lokale
-bestanden kan lezen, geen externe scripts laadt en links naar de systeembrowser stuurt, en dat
-`tmp/` bij het opstarten wordt geleegd.
+bestanden kan lezen, geen externe scripts laadt, zelf geen netwerkverzoeken doet (de adreszoeker
+loopt via Python) en links naar de systeembrowser stuurt; dat de knop *Bug rapporteren* een correct
+gecodeerde mailto opent en daarna altijd het kopieervenster toont; en dat `tmp/` bij het opstarten
+wordt geleegd.
 
 ### 19.3 Stijl- en beveiligingscontrole
 
