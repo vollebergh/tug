@@ -1280,7 +1280,14 @@ conclusie uit een bron die niet volledig is geraadpleegd ([§16](#16-gegevensbro
 
 ## 21. Licentie en eigenaarschap
 
-Intern gebruik Provincie Overijssel. Niet bestemd voor publieke distributie.
+De broncode is openbaar ter inzage en voor transparantie over de werking. Er is geen licentie
+verleend: zonder licentie blijven alle rechten bij de maker.
+
+**Geen officieel besluitvormingsinstrument.** Dit is maatwerkautomatisering voor Provincie
+Overijssel (zie de inleiding). De uitkomst is een hulpmiddel en geen beschikking en vervangt de
+beoordeling door de vergunningverlener niet. Gebruik door anderen is voor eigen rekening en risico;
+voor een andere provincie is aanpassing nodig. Meld bugs niet via openbare kanalen met
+aanvraaggegevens, schermafbeeldingen of rapporten: daarin kunnen persoonsgegevens staan.
 
 **Versionering.** Git is de enige versiegeschiedenis; er zijn geen handmatige versienummers. Elk
 voortbrengsel — runlogboek, PDF, HTML en de tussentijdse state — draagt de workflowversie: de korte
