@@ -347,6 +347,11 @@ er staat: het gebruiksdoel uit de BAG, of de bron die het object als beschermd a
 - **Python 3.12.** Ondergrens én bovengrens zijn scherp: onder 3.12 levert de vastgepinde
   geo-stack geen kant-en-klare pakketten meer, vanaf 3.15 ondersteunt PySide6 niet. Op een andere
   3.x-versie kan de installatie pakketten willen compileren, waarvoor een C-compiler nodig is.
+- **Onder Windows: Python 3.12.10, 64-bit (x64)**, het installatieprogramma *Windows installer
+  (64-bit)* van python.org — niet de ARM64-versie en niet de Microsoft Store-versie. 3.12.10 is de
+  laatste 3.12-release met een Windows-installatieprogramma; 3.12.11 en later (beveiligingsreleases)
+  bestaan alleen als broncode en zijn geen patch die over 3.12.10 heen te installeren is. Alle
+  vastgepinde pakketten hebben een gehashte wheel voor Windows x64 met Python 3.12.
 - **Geen adminrechten.** Alles komt in een virtuele omgeving binnen de projectmap terecht.
 - Voor de grafische schil onder Linux: de systeembibliotheken `libxcb-cursor0`,
   `libxkbcommon-x11-0`, `libxcb-icccm4`, `libxcb-keysyms1` en `libxcb-xkb1`. Ontbreken die, dan
@@ -375,12 +380,28 @@ Bewust een `.py`-bestand en geen `.sh` of `.bat`: op beheerde laptops is het uit
 shellscripts vaak geblokkeerd, het draaien van een Python-bestand via de interpreter niet. Bij een
 proxy of een bedrijfs-CA-certificaat benoemt de foutmelding wat er moet gebeuren.
 
+Een stapsgewijze handleiding voor Windows 11, van ZIP-download tot eerste run, staat in
+[INSTALLATIE-WINDOWS.md](INSTALLATIE-WINDOWS.md).
+
+Onder Windows met de Python-launcher, zodat zeker 3.12 wordt gebruikt:
+
+```bash
+py -3.12 install.py
+```
+
 Daarna starten zonder de omgeving te activeren:
 
 ```bash
 .venv/bin/python tug_gui.py
 .venv/bin/python tug_run.py aanvraag.json
 ```
+
+Onder Windows is dat `.venv\Scripts\python.exe tug_gui.py`.
+
+**Workflowversie zonder git.** De versie in elk rapport is de git-commit. Een installatie uit een
+archief — de ZIP-download van GitHub of `git archive` — heeft geen `.git/`; git vult de commit dan
+bij het exporteren in `tug_config.py` in (`export-subst` in `.gitattributes`) en het rapport toont
+`<commit> (archief)`. Een kopie van een werkmap zonder `.git/` toont `onbekend (geen git)`.
 
 **De projectomgeving is de enige omgeving.** Wordt `tug_run.py` of `tug_gui.py` met een andere
 interpreter gestart — bijvoorbeeld `python` van het PATH — dan start het script zichzelf opnieuw in
