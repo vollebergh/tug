@@ -42,4 +42,4 @@ requests==2.34.2
 
 # Output
 reportlab==4.5.1      # PDF
-pillow==12.3.0        # luchtfoto's en kaartafbeeldingen (12.2.0 had 13 CVE's)
+pillow==13.0.0        # luchtfoto's en kaartafbeeldingen (12.3.0 had 42 bekende kwetsbaarheden)

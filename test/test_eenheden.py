@@ -760,3 +760,24 @@ class TestIltRegisterVersie:
         klas.REGISTER_META_PAD.write_text(json.dumps({"publicatie_datum": "2026-01-01"}))
         with pytest.raises(ToetsingAfgebroken):
             self._draai(klas, monkeypatch, "2026-09-28", BronFout("time-out"))
+
+
+class TestWorkflowversieZonderGit:
+    """Een installatie uit een archief (ZIP-download, git archive) heeft geen .git;
+    de versie komt dan uit de door git ingevulde placeholder in tug_config."""
+
+    def test_archief_draagt_commit(self, tmp_path):
+        from tug_config import _workflow_versie
+        assert _workflow_versie(tmp_path, "1324dae") == "1324dae (archief)"
+
+    def test_niet_ingevulde_placeholder_is_onbekend(self, tmp_path):
+        from tug_config import _workflow_versie
+        assert _workflow_versie(tmp_path, "$Format:%h$") == "onbekend (geen git)"
+
+    def test_placeholder_staat_in_werkkopie(self):
+        # In de repository zelf moet de placeholder letterlijk staan, anders
+        # vult git archive hem niet in. In een uitgepakt archief is hij ingevuld.
+        import tug_config
+        if not (Path(tug_config.__file__).parent / ".git").exists():
+            pytest.skip("geen git-werkkopie (archiefinstallatie)")
+        assert tug_config._ARCHIEF_COMMIT == "$" + "Format:%h$"

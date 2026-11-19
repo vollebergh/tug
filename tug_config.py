@@ -14,14 +14,27 @@ from typing import Any
 # Versie- en paddefinities
 # ──────────────────────────────────────────────
 
-def _workflow_versie() -> str:
+# Door git ingevuld bij `git archive` en bij een ZIP-download van GitHub
+# (export-subst in .gitattributes); in een werkkopie blijft de placeholder staan.
+_ARCHIEF_COMMIT = "$Format:%h$"
+
+
+def _workflow_versie(root: Path | None = None, archief_commit: str = _ARCHIEF_COMMIT) -> str:
     """Git-commit van de workflowcode; git is de enige versiegeschiedenis.
 
     Niet-gecommitte wijzigingen aan getrackte bestanden worden gemarkeerd, zodat
     elke output herleidbaar is naar de exacte code. Untracked bestanden tellen
     niet mee (bv. backup/).
+
+    Zonder git (een uitgepakt archief, of een machine zonder git) geldt de commit
+    die git bij het exporteren in `_ARCHIEF_COMMIT` heeft gezet. Wijzigingen na het
+    uitpakken zijn dan niet te zien; dat staat erbij.
     """
-    root = Path(__file__).parent
+    root = root or Path(__file__).parent
+    if not (root / ".git").exists():
+        if archief_commit.startswith("$"):
+            return "onbekend (geen git)"
+        return f"{archief_commit} (archief)"
     try:
         # git van het PATH met vaste argumenten; geen invoer van buiten.
         commit = subprocess.run(  # noqa: S603

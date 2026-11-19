@@ -149,7 +149,10 @@ def pip_install(py: Path):
 def controleer_imports(py: Path):
     """Importeer elke library eenmaal: een geslaagde pip-install garandeert niet
     dat een binaire extensie ook laadt (ontbrekende GDAL/Qt-systeembibliotheken)."""
-    modules = ["PySide6.QtWidgets", "pandas", "odf", "geopandas", "shapely",
+    # De kaart in de GUI draait op QtWebEngine (Chromium, uit pyside6-addons): het
+    # grootste en kwetsbaarste binaire onderdeel, dus expliciet meegecontroleerd.
+    modules = ["PySide6.QtWidgets", "PySide6.QtWebEngineWidgets", "PySide6.QtWebEngineCore",
+               "PySide6.QtWebChannel", "pandas", "numpy", "odf", "geopandas", "shapely",
                "pyproj", "pyogrio", "requests", "defusedxml", "reportlab", "PIL"]
     print("\nImports controleren ...")
     code = "import importlib,sys\n" \

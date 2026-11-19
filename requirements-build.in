@@ -8,4 +8,4 @@
 #     uv pip compile --universal --python-version 3.12 --generate-hashes \
 #         requirements-build.in -o requirements-build.txt
 
-setuptools==84.0.0
+setuptools==84.2.1
