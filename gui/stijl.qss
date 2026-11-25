@@ -22,6 +22,10 @@ QToolTip {
 QWidget#kop { background: #151b24; border-bottom: 1px solid #232c38; }
 QLabel#kopTitel   { font-size: 15px; font-weight: 700; letter-spacing: .2px; }
 QLabel#kopVersie  { font-size: 11px; color: #7f8da0; font-family: monospace; }
+QLabel#kopUpdate  {
+    font-size: 11.5px; font-weight: 600; color: #f2c14e;
+    border: 1px solid #5a4a22; border-radius: 7px; padding: 3px 9px;
+}
 
 /* ── Kaarten (secties) ─────────────────────────────────── */
 QFrame#kaartje {

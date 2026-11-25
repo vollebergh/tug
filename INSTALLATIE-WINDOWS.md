@@ -114,6 +114,42 @@ toetsing.
 
 De uitvoer (PDF en HTML) staat in `output\`. Tijdelijke invoer in `tmp\` wordt na elke run gewist.
 
+## 6. Bijwerken naar een nieuwe versie
+
+Staat er in de kop van de interface **Nieuwe versie … beschikbaar**, sluit dan de interface en
+draai:
+
+```powershell
+cd $env:USERPROFILE\TUG
+```
+
+```powershell
+py -3.12 update.py
+```
+
+Gebruik `py -3.12`, niet de Python uit `.venv`. Het script laat zien wat er nieuw is en welke
+bestanden veranderen, en vraagt `Bijwerken? [J/n]`: Enter is ja. Je aanvragen, exports (`output\`),
+gedownloade bronnen (`geo\`) en de omgeving (`.venv\`) blijven staan. Oude versies van vervangen
+bestanden komen in `backup\`. Zijn de pakketten gewijzigd, dan draait `install.py` daarna vanzelf
+opnieuw (enkele minuten). Klaar is het bij `Workflow bijgewerkt naar …`; staat er `Je hebt de
+nieuwste versie al`, dan was er niets te doen.
+
+**Snelkoppeling "TUG bijwerken" (optioneel)**, voor bijwerken met een dubbelklik. Rechtsklik op het
+bureaublad → Nieuw → Snelkoppeling. Als locatie:
+
+```
+py.exe -3.12 C:\Users\<jouw naam>\TUG\update.py
+```
+
+Naam: `TUG bijwerken`. Windows vult bij `py.exe` zelf het volledige pad in; meldt het dat het
+bestand niet gevonden wordt, gebruik dan het pad dat `where.exe py` in PowerShell toont. Het venster
+blijft na afloop open tot je op Enter drukt.
+
+**Eerste keer:** een installatie van vóór december 2026 heeft `update.py` nog niet. Open dan
+<https://raw.githubusercontent.com/vollebergh/tug/master/update.py>, kies in de browser **Opslaan
+als** (Ctrl+S) en sla het bestand op in `C:\Users\<jouw naam>\TUG` als `update.py` (let op dat het
+niet `update.py.txt` wordt). Draai het daarna zoals hierboven: het werkt de rest van de map bij.
+
 ## Problemen
 
 | Melding | Oplossing |
@@ -124,6 +160,8 @@ De uitvoer (PDF en HTML) staat in `output\`. Tijdelijke invoer in `tmp\` wordt n
 | pip: `hashes do not match` | Niet omzeilen: het gedownloade pakket is niet het vastgelegde. Opnieuw proberen; blijft het, melden |
 | pip: `No such file or directory` met een lang pad | Map staat te diep. Verplaats naar `C:\Users\<jouw naam>\TUG`, verwijder `.venv` en installeer opnieuw |
 | Rode melding in de PDF dat een bron niet is geraadpleegd, terwijl internet werkt | Waarschijnlijk certificaatinspectie op het netwerk: de pipeline vertrouwt alleen zijn eigen certificatenbundel. Zet het CA-bestand van IT in `REQUESTS_CA_BUNDLE`: `$env:REQUESTS_CA_BUNDLE="C:\pad\naar\bedrijfs-ca.pem"` en start opnieuw vanuit hetzelfde venster |
+| `update.py`: *GitHub is niet bereikbaar* of `CERTIFICATE_VERIFY_FAILED` | Geen internet of een proxy. `update.py` gebruikt de certificaten van Windows; werkt de browser wel, vraag dan IT naar de proxy. Er is niets gewijzigd |
+| `update.py`: *Toegang geweigerd … alle bestanden zijn teruggezet* | Er staat nog een bestand open, meestal de interface. Sluit die (ook het PowerShell-venster ernaast) en draai `update.py` opnieuw |
 | Kaart in de interface blijft leeg of zwart | Grafische driver. Start eenmalig zonder hardwareversnelling: `$env:QTWEBENGINE_CHROMIUM_FLAGS="--disable-gpu"` en daarna `.\.venv\Scripts\python.exe tug_gui.py` in hetzelfde venster |
 
 Een fout tijdens het gebruik meld je met de knop **Bug rapporteren** rechtsboven in de interface.

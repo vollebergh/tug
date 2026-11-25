@@ -45,6 +45,7 @@ import re
 import shutil
 import signal
 import subprocess
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -78,6 +79,7 @@ from tug_bronnen_geocode import zoek_locatie
 from tug_geo import in_nederland, json_voor_script, naam_slug, puntafstand_melding
 from tug_http import BronFout
 from tug_opslag import schrijf_state, wis_state
+import update
 
 # ──────────────────────────────────────────────
 # Constanten
@@ -1555,6 +1557,9 @@ class Hoofdvenster(QMainWindow):
     """Zet de panelen naast elkaar en verbindt ze; zelf houdt het venster geen
     aanvraaggegevens bij."""
 
+    # Tag van een nieuwere release; uitgezonden vanuit de achtergrondcontrole.
+    updateGevonden = Signal(str)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"Workflow TUG-ontheffingen Overijssel - {VERSION}")
@@ -1595,6 +1600,7 @@ class Hoofdvenster(QMainWindow):
         self._ververs_status()
         # Een eerder hard afgesloten schil kan invoer in tmp/ hebben laten staan.
         self.export.leeg_tmp()
+        self._controleer_update()
 
     # ── Opbouw ────────────────────────────────
 
@@ -1618,6 +1624,11 @@ class Hoofdvenster(QMainWindow):
         versie.setObjectName("kopVersie")
         versie.setToolTip("Git-commit van de workflowcode; komt terug in elke export.")
         lay.addWidget(versie)
+
+        self.update_melding = QLabel()
+        self.update_melding.setObjectName("kopUpdate")
+        self.update_melding.setVisible(False)
+        lay.addWidget(self.update_melding)
 
         lay.addStretch(1)
 
@@ -1696,6 +1707,47 @@ class Hoofdvenster(QMainWindow):
         self.export.regel.connect(self.sluier.voeg_regel_toe)
         self.export.voltooi.connect(self.sluier.afgerond)
         self.export.status.connect(self._toon_eindstatus)
+        self.updateGevonden.connect(self._toon_update)
+
+    # ── Nieuwe versie ─────────────────────────
+
+    def _controleer_update(self) -> None:
+        """Kijk op de achtergrond of er een nieuwere release is.
+
+        Alleen bij een installatie uit de GitHub-ZIP: een git-werkkopie werk je
+        bij met git. De controle installeert niets; dat doet update.py, met de
+        interface gesloten (Windows vergrendelt bestanden die in gebruik zijn).
+        Mislukt de controle (offline, GitHub onbereikbaar), dan blijft het stil.
+        """
+        if (SCRIPT_DIR / ".git").exists() or update.geinstalleerde_commit(SCRIPT_DIR) is None:
+            return
+
+        # De thread krijgt alleen het signaal en de map mee, niet het venster zelf.
+        signaal, root = self.updateGevonden, SCRIPT_DIR
+
+        def controleer() -> None:
+            try:
+                uitkomst = update.controleer(root)
+            except Exception:  # noqa: BLE001, S110 — een mislukte controle mag de schil niet raken
+                return
+            if uitkomst.status == "nieuwer":
+                signaal.emit(uitkomst.release.tag)
+
+        # Een eigen daemon-thread, niet de globale QThreadPool: GitHub kan traag zijn,
+        # en de adreszoeker moet dan niet op een vrije pool-thread hoeven wachten.
+        # Een daemon-thread houdt het afsluiten ook niet op.
+        self._updatethread = threading.Thread(target=controleer, name="updatecontrole",
+                                              daemon=True)
+        self._updatethread.start()
+
+    def _toon_update(self, tag: str) -> None:
+        opdracht = "py -3.12 update.py" if os.name == "nt" else "python3 update.py"
+        self.update_melding.setText(f"Nieuwe versie {tag} beschikbaar")
+        self.update_melding.setToolTip(uitlegtekst(
+            f"Er staat een nieuwere versie ({tag}) op GitHub. Sluit dit venster en start "
+            "de snelkoppeling 'TUG bijwerken', of draai in de map van de workflow: "
+            f"{opdracht}. Je aanvragen, exports en gedownloade bronnen blijven staan."))
+        self.update_melding.setVisible(True)
 
     # ── Status ────────────────────────────────
 

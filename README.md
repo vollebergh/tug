@@ -228,6 +228,10 @@ ingetypte zoektekst naar de PDOK Locatieserver (`api.pdok.nl`); wat daar wordt i
 machine dus wél. De tekst wordt nergens bewaard. De knop *Bug rapporteren* verstuurt zelf niets: hij opent een
 concept in het eigen e-mailprogramma, en wat daarin wordt meegestuurd bepaalt de gebruiker.
 
+Een installatie uit de GitHub-ZIP vraagt bij het starten van de grafische schil, en bij `update.py`,
+aan GitHub (`api.github.com`) welke release de nieuwste is. Daarbij gaan alleen de geïnstalleerde
+commit en het IP-adres mee, geen aanvraaggegevens. Een git-werkkopie doet die controle niet.
+
 ### 5.4 Opslag en verwijdering
 
 | Wat | Waar | Wat ermee gebeurt |
@@ -403,6 +407,31 @@ archief — de ZIP-download van GitHub of `git archive` — heeft geen `.git/`; 
 bij het exporteren in `tug_config.py` in (`export-subst` in `.gitattributes`) en het rapport toont
 `<commit> (archief)`. Een kopie van een werkmap zonder `.git/` toont `onbekend (geen git)`.
 
+**Bijwerken naar een nieuwe versie.** Een installatie uit de ZIP werkt zichzelf bij met
+
+```bash
+py -3.12 update.py
+```
+
+met de grafische schil gesloten (Linux: `python3 update.py`). Het script vraagt de nieuwste
+[GitHub-release](https://github.com/vollebergh/tug/releases) op en installeert die alleen als ze ná
+de geïnstalleerde commit komt; een nieuwere installatie wordt niet teruggezet. Het controleert dat
+het archief echt die commit bevat (ZIP-commentaar en ingevulde `_ARCHIEF_COMMIT`) en geen absolute
+paden, `..`-paden of symbolische koppelingen heeft. Daarna vervangt het alleen de workflowbestanden:
+`.venv/`, `output/`, `geo/`, `tmp/` en `tug_state.json` blijven onaangeroerd, en bestanden die uit de
+workflow zijn verdwenen worden verwijderd (de lijst komt van GitHub, voor de geïnstalleerde commit).
+Alles wat wordt overschreven of verwijderd gaat eerst naar `backup/update-<datum>-<oude versie>/`;
+lokaal aangepaste workflowbestanden worden apart gemeld. Mislukt het vervangen halverwege, dan
+wordt alles teruggezet. Zijn `requirements*.txt` gewijzigd, dan draait daarna `install.py`.
+
+`update.py` gebruikt alleen de standaardbibliotheek en draait met de gewone Python, niet met die uit
+`.venv`: pip moet die omgeving kunnen bijwerken, en Windows vergrendelt bestanden die in gebruik
+zijn. Daarom loopt het ook niet via `tug_http`, maar met dezelfde afspraken (alleen https naar
+`api.github.com`, `codeload.github.com` en `github.com`, ook na elke redirect; een omvanggrens; elke
+mislukking als fout). De TLS-controle gebruikt hier de certificaten van het besturingssysteem. Een
+git-werkkopie werk je bij met `git pull`; daar weigert `update.py`. De grafische schil meldt een
+nieuwere release in de kop, maar installeert zelf niets.
+
 **De projectomgeving is de enige omgeving.** Wordt `tug_run.py` of `tug_gui.py` met een andere
 interpreter gestart — bijvoorbeeld `python` van het PATH — dan start het script zichzelf opnieuw in
 `.venv` en meldt dat. Alleen daar zijn de afhankelijkheden gepind, gehasht en gecontroleerd.
@@ -530,6 +559,7 @@ start daarmee `tug_run.py`, dat de enige uitvoerder blijft.
 | Puntlocaties | Klikken op de kaart plaatst een pin, klikken op een pin verwijdert hem. Handmatige invoer in WGS84 of RD. Elke pin verschijnt in het overzicht met beide coördinaatstelsels |
 | Kaart | Dezelfde Leaflet-opzet en dezelfde PDOK-tegels als de export, zodat er geen tweede kaartimplementatie uit de pas kan lopen. Schakelbaar tussen topografisch en luchtfoto; startbeeld midden-Overijssel op zoomniveau 11 |
 | Zoeken op adres | Zoekveld linksboven op de kaart: adres, postcode, straat of plaats. Na een korte typpauze verschijnen tot acht treffers (PDOK Locatieserver, `suggest`); pijltjes en Enter of een klik kiezen er één. De kaart vliegt ernaartoe en zet een oranje markering, maar plaatst **geen** puntlocatie — dat blijft een klik op de kaart. Escape wist het veld en de markering |
+| Nieuwe versie | Alleen bij een installatie uit de ZIP: na het starten vraagt de schil op de achtergrond aan GitHub of er een nieuwere release is. Zo ja, dan verschijnt in de kop *Nieuwe versie … beschikbaar*, met in de tooltip hoe je bijwerkt (`update.py`, met de schil gesloten). Geen netwerk of geen GitHub: geen melding, de schil werkt gewoon |
 | Bug rapporteren | Knop met insect-icoon rechtsboven in de kop. Opent in het eigen e-mailprogramma een concept aan de beheerder met de workflowversie in het onderwerp (`bugreport Workflow TUG-ontheffingen Overijssel - <versie>`) en invulinstructies in de tekst: stappen, verwachting, wat er gebeurde, foutmelding of schermafbeelding, bijlagen (aanvraag-JSON, PDF/HTML) met een afweging over persoonsgegevens; datum, besturingssysteem en versie zijn al ingevuld. Er wordt niets automatisch verstuurd. Daarnaast opent altijd een venster met dezelfde velden (Aan, Onderwerp, Tekst), elk met een kopieerknop, om in een ander e-mailprogramma of webmail te plakken. Dat venster verschijnt altijd, omdat de schil niet kan zien of het concept werkelijk opende: onder Linux slaagt `xdg-open` ook als de mailreader daarna faalt (XFCE: *Failed to execute default Mail Reader*), en Windows 11 zonder ingestelde mail-app toont eerst een keuzevenster |
 
 **De kaart is afgeschermd.** Leaflet komt uit `gui/vendor/leaflet` (dezelfde versie en inhoud als de
@@ -997,6 +1027,8 @@ tug_omgeving.py     herstart in .venv; waarschuwing bij een verlopen beveiliging
 tug_types.py        type-aliassen; Bevindingen en VboOordeel
 tug_logging.py      logboekopbouw, terminaluitvoer en voortgangstellers
 beveiligingscontrole.py  pip-audit, lockfile, ruff, bandit, mypy en gitleaks in één commando
+install.py          eenmalige installatie van .venv met gehashte afhankelijkheden
+update.py           bijwerken naar de nieuwste GitHub-release (installatie uit de ZIP)
 gui/                kaart en stijlblad van de schil, sjabloon van de HTML-export, gui/vendor/leaflet
 beheer/             systemd-timer voor de maandelijkse beveiligingscontrole
 test/               regressietest, eenheidstests, beveiligingstests en rooktest op de schil
@@ -1032,6 +1064,7 @@ en schrijft het bestand terug. Omdat elke stap een apart proces is, kan een afge
 | `tug_omgeving.py` | Herstart in de projectomgeving; meldingen over de laatste beveiligingscontrole |
 | `tug_logging.py` | Logboekregels verzamelen voor het rapport en kleuren in de terminal |
 | `tug_gui.py` | Grafische schil; stelt de aanvraag samen en start `tug_run.py` |
+| `update.py` | Bijwerken naar de nieuwste release: versievergelijking, getoetste download, vervangen met backup en terugzetten bij een fout; levert ook de versiecontrole voor de melding in de schil |
 | `tug_types.py` | Type-aliassen en de twee records van de ruimtelijke stap: `Bevindingen` (wat er in de omgeving is aangetroffen) en `VboOordeel` (wat dat per verblijfsobject betekent) |
 
 ### 17.2 tug_state.json
@@ -1174,8 +1207,16 @@ uitkomt als GPS-invoer, dat de afstands- en termijnmeldingen verschijnen, en dat
 venster oplevert door de validatiestap wordt geaccepteerd. Daarnaast dat de kaart geen lokale
 bestanden kan lezen, geen externe scripts laadt, zelf geen netwerkverzoeken doet (de adreszoeker
 loopt via Python) en links naar de systeembrowser stuurt; dat de knop *Bug rapporteren* een correct
-gecodeerde mailto opent en daarna altijd het kopieervenster toont; en dat `tmp/` bij het opstarten
-wordt geleegd.
+gecodeerde mailto opent en daarna altijd het kopieervenster toont; dat `tmp/` bij het opstarten
+wordt geleegd; en dat de melding over een nieuwe versie alleen bij een ZIP-installatie wordt
+opgevraagd en dan in de kop verschijnt.
+
+`test/test_update.py` toetst `update.py` met een nep-GitHub: de versievergelijking (nooit
+terugzetten), het weigeren van een archief met een verkeerde commit, `..`-paden, symbolische
+koppelingen of beschermde paden, het bewaren van `.venv/`, `output/`, `geo/`, `tug_state.json` en
+eigen bestanden, het verwijderen van verdwenen workflowbestanden, de backup, het terugzetten na een
+vergrendeld bestand halverwege, en het opnieuw draaien van `install.py` alleen bij gewijzigde
+afhankelijkheden.
 
 ### 19.3 Stijl- en beveiligingscontrole
 
@@ -1297,6 +1338,7 @@ conclusie uit een bron die niet volledig is geraadpleegd ([§16](#16-gegevensbro
 | **NLR-indelingslijst** | Staat in de code en wordt met de hand bijgewerkt wanneer NLR of ILT de lijst wijzigt |
 | **Afstandsnormen en marges** | Alle drempelwaarden staan in `tug_config.py`; een beleidswijziging is daar één aanpassing, met de regressietest als controle op de gevolgen |
 | **Externe bronnen** | Endpoints en bestandsformaten veranderen zonder aankondiging. Uitval wordt gemeld (afgebroken toetsing of exitcode 2), een formaatwijziging die nul resultaten oplevert niet altijd; een periodieke controle van alle endpoints tegen de live bronnen blijft de manier om stille uitval op te sporen. Wijzigt een host, dan ook `BRON_HOSTS` in `tug_config.py` bijwerken |
+| **Uitrol naar gebruikers** | Een nieuwe versie bereikt ZIP-installaties pas als er een GitHub-release van is: `git push`, regressietest groen, dan `gh release create <tag> --target master --generate-notes` (tag bijvoorbeeld `v2026.12.1`). De releasenotes verschijnen in `update.py`; commits op `master` zonder release worden niet uitgerold |
 | **Bewaartermijnen** | Verlopen caches worden automatisch vernieuwd; handmatig vernieuwen kan door het betreffende bestand in `geo/` te verwijderen |
 
 ## 21. Licentie en eigenaarschap

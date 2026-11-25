@@ -54,6 +54,7 @@ ignore = [
 # logging-configuratie: hun uitvoer ís de interface.
 "test/test_regressie.py" = ["T201"]
 "install.py" = ["T201"]
+"update.py" = ["T201"]
 # beveiligingscontrole.py start de controlegereedschappen als los proces.
 "beveiligingscontrole.py" = ["T201", "S603"]
 

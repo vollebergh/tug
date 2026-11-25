@@ -28,6 +28,9 @@ sessies/
 # ── Documentatie (interne stukken) ───────────
 obsidian/
 
+# ── Backups van update.py ─────────────────────
+backup/
+
 # ── Oud / archief ─────────────────────────────
 archief/
 OUD_*.py

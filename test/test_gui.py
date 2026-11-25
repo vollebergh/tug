@@ -6,6 +6,7 @@ aanvraag opleveren en dezelfde grenzen bewaken als de pipeline erachter. Draait
 zonder scherm (offscreen); zonder PySide6 wordt de suite overgeslagen.
 """
 
+import gc
 import json
 import os
 import sys
@@ -22,7 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 pytest.importorskip("PySide6", reason="PySide6 niet geïnstalleerd")
 
-from PySide6.QtCore import QDate, QUrl  # noqa: E402
+from PySide6.QtCore import QCoreApplication, QDate, QEvent, QUrl  # noqa: E402
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -37,7 +38,18 @@ LAT, LON = 52.46126, 6.496964
 
 @pytest.fixture(scope="module")
 def app():
-    return QApplication.instance() or QApplication([])
+    toepassing = QApplication.instance() or QApplication([])
+    yield toepassing
+    # Alle vensters en kaartpagina's opruimen zolang Qt er nog is. Anders ruimt de
+    # garbage collector ze pas op als pytest afsluit, na het QtWebEngine-profiel:
+    # "WebEnginePage still not deleted" en een segfault, afhankelijk van hoeveel
+    # tests er een venster openden.
+    for venster in toepassing.topLevelWidgets():
+        venster.close()
+        venster.deleteLater()
+    gc.collect()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    toepassing.processEvents()
 
 
 @pytest.fixture(autouse=True)
@@ -344,3 +356,51 @@ class TestOpruimen:
 
     def test_dossierveld_vraagt_geen_persoonsnamen(self, venster):
         assert "geen persoonsnamen" in venster.gegevens.veld_naam.placeholderText()
+
+
+# ── Melding nieuwe versie ─────────────────────
+
+def test_updatemelding_standaard_verborgen(venster):
+    assert not venster.update_melding.isVisibleTo(venster)
+
+
+def test_updatemelding_na_gevonden_release(venster):
+    venster.updateGevonden.emit("v2026.12")
+    assert venster.update_melding.isVisibleTo(venster)
+    assert "v2026.12" in venster.update_melding.text()
+    assert "update.py" in venster.update_melding.toolTip()
+
+
+def test_updatecontrole_niet_in_werkkopie(venster, monkeypatch):
+    """In een git-werkkopie (zoals hier) vraagt de schil GitHub niets."""
+    def weiger(*_a, **_k):
+        raise AssertionError("onverwachte updatecontrole")
+    monkeypatch.setattr(gui.update, "controleer", weiger)
+    venster._controleer_update()
+    assert not hasattr(venster, "_updatethread")
+    assert not venster.update_melding.isVisibleTo(venster)
+
+
+def test_updatecontrole_bij_zip_installatie(app, venster, monkeypatch, tmp_path):
+    (tmp_path / "tug_config.py").write_text('_ARCHIEF_COMMIT = "abcdef1"\n')
+    monkeypatch.setattr(gui, "SCRIPT_DIR", tmp_path)
+    release = gui.update.Release(tag="v9", sha="b" * 40, url="", notities="")
+    monkeypatch.setattr(gui.update, "controleer",
+                        lambda _root: gui.update.Controle("abcdef1", release, "nieuwer"))
+    venster._controleer_update()
+    venster._updatethread.join(5)
+    app.processEvents()
+    assert venster.update_melding.isVisibleTo(venster)
+    assert "v9" in venster.update_melding.text()
+
+
+def test_updatecontrole_fout_blijft_stil(app, venster, monkeypatch, tmp_path):
+    (tmp_path / "tug_config.py").write_text('_ARCHIEF_COMMIT = "abcdef1"\n')
+    monkeypatch.setattr(gui, "SCRIPT_DIR", tmp_path)
+    def offline(_root):
+        raise gui.update.UpdateFout("GitHub is niet bereikbaar")
+    monkeypatch.setattr(gui.update, "controleer", offline)
+    venster._controleer_update()
+    venster._updatethread.join(5)
+    app.processEvents()
+    assert not venster.update_melding.isVisibleTo(venster)
